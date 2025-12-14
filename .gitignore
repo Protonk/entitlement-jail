@@ -4,3 +4,6 @@ EntitlementJail.zip
 
 # da mac
 .DS_Store
+
+# runner
+runner/target
