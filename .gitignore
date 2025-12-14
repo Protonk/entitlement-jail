@@ -1,0 +1,6 @@
+# build artifacts
+EntitlementJail.app/
+EntitlementJail.zip
+
+# da mac
+.DS_Store
