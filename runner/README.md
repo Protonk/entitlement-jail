@@ -1,0 +1,176 @@
+# `entitlement-jail` (CLI + behavior manual)
+
+This document is the authoritative reference for the command-line behavior and what is (and is not) being claimed/measured.
+
+## Core rule: arbitrary path exec is rejected by design
+
+On stock macOS, sandboxed apps commonly hit `process-exec*` denials when attempting to execute binaries staged into writable/container locations. This repo intentionally does **not** support “exec arbitrary staged Mach-O by path”.
+
+Supported execution surfaces:
+
+- `run-system`: execute in-place platform binaries from an allowlisted set of system prefixes
+- `run-embedded`: execute bundle-embedded helper tools (sandbox inheritance; strict signing requirements)
+- `run-xpc`: delegate to launchd-managed XPC services (preferred when entitlements are the research variable)
+- `quarantine-lab`: write/open artifacts via an XPC service and report `com.apple.quarantine` deltas (no execution)
+
+## Invoking the tool
+
+The sandboxed launcher lives at:
+
+- `EntitlementJail.app/Contents/MacOS/entitlement-jail`
+
+Usage:
+
+```sh
+./EntitlementJail.app/Contents/MacOS/entitlement-jail run-system <absolute-platform-binary> [args...]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail run-embedded <tool-name> [args...]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc <xpc-service-bundle-id> <probe-id> [probe-args...]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
+```
+
+## `run-system`: in-place platform binaries
+
+`run-system` only executes **absolute** paths under these prefixes:
+
+- `/bin`
+- `/usr/bin`
+- `/sbin`
+- `/usr/sbin`
+- `/usr/libexec`
+- `/System/Library`
+
+Rationale:
+
+- These locations are “platform/in-place” and typically non-writable, which avoids the common sandbox failure mode of attempting to execute staged content from writable/container paths.
+- The allowlist is a policy boundary: if a path is not obviously platform/in-place, use `run-embedded` or `run-xpc` instead of widening the definition ad hoc.
+
+Behavior:
+
+- Refuses non-absolute paths.
+- Refuses absolute paths outside the allowlist.
+- Verifies the target exists and has executable bits before spawning.
+- Spawns the process and exits with the child’s exit status (stdout/stderr are not captured or rewrapped).
+
+## `run-embedded`: bundle-embedded helpers (inheritance)
+
+`run-embedded` runs an executable that is shipped *inside the app bundle*, by a simple tool name (a single path component).
+
+Resolution rules:
+
+- `tool-name` must be a single path component (no `/`, no `..`, no traversal).
+- Search paths are relative to the `.app` bundle that contains `entitlement-jail`:
+  - `EntitlementJail.app/Contents/Helpers/<tool-name>`
+  - `EntitlementJail.app/Contents/Helpers/Probes/<tool-name>`
+
+Signing rules:
+
+- Embedded helpers are expected to be signed correctly for sandbox inheritance (see [SIGNING.md](../SIGNING.md)).
+- If the helper is not signed as required, inheritance may fail or behave as a different “identity” than you expected.
+
+Behavior:
+
+- Verifies the resolved target exists and is executable.
+- Spawns it as a child process and exits with the child’s exit status.
+
+## `run-xpc`: launchd-managed XPC services (preferred)
+
+`run-xpc` delegates to an embedded Swift helper (`xpc-probe-client`) that speaks NSXPC. The main `entitlement-jail` binary does not talk XPC directly.
+
+Invocation:
+
+- `run-xpc <xpc-service-bundle-id> <probe-id> [probe-args...]`
+- Example service bundle id: `com.yourteam.entitlement-jail.ProbeService_minimal`
+
+High-level flow:
+
+1. `entitlement-jail` runs the embedded helper `xpc-probe-client`.
+2. The helper connects to the XPC service by bundle id and sends a JSON request `{probe_id, argv, ...}`.
+3. The XPC service resolves the probe executable from the host app bundle (embedded probes only) and executes it.
+4. The helper prints the JSON response and exits with `rc`.
+
+Why XPC:
+
+- Each `.xpc` is a separate signed target with its own entitlements, and is launchd-managed.
+- This makes entitlements a first-class experimental variable without relying on child-process inheritance quirks.
+
+## `quarantine-lab`: write/open artifacts and report `com.apple.quarantine`
+
+`quarantine-lab` delegates to an embedded Swift helper (`xpc-quarantine-client`) and an XPC service (for example `com.yourteam.entitlement-jail.QuarantineLab_default`).
+
+Important: this mode **does not execute artifacts**. It writes/opens/reads and reports metadata deltas.
+
+Payload classes:
+
+- `shell_script`: writes a small `#!/bin/sh` script (`.sh`) and defaults to executable
+- `command_file`: writes a small `#!/bin/sh` script (`.command`) and defaults to executable
+- `text`: writes a `.txt` file and defaults to non-executable
+- `webarchive_like`: writes a minimal plist-ish `.webarchive`-shaped payload (not a correctness-focused WebArchive)
+
+Operations (`--operation`):
+
+- `create_new` (default): write a new artifact into an output directory
+- `open_only`: open/read an existing path (or the derived output path) and report any xattr delta
+- `open_existing_save`: read an existing path and save a copy into the output directory
+
+Path selection (`--dir`):
+
+- `tmp` (default): `TMPDIR/.../entitlement-jail-quarantine-lab`
+- `app_support`: `~/Library/Application Support/entitlement-jail-quarantine-lab`
+
+Other options:
+
+- `--existing-path <path>`: the input specimen for `open_existing_save`, and the target for `open_only` if provided
+- `--name <file-name>`: output file name (single path component; an extension is enforced based on payload class)
+- `--exec` / `--no-exec`: force/clear `+x` on the output (otherwise defaults are derived from payload type or source)
+- `--selection <string>`: annotation only; does not grant access or change authorization
+- `--test-case-id <id>`: annotation included in output
+
+Outputs:
+
+- The helper prints a JSON object describing what was written/opened and `com.apple.quarantine` before/after (raw + parsed fields).
+
+## Unsandboxed observer: `quarantine-observer`
+
+`quarantine-observer` is intentionally *not* run from inside `EntitlementJail.app`. Its job is to be a clean witness that does not inherit the App Sandbox.
+
+Build:
+
+```sh
+cargo build --manifest-path runner/Cargo.toml --release
+```
+
+Run:
+
+```sh
+runner/target/release/quarantine-observer <path> --assess
+```
+
+Behavior:
+
+- Reads the `com.apple.quarantine` xattr (if present).
+- Always captures `spctl --status`.
+- Optionally runs `spctl --assess --type execute` (assessment only; does not execute the file).
+
+Do not run the observer from inside `EntitlementJail.app` (or any sandboxed parent), or you lose the “outside the sandbox” boundary and mix attribution.
+
+## Layer attribution model
+
+This repo treats “what happened” and “why it happened” as separate questions.
+
+- Seatbelt/App Sandbox layer:
+  - `run-system` / `run-embedded` may fail due to `process-exec*` policy (but failure to launch is not automatically a sandbox denial).
+  - `quarantine-lab` reports `seatbelt: process_exec_not_attempted` because it does not execute specimens.
+- Quarantine/Gatekeeper layer:
+  - `quarantine-lab` measures `com.apple.quarantine` before/after writing/opening/copying.
+  - `quarantine-observer` can record `spctl` status and optional assessment results for the written specimen.
+- “Other”:
+  - Code signing validity, missing timestamps, path validation, file permissions, missing files, and launchd/XPC issues are not Seatbelt signals and must be reported distinctly.
+
+## JSON outputs (high level)
+
+XPC-backed commands print JSON to stdout (the sandboxed Rust launcher does not reformat it):
+
+- `run-xpc` prints a `RunProbeResponse`-shaped JSON object and exits with `rc`.
+- `quarantine-lab` prints a `QuarantineWriteResponse`-shaped JSON object and exits with `rc`.
+
+For wire-format details and exact fields, see [xpc/README.md](../xpc/README.md).
