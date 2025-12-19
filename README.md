@@ -76,7 +76,7 @@ The JSON RPC request/response shapes are:
 
 ## Quarantine Lab (misleading entitlements)
 
-`com.apple.security.files.user-selected.executable` is a good “SANDBOX_LORE” case study because it’s easy to misread as “Seatbelt allows exec if the user selected it”, but the actual effect is primarily about **quarantine/Gatekeeper behavior on outputs written by sandboxed apps**.
+`com.apple.security.files.user-selected.executable` is a good case study because it’s easy to misread as “Seatbelt allows exec if the user selected it”, but the actual effect is primarily about **quarantine/Gatekeeper behavior on outputs written by sandboxed apps**.
 
 Two recurring failure modes this lab is meant to make obvious:
 
