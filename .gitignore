@@ -7,3 +7,6 @@ EntitlementJail.zip
 
 # runner
 runner/target
+
+# local scratch
+.tmp/
