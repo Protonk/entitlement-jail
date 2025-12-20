@@ -61,16 +61,26 @@ Current services:
 - `ProbeService_net_client`: identical code to `ProbeService_minimal`, but with `com.apple.security.network.client`.
 - `ProbeService_downloads_rw`: identical code to `ProbeService_minimal`, but with `com.apple.security.files.downloads.read-write`.
 - `ProbeService_user_selected_executable`: identical code to `ProbeService_minimal`, but with `com.apple.security.files.user-selected.executable`.
+- `ProbeService_bookmarks_app_scope`: identical code to `ProbeService_minimal`, but with `com.apple.security.files.bookmarks.app-scope` (enables `mach-lookup` to `com.apple.scopedbookmarksagent.xpc`, used by security-scoped bookmark creation/resolution).
 - `QuarantineLab_default`: writes/opens/copies artifacts and reports `com.apple.quarantine` deltas.
 - `QuarantineLab_net_client`: identical code to `QuarantineLab_default`, but with `com.apple.security.network.client`.
 - `QuarantineLab_downloads_rw`: identical code to `QuarantineLab_default`, but with `com.apple.security.files.downloads.read-write`.
 - `QuarantineLab_user_selected_executable`: identical code to `QuarantineLab_default`, but with different entitlements.
+- `QuarantineLab_bookmarks_app_scope`: identical code to `QuarantineLab_default`, but with `com.apple.security.files.bookmarks.app-scope`.
 
 Built-in probe ids (in-process):
 
 - `world_shape`
 - `network_tcp_connect` (`--host <ipv4> --port <1..65535>`)
 - `downloads_rw` (`[--name <file-name>]`)
+- `fs_op` (parameterized filesystem op; see `--op` help in `experiments/bin/witness-substrate`)
+- `net_op` (parameterized network op; see `--op` help in `experiments/bin/witness-substrate`)
+- `bookmark_op` (filesystem op gated by an input bookmark token)
+- `bookmark_make` (best-effort bookmark generator; security-scoped bookmark creation requires ScopedBookmarksAgent IPC, which is denied unless the target has bookmarks or user-selected read-only/read-write entitlements)
+- `capabilities_snapshot` (observer: entitlements + resolved standard directories)
+- `userdefaults_op` (UserDefaults read/write/remove + inferred prefs path)
+- `fs_xattr` (get/list/set/remove xattrs; xattr writes are refused outside harness paths unless explicitly allowed)
+- `fs_coordinated_op` (NSFileCoordinator mediated read/write; best-effort and environment-dependent)
 
 ## Safe probe resolution (no traversal, no container staging)
 

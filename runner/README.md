@@ -91,6 +91,18 @@ Built-in probe ids (in-process):
 - `world_shape`
 - `network_tcp_connect` (`--host <ipv4> --port <1..65535>`)
 - `downloads_rw` (`[--name <file-name>]`)
+- `fs_op` (`--op <...> (--path <abs> | --path-class <...>) [--allow-unsafe-path]`)
+- `net_op` (`--op <getaddrinfo|tcp_connect|udp_send> --host <host> [--port <1..65535>] [--numeric]`)
+- `bookmark_op` (`--bookmark-b64 <base64> [--bookmark-path <path>] [--relative <rel>] --op <fs-op> [--allow-unsafe-path]`)
+- `bookmark_make` (`--path <abs> [--no-security-scope] [--read-only] [--allow-missing]`)
+- `capabilities_snapshot`
+- `userdefaults_op` (`--op <read|write|remove|sync> [--key <k>] [--value <v>] [--suite <suite>]`)
+- `fs_xattr` (`--op <get|list|set|remove> --path <abs> [--name <xattr>] [--value <v>] [--allow-write]`)
+- `fs_coordinated_op` (`--op <read|write> (--path <abs> | --path-class <...>) [--allow-unsafe-path]`)
+
+Notes:
+
+- `fs_op` is safe-by-default: potentially destructive operations on direct paths (outside `*/entitlement-jail-harness/*`) are refused unless you pass `--allow-unsafe-path`.
 
 High-level flow:
 

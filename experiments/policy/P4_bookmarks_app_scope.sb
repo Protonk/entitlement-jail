@@ -1,0 +1,23 @@
+;; P4_bookmarks_app_scope.sb
+;;
+;; P0 + ScopedBookmarksAgent IPC allowance (attempted equivalent of com.apple.security.files.bookmarks.app-scope).
+
+(version 1)
+
+(allow default)
+
+;; Home Directory helper (sandbox-exec requires passing -D HOME=...).
+(define (home-subpath home-relative-subpath)
+  (subpath (string-append (param "HOME") home-relative-subpath)))
+
+;; Keep network denied (this node is "bookmarks only" over minimal).
+(deny network*)
+
+;; Keep Downloads denied (this node is "bookmarks only" over minimal).
+;; Approximation: allow directory discovery (metadata reads) but deny content reads + writes.
+(allow file-read-metadata (home-subpath "/Downloads"))
+(deny file-read-data file-write* (home-subpath "/Downloads"))
+
+;; Hypothesis: the entitlement allows talking to ScopedBookmarksAgent, so model that as a mach-lookup allow.
+(allow mach-lookup (global-name "com.apple.scopedbookmarksagent.xpc"))
+

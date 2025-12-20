@@ -14,3 +14,4 @@
 ;; Approximation: allow directory discovery (metadata reads) but deny content reads + writes.
 (allow file-read-metadata (home-subpath "/Downloads"))
 (deny file-read-data file-write* (home-subpath "/Downloads"))
+(deny mach-lookup (global-name "com.apple.scopedbookmarksagent.xpc"))

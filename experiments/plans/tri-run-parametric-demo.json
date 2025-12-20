@@ -1,0 +1,26 @@
+{
+  "plan_id": "tri-run-parametric-demo",
+  "probes": [
+    {
+      "row_id": "fs_stat_etc_hosts",
+      "probe_id": "fs_op",
+      "inputs": { "kind": "probe", "argv": ["--op", "stat", "--path", "/etc/hosts"] },
+      "expected_side_effects": ["none"],
+      "capture_spec": { "capture_sandbox_log": false }
+    },
+    {
+      "row_id": "fs_create_tmp",
+      "probe_id": "fs_op",
+      "inputs": { "kind": "probe", "argv": ["--op", "create", "--path-class", "tmp"] },
+      "expected_side_effects": ["may create and then remove a file under TMPDIR/entitlement-jail-harness/fs-op/..."],
+      "capture_spec": { "capture_sandbox_log": true }
+    },
+    {
+      "row_id": "net_getaddrinfo_loopback",
+      "probe_id": "net_op",
+      "inputs": { "kind": "probe", "argv": ["--op", "getaddrinfo", "--host", "127.0.0.1", "--numeric"] },
+      "expected_side_effects": ["none"],
+      "capture_spec": { "capture_sandbox_log": false }
+    }
+  ]
+}

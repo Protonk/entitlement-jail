@@ -16,8 +16,10 @@
 ;; Hypothesis knobs:
 ;; - deny outbound network by default (E0_minimal lacks network client entitlement)
 ;; - deny Downloads access by default (E0_minimal lacks downloads read-write entitlement)
+;; - deny ScopedBookmarksAgent IPC by default (E0_minimal lacks bookmarks / user-selected ro|rw entitlements)
 (deny network*)
 ;; Approximation: allow directory discovery (metadata reads) but deny content reads + writes.
 ;; This better matches the App Sandbox pattern where `~/Downloads` can be resolved but writes are blocked.
 (allow file-read-metadata (home-subpath "/Downloads"))
 (deny file-read-data file-write* (home-subpath "/Downloads"))
+(deny mach-lookup (global-name "com.apple.scopedbookmarksagent.xpc"))

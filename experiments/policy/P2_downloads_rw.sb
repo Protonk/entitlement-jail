@@ -12,3 +12,4 @@
 
 ;; Keep network denied (this node is "Downloads only" over minimal).
 (deny network*)
+(deny mach-lookup (global-name "com.apple.scopedbookmarksagent.xpc"))

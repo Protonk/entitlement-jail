@@ -21,6 +21,7 @@ Every probe row is:
 
 ```json
 {
+  "row_id": "string (optional; defaults to probe_id)",
   "probe_id": "string",
   "inputs": { "kind": "probe|quarantine-lab", "argv": ["..."], "payload_class": "optional" },
   "expected_side_effects": ["string"],
@@ -45,11 +46,37 @@ Every witness run is normalized into:
     "quarantine_delta": "string|null",
     "world_shape_change": "string|null"
   },
-  "sandbox_log_excerpt_ref": "relative/path/to/sandbox-log.txt"
+  "sandbox_log_excerpt_ref": "relative/path/to/sandbox-log.txt",
+  "sandbox_log_capture": {
+    "attempts": [
+      {
+        "start_iso8601": "string",
+        "end_iso8601": "string",
+        "predicate": "string",
+        "term": "string",
+        "observed_deny": true,
+        "deny_op": "string|null",
+        "excerpt_ref": "relative/path/to/sandbox-log.txt"
+      }
+    ]
+  },
+  "path_evidence": {
+    "effective_path_class": "host_path|container_path|synthesized_temp_path|other_path|null",
+    "paths": {
+      "target_path": {
+        "raw": "string",
+        "realpath": "string|null",
+        "path_class": "string",
+        "realpath_class": "string|null"
+      }
+    }
+  }
 }
 ```
 
-Hard rule: “couldn’t run” is never collapsed into “denied”. If an outcome cannot be attributed, it is reported as `unknown_needs_evidence` (not as “policy denied”).
+Hard rule: “couldn’t run” is never collapsed into “denied”. `seatbelt_deny_op` is only set when a deny line is actually observed (via sandbox log capture); otherwise it remains `null` and the capture attempts record whether a deny line was observed in the window.
+
+`row_id` is used for artifact directory naming. If you want multiple rows that use the same `probe_id` with different `inputs.argv` (for example multiple `fs_op` variants), set distinct `row_id` values.
 
 ## Lattice + profiles
 
@@ -57,8 +84,8 @@ Entitlements are a first-class independent variable **only via XPC service targe
 
 See:
 
-- `experiments/nodes/entitlement-lattice.json` for the entitlement lattice (E0–E3)
-- `experiments/policy/` for the “attempted equivalent” `.sb` profiles (P0–P3)
+- `experiments/nodes/entitlement-lattice.json` for the entitlement lattice (E0–E4)
+- `experiments/policy/` for the “attempted equivalent” `.sb` profiles (P0–P4)
 
 Quarantine Lab is the calibration anchor where parity should fail for principled reasons: quarantine metadata deltas are not a Seatbelt policy knob.
 
@@ -82,9 +109,22 @@ Run a tri-run plan:
 ./experiments/bin/ej-harness run
 ```
 
+Run the trimmed lattice (E0–E2):
+
+```sh
+./experiments/bin/ej-harness run --nodes experiments/nodes/entitlement-lattice-e0-e2.json
+```
+
+Run the parametric demo plan (shows `row_id` with multiple `fs_op` rows):
+
+```sh
+./experiments/bin/ej-harness run --plan experiments/plans/tri-run-parametric-demo.json
+```
+
 Artifacts land under `experiments/out/…/atlas.json` (the harness prints the absolute path it wrote).
 
 ## Notes
 
 - Policy witness profiles in `experiments/policy/*.sb` use `HOME` as a profile parameter; the harness passes it automatically via `sandbox-exec -D HOME=<path> ...`.
-- Sandbox log excerpts are best-effort and PID-scoped: for probe runs the harness keys log searches on `ProcessName(pid)` from the JSON `details.pid` field, to avoid cross-run contamination.
+- Sandbox log capture is best-effort and PID-scoped: for probe runs the harness keys log searches on `ProcessName(pid)` from the JSON `details.pid` field, to avoid cross-run contamination.
+- Entitlement witness tightening: when a probe returns a permission-shaped error and no deny op is observed, the harness automatically retries sandbox log capture with a wider window and a stricter predicate (see `sandbox-log-retry.txt` when present).

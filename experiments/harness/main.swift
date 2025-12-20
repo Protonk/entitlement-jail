@@ -10,6 +10,7 @@ struct ProbePlan: Codable {
 
 struct ProbeRow: Codable {
     var probe_id: String
+    var row_id: String?
     var inputs: ProbeInputs
     var expected_side_effects: [String]
     var capture_spec: CaptureSpec
@@ -48,6 +49,32 @@ struct LayerAttributionResult: Codable {
     var world_shape_change: String?
 }
 
+struct SandboxLogCaptureAttempt: Codable {
+    var start_iso8601: String
+    var end_iso8601: String
+    var predicate: String
+    var term: String
+    var observed_deny: Bool
+    var deny_op: String?
+    var excerpt_ref: String?
+}
+
+struct SandboxLogCapture: Codable {
+    var attempts: [SandboxLogCaptureAttempt]
+}
+
+struct PathValue: Codable {
+    var raw: String
+    var realpath: String?
+    var path_class: String
+    var realpath_class: String?
+}
+
+struct PathEvidence: Codable {
+    var effective_path_class: String?
+    var paths: [String: PathValue]
+}
+
 struct ProbeResult: Codable {
     var rc: Int
     var normalized_outcome: String
@@ -56,6 +83,8 @@ struct ProbeResult: Codable {
     var stderr_ref: String
     var layer_attribution: LayerAttributionResult
     var sandbox_log_excerpt_ref: String?
+    var sandbox_log_capture: SandboxLogCapture?
+    var path_evidence: PathEvidence?
 }
 
 struct ResultDelta: Codable {
@@ -70,6 +99,7 @@ struct ParityResult: Codable {
 }
 
 struct TriRunRow: Codable {
+    var row_id: String
     var probe_id: String
     var inputs: ProbeInputs
     var expected_side_effects: [String]
@@ -165,8 +195,30 @@ let outDir: URL = {
 
 try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true, attributes: nil)
 
-let server = try LocalTCPServer()
-defer { server.stop() }
+let needsTcpServer: Bool = plan.probes.contains { probe in
+    guard probe.inputs.kind == "probe", let argv = probe.inputs.argv else {
+        return false
+    }
+    // Only start the calibration server when a probe requests an ephemeral port via `--port 0`.
+    for (idx, a) in argv.enumerated() {
+        if a == "--port", idx + 1 < argv.count, argv[idx + 1] == "0" {
+            return true
+        }
+    }
+    return false
+}
+
+let tcpPort: Int
+let server: LocalTCPServer?
+if needsTcpServer {
+    let s = try LocalTCPServer()
+    server = s
+    tcpPort = s.port
+} else {
+    server = nil
+    tcpPort = 0
+}
+defer { server?.stop() }
 
 let policyHomeParam = "HOME=\(FileManager.default.homeDirectoryForCurrentUser.path)"
 
@@ -188,13 +240,14 @@ for node in lattice.nodes {
 var rows: [TriRunRow] = []
 
 for probe in plan.probes {
+    let rowId = (probe.row_id?.isEmpty == false) ? probe.row_id! : probe.probe_id
     let baselineCmd = try makeBaselineCommand(
         substratePath: substratePath,
         probe: probe,
-        tcpPort: server.port
+        tcpPort: tcpPort
     )
 
-    let baselineDir = outDir.appendingPathComponent(safePathComponent(probe.probe_id)).appendingPathComponent("baseline", isDirectory: true)
+    let baselineDir = outDir.appendingPathComponent(safePathComponent(rowId)).appendingPathComponent("baseline", isDirectory: true)
     let baselineResult = try runAndNormalize(
         label: "baseline",
         outDir: outDir,
@@ -216,11 +269,11 @@ for probe in plan.probes {
             entitlementJailPath: entitlementJailPath,
             probe: probe,
             node: node,
-            tcpPort: server.port
+            tcpPort: tcpPort
         )
 
         let nodeDir = outDir
-            .appendingPathComponent(safePathComponent(probe.probe_id))
+            .appendingPathComponent(safePathComponent(rowId))
             .appendingPathComponent(safePathComponent(node.node_id), isDirectory: true)
 
         let policyDir = nodeDir.appendingPathComponent("policy", isDirectory: true)
@@ -259,6 +312,7 @@ for probe in plan.probes {
 
         rows.append(
             TriRunRow(
+                row_id: rowId,
                 probe_id: probe.probe_id,
                 inputs: probe.inputs,
                 expected_side_effects: probe.expected_side_effects,
@@ -395,21 +449,6 @@ private func runAndNormalize(
     let stderrText = String(data: run.stderr, encoding: .utf8) ?? ""
     let spawnFailed = stderrText.hasPrefix("spawn failed:")
 
-    if captureSandboxLog, let hint = sandboxLogHint {
-        let logURL = runDir.appendingPathComponent("sandbox-log.txt")
-        let term = sandboxLogTerm(hint: hint.term, parsed: parsed)
-        let excerpt = fetchSandboxLogExcerpt(
-            start: run.started,
-            end: run.ended,
-            term: term
-        )
-        if !excerpt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            try writeString(excerpt, to: logURL)
-            sandboxLogRef = rel(outDir, logURL)
-            denyOp = firstDenyOp(in: excerpt)
-        }
-    }
-
     let normalizedOutcome: String
     if let parsed {
         normalizedOutcome = parsed.normalizedOutcome
@@ -435,20 +474,60 @@ private func runAndNormalize(
         errStr = "missing_or_unparseable_json"
     }
 
+    let isPermissionShaped = normalizedOutcome == "permission_error" || errnoVal.map { $0 == Int(EPERM) || $0 == Int(EACCES) } ?? false
+
+    let pathEvidence = extractPathEvidence(parsed)
+
+    var logCapture: SandboxLogCapture?
+    if let hint = sandboxLogHint {
+        let shouldCapture = captureSandboxLog || (label == "entitlement" && isPermissionShaped)
+        if shouldCapture {
+            let term = sandboxLogTerm(hint: hint.term, parsed: parsed)
+            var attempts: [SandboxLogCaptureAttempt] = []
+
+            let predicate1 = sandboxPredicateLoose(term: term)
+            let attempt1 = sandboxLogAttempt(
+                outDir: outDir,
+                runDir: runDir,
+                fileName: "sandbox-log.txt",
+                start: run.started.addingTimeInterval(-1),
+                end: run.ended.addingTimeInterval(1),
+                term: term,
+                predicate: predicate1
+            )
+            attempts.append(attempt1)
+
+            denyOp = attempt1.deny_op
+            sandboxLogRef = attempt1.excerpt_ref
+
+            if label == "entitlement", isPermissionShaped, denyOp == nil {
+                let predicate2 = sandboxPredicateStrict(term: term)
+                let attempt2 = sandboxLogAttempt(
+                    outDir: outDir,
+                    runDir: runDir,
+                    fileName: "sandbox-log-retry.txt",
+                    start: run.started.addingTimeInterval(-8),
+                    end: run.ended.addingTimeInterval(8),
+                    term: term,
+                    predicate: predicate2
+                )
+                attempts.append(attempt2)
+
+                if attempt2.deny_op != nil {
+                    denyOp = attempt2.deny_op
+                    sandboxLogRef = attempt2.excerpt_ref
+                }
+            }
+
+            logCapture = SandboxLogCapture(attempts: attempts)
+        }
+    }
+
     let worldShape = parsedWorldShapeChange(parsed)
     let quarantineDelta = parsedQuarantineDelta(parsed)
     let serviceRefusal = inferredServiceRefusal(label: label, stderr: stderrText, parsed: parsed)
 
-    let seatbeltDenyOp: String? = {
-        if let denyOp {
-            return denyOp
-        }
-        let isPermissionErrno = errnoVal.map { $0 == Int(EPERM) || $0 == Int(EACCES) } ?? false
-        if normalizedOutcome == "permission_error" || isPermissionErrno {
-            return "unknown_needs_evidence"
-        }
-        return nil
-    }()
+    let seatbeltDenyOp = denyOp
 
     return ProbeResult(
         rc: run.rc,
@@ -462,7 +541,9 @@ private func runAndNormalize(
             quarantine_delta: quarantineDelta,
             world_shape_change: worldShape
         ),
-        sandbox_log_excerpt_ref: sandboxLogRef
+        sandbox_log_excerpt_ref: sandboxLogRef,
+        sandbox_log_capture: logCapture,
+        path_evidence: pathEvidence
     )
 }
 
@@ -507,6 +588,89 @@ private func parsedPid(_ parsed: ParsedWitnessOutput?) -> String? {
         return nil
     case .none:
         return nil
+    }
+}
+
+private func extractPathEvidence(_ parsed: ParsedWitnessOutput?) -> PathEvidence? {
+    var paths: [String: PathValue] = [:]
+    var effectiveKey: String?
+
+    func add(_ key: String, _ path: String?) {
+        guard let path, !path.isEmpty else { return }
+        guard path.hasPrefix("/") else { return }
+        paths[key] = makePathValue(path)
+    }
+
+    switch parsed {
+    case .probe(let r):
+        let details = r.details ?? [:]
+        add("file_path", details["file_path"])
+        add("target_dir", details["target_dir"])
+        add("downloads_dir", details["downloads_dir"])
+        add("home_dir", details["home_dir"])
+        add("tmp_dir", details["tmp_dir"])
+        add("cwd", details["cwd"])
+
+        if let v = paths["file_path"], v.realpath != nil { effectiveKey = "file_path" }
+        else if paths["target_dir"] != nil { effectiveKey = "target_dir" }
+        else if paths["downloads_dir"] != nil { effectiveKey = "downloads_dir" }
+        else if paths["home_dir"] != nil { effectiveKey = "home_dir" }
+        else if paths["tmp_dir"] != nil { effectiveKey = "tmp_dir" }
+
+    case .quarantine(let r):
+        add("existing_path", r.existing_path)
+        add("target_path", r.target_path)
+        add("written_path", r.written_path)
+        if paths["target_path"] != nil { effectiveKey = "target_path" }
+        else if paths["written_path"] != nil { effectiveKey = "written_path" }
+        else if paths["existing_path"] != nil { effectiveKey = "existing_path" }
+
+    case .none:
+        break
+    }
+
+    if paths.isEmpty {
+        return nil
+    }
+
+    let effective: String? = effectiveKey.flatMap { key in
+        guard let v = paths[key] else { return nil }
+        return v.realpath_class ?? v.path_class
+    }
+
+    return PathEvidence(effective_path_class: effective, paths: paths)
+}
+
+private func makePathValue(_ raw: String) -> PathValue {
+    let real = realpathString(raw)
+    return PathValue(
+        raw: raw,
+        realpath: real,
+        path_class: classifyPath(raw),
+        realpath_class: real.map(classifyPath)
+    )
+}
+
+private func classifyPath(_ path: String) -> String {
+    if path.contains("/Library/Containers/") {
+        return "container_path"
+    }
+    if path.hasPrefix("/var/folders/") || path.hasPrefix("/private/var/folders/") || path.hasPrefix("/tmp/") || path.hasPrefix("/private/tmp/") {
+        return "synthesized_temp_path"
+    }
+    if path.hasPrefix("/Users/") {
+        return "host_path"
+    }
+    return "other_path"
+}
+
+private func realpathString(_ path: String) -> String? {
+    var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
+    return path.withCString { cstr in
+        guard realpath(cstr, &buf) != nil else {
+            return nil
+        }
+        return String(cString: buf)
     }
 }
 
@@ -591,7 +755,9 @@ private func syntheticServiceMissingResult(outDir: URL, runDir: URL, serviceKind
             quarantine_delta: nil,
             world_shape_change: nil
         ),
-        sandbox_log_excerpt_ref: nil
+        sandbox_log_excerpt_ref: nil,
+        sandbox_log_capture: nil,
+        path_evidence: nil
     )
 }
 
@@ -618,26 +784,41 @@ private func parityClassAndReason(policy: ProbeResult, entitlement: ProbeResult)
             return ("mismatch_quarantine", "quarantine_delta differs")
         }
     }
+
+    let policyPathClass = policy.path_evidence?.effective_path_class
+    let entitlementPathClass = entitlement.path_evidence?.effective_path_class
+    let pathClassDiffers = policyPathClass != nil && entitlementPathClass != nil && policyPathClass != entitlementPathClass
+
+    func confounded(_ reason: String) -> (String, String?) {
+        guard pathClassDiffers else {
+            return ("mismatch_service_mediated", reason)
+        }
+        return ("path_class_confound", "\(reason); effective_path_class policy=\(policyPathClass!) entitlement=\(entitlementPathClass!)")
+    }
+
     if policy.layer_attribution.seatbelt_deny_op != entitlement.layer_attribution.seatbelt_deny_op {
         if policy.layer_attribution.seatbelt_deny_op != nil || entitlement.layer_attribution.seatbelt_deny_op != nil {
+            if pathClassDiffers {
+                return ("path_class_confound", "seatbelt_deny_op differs; effective_path_class policy=\(policyPathClass!) entitlement=\(entitlementPathClass!)")
+            }
             return ("mismatch_seatbelt", "seatbelt_deny_op differs")
         }
     }
     if policy.layer_attribution.service_refusal != entitlement.layer_attribution.service_refusal {
         if policy.layer_attribution.service_refusal != nil || entitlement.layer_attribution.service_refusal != nil {
-            return ("mismatch_service_mediated", "service_refusal differs")
+            return confounded("service_refusal differs")
         }
     }
     if policy.layer_attribution.world_shape_change != entitlement.layer_attribution.world_shape_change {
         if policy.layer_attribution.world_shape_change != nil || entitlement.layer_attribution.world_shape_change != nil {
-            return ("mismatch_service_mediated", "world_shape_change differs")
+            return ("mismatch_world_shape", "world_shape_change differs")
         }
     }
     if policy.normalized_outcome != entitlement.normalized_outcome {
-        return ("mismatch_service_mediated", "normalized_outcome differs")
+        return confounded("normalized_outcome differs")
     }
     if policy.errno_or_error.errno != entitlement.errno_or_error.errno {
-        return ("mismatch_service_mediated", "errno differs")
+        return confounded("errno differs")
     }
     return ("match", nil)
 }
@@ -650,6 +831,7 @@ private func deltaFields(from a: ProbeResult, to b: ProbeResult) -> [String] {
     if a.layer_attribution.service_refusal != b.layer_attribution.service_refusal { out.append("service_refusal") }
     if a.layer_attribution.quarantine_delta != b.layer_attribution.quarantine_delta { out.append("quarantine_delta") }
     if a.layer_attribution.world_shape_change != b.layer_attribution.world_shape_change { out.append("world_shape_change") }
+    if a.path_evidence?.effective_path_class != b.path_evidence?.effective_path_class { out.append("effective_path_class") }
     return out
 }
 
@@ -705,17 +887,50 @@ private func runProcess(_ argv: [String]) -> ProcessRun {
 
 // MARK: - Sandbox log capture (best-effort)
 
-private func fetchSandboxLogExcerpt(start: Date, end: Date, term: String) -> String {
+private func sandboxPredicateLoose(term: String) -> String {
+    let termEscaped = term.replacingOccurrences(of: "\"", with: "\\\"")
+    return #"(eventMessage CONTAINS[c] "\#(termEscaped)") AND (eventMessage CONTAINS[c] "deny")"#
+}
+
+private func sandboxPredicateStrict(term: String) -> String {
+    let termEscaped = term.replacingOccurrences(of: "\"", with: "\\\"")
+    return #"(eventMessage CONTAINS[c] "Sandbox: \#(termEscaped)") AND (eventMessage CONTAINS[c] "deny")"#
+}
+
+private func sandboxLogAttempt(
+    outDir: URL,
+    runDir: URL,
+    fileName: String,
+    start: Date,
+    end: Date,
+    term: String,
+    predicate: String
+) -> SandboxLogCaptureAttempt {
+    let excerpt = fetchSandboxLogExcerpt(start: start, end: end, predicate: predicate)
+    let logURL = runDir.appendingPathComponent(fileName)
+    try? writeString(excerpt, to: logURL)
+
+    let denyOp = firstDenyOp(in: excerpt)
+
+    let iso = ISO8601DateFormatter()
+    return SandboxLogCaptureAttempt(
+        start_iso8601: iso.string(from: start),
+        end_iso8601: iso.string(from: end),
+        predicate: predicate,
+        term: term,
+        observed_deny: denyOp != nil,
+        deny_op: denyOp,
+        excerpt_ref: rel(outDir, logURL)
+    )
+}
+
+private func fetchSandboxLogExcerpt(start: Date, end: Date, predicate: String) -> String {
     let df = DateFormatter()
     df.dateFormat = "yyyy-MM-dd HH:mm:ss"
     df.timeZone = TimeZone.current
 
-    let startStr = df.string(from: start.addingTimeInterval(-1))
-    let endStr = df.string(from: end.addingTimeInterval(1))
-
-    let termEscaped = term.replacingOccurrences(of: "\"", with: "\\\"")
-
-    let predicate = #"(eventMessage CONTAINS[c] "\#(termEscaped)") AND ((eventMessage CONTAINS[c] "deny") OR (eventMessage CONTAINS[c] "Sandbox"))"#
+    let startStr = df.string(from: start)
+    let endStr = df.string(from: end)
 
     let cmd = [
         "/usr/bin/log",

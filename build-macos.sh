@@ -50,6 +50,19 @@ EOF
   exit 2
 fi
 
+if ! /usr/bin/security find-identity -v -p codesigning 2>/dev/null | /usr/bin/grep -Fq "\"${IDENTITY}\""; then
+  cat <<EOF 1>&2
+ERROR: codesigning identity not found in your keychain:
+  ${IDENTITY}
+
+Run:
+  security find-identity -v -p codesigning
+
+Then ensure the identity is installed/unlocked (or set IDENTITY to one of the listed identities).
+EOF
+  exit 2
+fi
+
 echo "==> Building Rust runner"
 cargo build --manifest-path "${RUNNER_MANIFEST}" --release
 
