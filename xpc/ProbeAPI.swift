@@ -27,6 +27,10 @@ public struct RunProbeResponse: Codable {
     public var stdout: String
     public var stderr: String
     public var normalized_outcome: String
+    public var errno: Int?
+    public var error: String?
+    public var details: [String: String]?
+    public var layer_attribution: LayerAttribution?
     public var sandbox_log_excerpt_ref: String?
 
     public init(
@@ -34,25 +38,46 @@ public struct RunProbeResponse: Codable {
         stdout: String,
         stderr: String,
         normalized_outcome: String,
+        errno: Int? = nil,
+        error: String? = nil,
+        details: [String: String]? = nil,
+        layer_attribution: LayerAttribution? = nil,
         sandbox_log_excerpt_ref: String?
     ) {
         self.rc = rc
         self.stdout = stdout
         self.stderr = stderr
         self.normalized_outcome = normalized_outcome
+        self.errno = errno
+        self.error = error
+        self.details = details
+        self.layer_attribution = layer_attribution
         self.sandbox_log_excerpt_ref = sandbox_log_excerpt_ref
     }
 }
 
 public struct LayerAttribution: Codable {
-    public var seatbelt: String
-    public var quarantine: String
-    public var gatekeeper: String
+    public var seatbelt_deny_op: String?
+    public var service_refusal: String?
+    public var quarantine_delta: String?
+    public var gatekeeper_signal: String?
+    public var world_shape_change: String?
+    public var other: String?
 
-    public init(seatbelt: String, quarantine: String, gatekeeper: String) {
-        self.seatbelt = seatbelt
-        self.quarantine = quarantine
-        self.gatekeeper = gatekeeper
+    public init(
+        seatbelt_deny_op: String? = nil,
+        service_refusal: String? = nil,
+        quarantine_delta: String? = nil,
+        gatekeeper_signal: String? = nil,
+        world_shape_change: String? = nil,
+        other: String? = nil
+    ) {
+        self.seatbelt_deny_op = seatbelt_deny_op
+        self.service_refusal = service_refusal
+        self.quarantine_delta = quarantine_delta
+        self.gatekeeper_signal = gatekeeper_signal
+        self.world_shape_change = world_shape_change
+        self.other = other
     }
 }
 

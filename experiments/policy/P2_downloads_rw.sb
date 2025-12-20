@@ -1,0 +1,14 @@
+;; P2_downloads_rw.sb
+;;
+;; P0 + Downloads read/write allowance (attempted equivalent of com.apple.security.files.downloads.read-write).
+
+(version 1)
+
+(allow default)
+
+;; Home Directory helper (sandbox-exec requires passing -D HOME=...).
+(define (home-subpath home-relative-subpath)
+  (subpath (string-append (param "HOME") home-relative-subpath)))
+
+;; Keep network denied (this node is "Downloads only" over minimal).
+(deny network*)

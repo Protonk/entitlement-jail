@@ -31,8 +31,8 @@ Both requests and responses are serialized as JSON bytes (`Data`) rather than pa
 
 The sandboxed Rust launcher does not speak NSXPC directly. Instead it runs embedded Swift helper executables:
 
-- `xpc/client/main.swift` → builds `Contents/Helpers/xpc-probe-client`
-- `xpc/quarantine-client/main.swift` → builds `Contents/Helpers/xpc-quarantine-client`
+- `xpc/client/main.swift` → builds `Contents/MacOS/xpc-probe-client` (must live under `Contents/MacOS` so `Bundle.main` resolves to `EntitlementJail.app`)
+- `xpc/quarantine-client/main.swift` → builds `Contents/MacOS/xpc-quarantine-client` (same reason)
 
 The Rust launcher’s `run-xpc` / `quarantine-lab` commands simply invoke these helpers (see [runner/README.md](../runner/README.md)).
 
@@ -57,24 +57,32 @@ Each service is its own research target:
 
 Current services:
 
-- `ProbeService_minimal`: runs an embedded probe executable and returns `{rc, stdout, stderr, ...}`.
+- `ProbeService_minimal`: runs built-in probes **in-process** and returns `{rc, normalized_outcome, details, ...}`.
+- `ProbeService_net_client`: identical code to `ProbeService_minimal`, but with `com.apple.security.network.client`.
+- `ProbeService_downloads_rw`: identical code to `ProbeService_minimal`, but with `com.apple.security.files.downloads.read-write`.
+- `ProbeService_user_selected_executable`: identical code to `ProbeService_minimal`, but with `com.apple.security.files.user-selected.executable`.
 - `QuarantineLab_default`: writes/opens/copies artifacts and reports `com.apple.quarantine` deltas.
+- `QuarantineLab_net_client`: identical code to `QuarantineLab_default`, but with `com.apple.security.network.client`.
+- `QuarantineLab_downloads_rw`: identical code to `QuarantineLab_default`, but with `com.apple.security.files.downloads.read-write`.
 - `QuarantineLab_user_selected_executable`: identical code to `QuarantineLab_default`, but with different entitlements.
+
+Built-in probe ids (in-process):
+
+- `world_shape`
+- `network_tcp_connect` (`--host <ipv4> --port <1..65535>`)
+- `downloads_rw` (`[--name <file-name>]`)
 
 ## Safe probe resolution (no traversal, no container staging)
 
-XPC services that execute probes must only execute **bundle-embedded** probes, and must not accept arbitrary filesystem paths.
+XPC services that act as entitlement research targets must not accept arbitrary filesystem paths for execution.
 
-The reference policy in `ProbeService_minimal/main.swift` is:
+The reference policy in `ProbeService_*/main.swift` is:
 
-- The caller passes a `probe_id` (a single path component).
-- The service rejects empty ids and any id containing `/`, `\\`, `.` or `..` patterns.
-- The service resolves probes *relative to the host app bundle*:
-  - `EntitlementJail.app/Contents/Helpers/Probes/<probe_id>`
-  - `EntitlementJail.app/Contents/Helpers/<probe_id>`
-- The service executes only if `FileManager.isExecutableFile(atPath:)` is true.
+- The caller passes a `probe_id` that is treated as an *identifier*, not a path.
+- The service rejects empty ids and any id containing `/` or `\\` patterns.
+- The service dispatches to a built-in, in-process probe implementation (no external exec).
 
-This is deliberate: it prevents path traversal, and prevents reintroducing “stage into container then exec by path” patterns that are commonly blocked (and are easy to misattribute).
+This is deliberate: it prevents path traversal and avoids reintroducing “stage into container then exec by path” patterns that are commonly blocked (and are easy to misattribute as “sandbox denied” without evidence).
 
 ## Inheritance helpers vs XPC services
 
@@ -104,6 +112,8 @@ Quarantine Lab exists to keep quarantine/Gatekeeper observations separate from S
 Services:
 
 - `QuarantineLab_default`: App Sandbox only.
+- `QuarantineLab_net_client`: App Sandbox + `com.apple.security.network.client`.
+- `QuarantineLab_downloads_rw`: App Sandbox + `com.apple.security.files.downloads.read-write`.
 - `QuarantineLab_user_selected_executable`: App Sandbox + `com.apple.security.files.user-selected.executable`.
 
 Operations (`--operation`):

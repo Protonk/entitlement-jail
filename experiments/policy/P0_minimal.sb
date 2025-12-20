@@ -1,0 +1,23 @@
+;; P0_minimal.sb
+;;
+;; Policy witness profile (sandbox-exec) for the entitlement lattice.
+;; This is an intentionally small, teaching-grade hypothesis, not a faithful model of App Sandbox.
+;;
+;; sandbox-exec is deprecated; this profile is used as a policy-defined runtime witness only.
+
+(version 1)
+
+(allow default)
+
+;; Home Directory helper (sandbox-exec requires passing -D HOME=...).
+(define (home-subpath home-relative-subpath)
+  (subpath (string-append (param "HOME") home-relative-subpath)))
+
+;; Hypothesis knobs:
+;; - deny outbound network by default (E0_minimal lacks network client entitlement)
+;; - deny Downloads access by default (E0_minimal lacks downloads read-write entitlement)
+(deny network*)
+;; Approximation: allow directory discovery (metadata reads) but deny content reads + writes.
+;; This better matches the App Sandbox pattern where `~/Downloads` can be resolved but writes are blocked.
+(allow file-read-metadata (home-subpath "/Downloads"))
+(deny file-read-data file-write* (home-subpath "/Downloads"))

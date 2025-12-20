@@ -14,7 +14,9 @@ Apple’s guidance is to prefer XPC services for helper-like functionality, and 
 
 - [runner/README.md](runner/README.md) — CLI/behavior manual (including Quarantine Lab + unsandboxed observer)
 - [xpc/README.md](xpc/README.md) — XPC architecture and extension guide
+- [experiments/README.md](experiments/README.md) — tri-run harness (baseline vs policy vs entitlement) + mismatch atlas
 - [SIGNING.md](SIGNING.md) — signing order, entitlements, packaging/notarization, troubleshooting
+- [CONTRIBUTING.md](CONTRIBUTING.md) - Worked examples including adding a new xpc service
 
 ## Research posture
 

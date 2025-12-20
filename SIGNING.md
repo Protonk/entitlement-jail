@@ -8,6 +8,7 @@ This document is the canonical reference for identities, entitlements, signing o
 - Sandboxed child-process inheritance helpers must be signed with **exactly** `com.apple.security.app-sandbox` + `com.apple.security.inherit` (and no other entitlements). This repo provides `EntitlementJail.inherit.entitlements` for that purpose (see [Apple Developer: Enabling App Sandbox](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html?utm_source=chatgpt.com)).
 - XPC services are separate signed targets with their own entitlement plists under `xpc/services/<ServiceName>/Entitlements.plist` (treat the service entitlements as the experimental variable).
 - Every Mach-O executable inside a sandboxed app bundle (helpers, XPC services, etc.) needs explicit signing/sandboxing attention; don’t assume the outer app signature “covers” nested executables (see [Apple Developer QA1773: Common app sandboxing issues](https://developer.apple.com/library/archive/qa/qa1773/_index.html?utm_source=chatgpt.com)).
+- The XPC client helper tools (`xpc-probe-client`, `xpc-quarantine-client`) are embedded under `EntitlementJail.app/Contents/MacOS/` to preserve app bundle context for XPC lookup; they must be signed for sandbox inheritance like other embedded helpers.
 
 Team ID expectation:
 
@@ -30,12 +31,17 @@ ID='Developer ID Application: YOUR NAME (TEAMID)'
 APP_ENT="EntitlementJail.entitlements"
 INHERIT_ENT="EntitlementJail.inherit.entitlements"
 
-codesign -f --options runtime --timestamp --entitlements "$INHERIT_ENT" -s "$ID" "$APP/Contents/Helpers/xpc-probe-client"
-codesign -f --options runtime --timestamp --entitlements "$INHERIT_ENT" -s "$ID" "$APP/Contents/Helpers/xpc-quarantine-client"
+codesign -f --options runtime --timestamp --entitlements "$INHERIT_ENT" -s "$ID" "$APP/Contents/MacOS/xpc-probe-client"
+codesign -f --options runtime --timestamp --entitlements "$INHERIT_ENT" -s "$ID" "$APP/Contents/MacOS/xpc-quarantine-client"
 
 codesign -f --options runtime --timestamp --entitlements "xpc/services/QuarantineLab_default/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/QuarantineLab_default.xpc"
+codesign -f --options runtime --timestamp --entitlements "xpc/services/QuarantineLab_net_client/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/QuarantineLab_net_client.xpc"
+codesign -f --options runtime --timestamp --entitlements "xpc/services/QuarantineLab_downloads_rw/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/QuarantineLab_downloads_rw.xpc"
 codesign -f --options runtime --timestamp --entitlements "xpc/services/QuarantineLab_user_selected_executable/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/QuarantineLab_user_selected_executable.xpc"
 codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_minimal/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_minimal.xpc"
+codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_net_client/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_net_client.xpc"
+codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_downloads_rw/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_downloads_rw.xpc"
+codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_user_selected_executable/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_user_selected_executable.xpc"
 
 codesign -f --options runtime --timestamp --entitlements "$APP_ENT" -s "$ID" "$APP"
 

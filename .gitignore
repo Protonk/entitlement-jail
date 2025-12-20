@@ -10,3 +10,7 @@ runner/target
 
 # local scratch
 .tmp/
+
+# experiment harness artifacts
+experiments/bin/
+experiments/out/

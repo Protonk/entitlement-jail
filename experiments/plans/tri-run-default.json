@@ -1,0 +1,34 @@
+{
+  "plan_id": "tri-run-default",
+  "probes": [
+    {
+      "probe_id": "world_shape",
+      "inputs": { "kind": "probe", "argv": [] },
+      "expected_side_effects": ["none"],
+      "capture_spec": { "capture_sandbox_log": false }
+    },
+    {
+      "probe_id": "network_tcp_connect",
+      "inputs": { "kind": "probe", "argv": ["--host", "127.0.0.1", "--port", "0"] },
+      "expected_side_effects": ["connects to a harness-owned localhost TCP listener"],
+      "capture_spec": { "capture_sandbox_log": true }
+    },
+    {
+      "probe_id": "downloads_rw",
+      "inputs": { "kind": "probe", "argv": [] },
+      "expected_side_effects": ["may create and then remove a file under ~/Downloads/entitlement-jail-harness/"],
+      "capture_spec": { "capture_sandbox_log": true }
+    },
+    {
+      "probe_id": "quarantine_write_shell_script",
+      "inputs": {
+        "kind": "quarantine-lab",
+        "payload_class": "shell_script",
+        "argv": ["--dir", "tmp", "--operation", "create_new", "--name", "tri-run-probe"]
+      },
+      "expected_side_effects": ["writes a specimen under TMPDIR/entitlement-jail-quarantine-lab (no execution)"],
+      "capture_spec": { "capture_sandbox_log": false }
+    }
+  ]
+}
+

@@ -1,0 +1,19 @@
+;; P3_user_selected_executable.sb
+;;
+;; Attempted equivalent of com.apple.security.files.user-selected.executable.
+;;
+;; SBPL does not model quarantine/Gatekeeper metadata behavior, so this profile is intentionally
+;; identical to P0_minimal and is expected to mismatch the entitlement witness in Quarantine Lab.
+
+(version 1)
+
+(allow default)
+
+;; Home Directory helper (sandbox-exec requires passing -D HOME=...).
+(define (home-subpath home-relative-subpath)
+  (subpath (string-append (param "HOME") home-relative-subpath)))
+
+(deny network*)
+;; Approximation: allow directory discovery (metadata reads) but deny content reads + writes.
+(allow file-read-metadata (home-subpath "/Downloads"))
+(deny file-read-data file-write* (home-subpath "/Downloads"))

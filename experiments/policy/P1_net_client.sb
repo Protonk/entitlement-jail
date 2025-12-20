@@ -1,0 +1,16 @@
+;; P1_net_client.sb
+;;
+;; P0 + outbound network allowance (attempted equivalent of com.apple.security.network.client).
+
+(version 1)
+
+(allow default)
+
+;; Home Directory helper (sandbox-exec requires passing -D HOME=...).
+(define (home-subpath home-relative-subpath)
+  (subpath (string-append (param "HOME") home-relative-subpath)))
+
+;; Keep Downloads denied (this node is "network only" over minimal).
+;; Approximation: allow directory discovery (metadata reads) but deny content reads + writes.
+(allow file-read-metadata (home-subpath "/Downloads"))
+(deny file-read-data file-write* (home-subpath "/Downloads"))

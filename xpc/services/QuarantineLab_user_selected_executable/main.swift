@@ -46,9 +46,9 @@ final class QuarantineLabService: NSObject, QuarantineLabProtocol {
                 has_user_selected_executable: entitlementBool("com.apple.security.files.user-selected.executable"),
                 service_bundle_id: Bundle.main.bundleIdentifier,
                 layer_attribution: LayerAttribution(
-                    seatbelt: "process_exec_not_attempted",
-                    quarantine: "not_written",
-                    gatekeeper: "not_tested"
+                    quarantine_delta: "not_written",
+                    gatekeeper_signal: "not_tested",
+                    other: "seatbelt:process_exec_not_attempted"
                 )
             )
         }
@@ -185,9 +185,9 @@ final class QuarantineLabService: NSObject, QuarantineLabProtocol {
                 has_user_selected_executable: hasUserSelectedExecutable,
                 service_bundle_id: serviceBundleId,
                 layer_attribution: LayerAttribution(
-                    seatbelt: "process_exec_not_attempted",
-                    quarantine: "not_written",
-                    gatekeeper: "not_tested"
+                    quarantine_delta: "not_written",
+                    gatekeeper_signal: "not_tested",
+                    other: "seatbelt:process_exec_not_attempted"
                 )
             )
         }
@@ -226,9 +226,9 @@ final class QuarantineLabService: NSObject, QuarantineLabProtocol {
                 has_user_selected_executable: hasUserSelectedExecutable,
                 service_bundle_id: serviceBundleId,
                 layer_attribution: LayerAttribution(
-                    seatbelt: "process_exec_not_attempted",
-                    quarantine: qDelta,
-                    gatekeeper: "not_tested"
+                    quarantine_delta: qDelta,
+                    gatekeeper_signal: "not_tested",
+                    other: "seatbelt:process_exec_not_attempted"
                 )
             )
         }
@@ -326,9 +326,9 @@ final class QuarantineLabService: NSObject, QuarantineLabProtocol {
                 has_user_selected_executable: hasUserSelectedExecutable,
                 service_bundle_id: serviceBundleId,
                 layer_attribution: LayerAttribution(
-                    seatbelt: "process_exec_not_attempted",
-                    quarantine: qDelta,
-                    gatekeeper: "not_tested"
+                    quarantine_delta: qDelta,
+                    gatekeeper_signal: "not_tested",
+                    other: "seatbelt:process_exec_not_attempted"
                 )
             )
         }
@@ -419,9 +419,9 @@ final class QuarantineLabService: NSObject, QuarantineLabProtocol {
                 has_user_selected_executable: hasUserSelectedExecutable,
                 service_bundle_id: serviceBundleId,
                 layer_attribution: LayerAttribution(
-                    seatbelt: "process_exec_not_attempted",
-                    quarantine: qDelta,
-                    gatekeeper: "not_tested"
+                    quarantine_delta: qDelta,
+                    gatekeeper_signal: "not_tested",
+                    other: "seatbelt:process_exec_not_attempted"
                 )
             )
         }
@@ -490,9 +490,9 @@ final class QuarantineLabService: NSObject, QuarantineLabProtocol {
             has_user_selected_executable: hasUserSelectedExecutable,
             service_bundle_id: serviceBundleId,
             layer_attribution: LayerAttribution(
-                seatbelt: "process_exec_not_attempted",
-                quarantine: qDelta,
-                gatekeeper: "not_tested"
+                quarantine_delta: qDelta,
+                gatekeeper_signal: "not_tested",
+                other: "seatbelt:process_exec_not_attempted"
             )
         )
     }

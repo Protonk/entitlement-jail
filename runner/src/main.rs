@@ -56,6 +56,25 @@ fn embedded_search_paths() -> Result<Vec<PathBuf>, String> {
     ])
 }
 
+fn resolve_contents_macos_tool(tool_name: &str) -> Result<PathBuf, String> {
+    validate_tool_name(tool_name)?;
+    let exe = env::current_exe().map_err(|e| format!("current_exe() failed: {e}"))?;
+    let contents_dir = exe
+        .parent()
+        .and_then(|p| p.parent())
+        .ok_or_else(|| format!("unexpected executable location: {}", exe.display()))?;
+
+    let candidate = contents_dir.join("MacOS").join(tool_name);
+    if candidate.exists() {
+        return Ok(candidate);
+    }
+
+    Err(format!(
+        "embedded tool not found in Contents/MacOS: {tool_name:?} (expected: {})",
+        candidate.display()
+    ))
+}
+
 fn validate_tool_name(tool_name: &str) -> Result<(), String> {
     let mut components = Path::new(tool_name).components();
     match (components.next(), components.next()) {
@@ -174,11 +193,11 @@ fn main() {
                 print_usage();
                 std::process::exit(2);
             }
-            let cmd_path = match resolve_embedded_tool("xpc-probe-client") {
+            let cmd_path = match resolve_contents_macos_tool("xpc-probe-client") {
                 Ok(p) => p,
                 Err(err) => {
                     eprintln!("{err}\n");
-                    eprintln!("note: xpc mode requires the embedded `xpc-probe-client` helper tool.");
+                    eprintln!("note: xpc mode requires the embedded `xpc-probe-client` tool under Contents/MacOS.");
                     std::process::exit(2);
                 }
             };
@@ -193,11 +212,11 @@ fn main() {
                 print_usage();
                 std::process::exit(2);
             }
-            let cmd_path = match resolve_embedded_tool("xpc-quarantine-client") {
+            let cmd_path = match resolve_contents_macos_tool("xpc-quarantine-client") {
                 Ok(p) => p,
                 Err(err) => {
                     eprintln!("{err}\n");
-                    eprintln!("note: quarantine-lab mode requires the embedded `xpc-quarantine-client` helper tool.");
+                    eprintln!("note: quarantine-lab mode requires the embedded `xpc-quarantine-client` tool under Contents/MacOS.");
                     std::process::exit(2);
                 }
             };

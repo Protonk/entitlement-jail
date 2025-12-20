@@ -178,8 +178,8 @@ ID='Developer ID Application: YOUR NAME (TEAMID)'
 APP_ENT="EntitlementJail.entitlements"
 INHERIT_ENT="EntitlementJail.inherit.entitlements"
 
-codesign -f --options runtime --timestamp --entitlements "$INHERIT_ENT" -s "$ID" "$APP/Contents/Helpers/xpc-probe-client"
-codesign -f --options runtime --timestamp --entitlements "$INHERIT_ENT" -s "$ID" "$APP/Contents/Helpers/xpc-quarantine-client"
+codesign -f --options runtime --timestamp --entitlements "$INHERIT_ENT" -s "$ID" "$APP/Contents/MacOS/xpc-probe-client"
+codesign -f --options runtime --timestamp --entitlements "$INHERIT_ENT" -s "$ID" "$APP/Contents/MacOS/xpc-quarantine-client"
 
 codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_echo/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_echo.xpc"
 codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_minimal/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_minimal.xpc"

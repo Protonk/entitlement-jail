@@ -76,16 +76,27 @@ Behavior:
 
 `run-xpc` delegates to an embedded Swift helper (`xpc-probe-client`) that speaks NSXPC. The main `entitlement-jail` binary does not talk XPC directly.
 
+Helper location (important):
+
+- `xpc-probe-client` is embedded as `EntitlementJail.app/Contents/MacOS/xpc-probe-client` (not `Contents/Helpers`), so `Bundle.main` resolves to `EntitlementJail.app`.
+- This bundle context is required for `NSXPCConnection(serviceName:)` to locate the app’s embedded `.xpc` bundles by bundle id.
+
 Invocation:
 
 - `run-xpc <xpc-service-bundle-id> <probe-id> [probe-args...]`
 - Example service bundle id: `com.yourteam.entitlement-jail.ProbeService_minimal`
 
+Built-in probe ids (in-process):
+
+- `world_shape`
+- `network_tcp_connect` (`--host <ipv4> --port <1..65535>`)
+- `downloads_rw` (`[--name <file-name>]`)
+
 High-level flow:
 
 1. `entitlement-jail` runs the embedded helper `xpc-probe-client`.
 2. The helper connects to the XPC service by bundle id and sends a JSON request `{probe_id, argv, ...}`.
-3. The XPC service resolves the probe executable from the host app bundle (embedded probes only) and executes it.
+3. The XPC service runs the probe **in-process** (no child-process exec) and returns a JSON response.
 4. The helper prints the JSON response and exits with `rc`.
 
 Why XPC:
@@ -96,6 +107,10 @@ Why XPC:
 ## `quarantine-lab`: write/open artifacts and report `com.apple.quarantine`
 
 `quarantine-lab` delegates to an embedded Swift helper (`xpc-quarantine-client`) and an XPC service (for example `com.yourteam.entitlement-jail.QuarantineLab_default`).
+
+Helper location (important):
+
+- `xpc-quarantine-client` is embedded as `EntitlementJail.app/Contents/MacOS/xpc-quarantine-client` for the same bundle-context reason as `run-xpc`.
 
 Important: this mode **does not execute artifacts**. It writes/opens/reads and reports metadata deltas.
 

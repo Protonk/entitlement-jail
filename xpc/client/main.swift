@@ -6,6 +6,15 @@ private func printUsage() {
     fputs("usage: \(exe) <xpc-service-bundle-id> <probe-id> [probe-args...]\n", stderr)
 }
 
+if ProcessInfo.processInfo.environment["EJ_XPC_CLIENT_DEBUG"] == "1" {
+    let exePath = CommandLine.arguments.first ?? "<unknown>"
+    let bundlePath = Bundle.main.bundleURL.path
+    let bundleId = Bundle.main.bundleIdentifier ?? "<nil>"
+    fputs("debug: exe=\(exePath)\n", stderr)
+    fputs("debug: Bundle.main.bundlePath=\(bundlePath)\n", stderr)
+    fputs("debug: Bundle.main.bundleIdentifier=\(bundleId)\n", stderr)
+}
+
 let args = CommandLine.arguments
 guard args.count >= 3 else {
     printUsage()

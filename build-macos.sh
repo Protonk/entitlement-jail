@@ -27,6 +27,7 @@ BUILD_XPC="${BUILD_XPC:-1}"                            # set to 0 to skip buildi
 # XPC source layout (in this repo)
 XPC_ROOT="xpc"
 XPC_API_FILE="${XPC_ROOT}/ProbeAPI.swift"
+XPC_PROBE_CORE_FILE="${XPC_ROOT}/InProcessProbeCore.swift"
 XPC_CLIENT_MAIN="${XPC_ROOT}/client/main.swift"
 XPC_QUARANTINE_CLIENT_MAIN="${XPC_ROOT}/quarantine-client/main.swift"
 XPC_SERVICES_DIR="${XPC_ROOT}/services"
@@ -106,20 +107,20 @@ if [[ "${BUILD_XPC}" == "1" ]]; then
     exit 2
   fi
   SWIFTC=(/usr/bin/xcrun --sdk macosx swiftc)
-  if [[ ! -f "${XPC_API_FILE}" ]] || [[ ! -f "${XPC_CLIENT_MAIN}" ]]; then
+  if [[ ! -f "${XPC_API_FILE}" ]] || [[ ! -f "${XPC_PROBE_CORE_FILE}" ]] || [[ ! -f "${XPC_CLIENT_MAIN}" ]]; then
     echo "ERROR: BUILD_XPC=1 but XPC sources are missing under ${XPC_ROOT}/" 1>&2
     exit 2
   fi
 
-  echo "==> Building embedded XPC client"
+  echo "==> Building embedded XPC client (must live under Contents/MacOS so Bundle.main resolves to the app)"
   mkdir -p "${SWIFT_MODULE_CACHE}"
-  "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" -O -o "${APP_BUNDLE}/Contents/Helpers/xpc-probe-client" "${XPC_API_FILE}" "${XPC_CLIENT_MAIN}"
-  chmod +x "${APP_BUNDLE}/Contents/Helpers/xpc-probe-client"
+  "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" -O -o "${APP_BUNDLE}/Contents/MacOS/xpc-probe-client" "${XPC_API_FILE}" "${XPC_CLIENT_MAIN}"
+  chmod +x "${APP_BUNDLE}/Contents/MacOS/xpc-probe-client"
 
   if [[ -f "${XPC_QUARANTINE_CLIENT_MAIN}" ]]; then
     echo "==> Building embedded XPC quarantine client"
-    "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" -O -o "${APP_BUNDLE}/Contents/Helpers/xpc-quarantine-client" "${XPC_API_FILE}" "${XPC_QUARANTINE_CLIENT_MAIN}"
-    chmod +x "${APP_BUNDLE}/Contents/Helpers/xpc-quarantine-client"
+    "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" -O -o "${APP_BUNDLE}/Contents/MacOS/xpc-quarantine-client" "${XPC_API_FILE}" "${XPC_QUARANTINE_CLIENT_MAIN}"
+    chmod +x "${APP_BUNDLE}/Contents/MacOS/xpc-quarantine-client"
   fi
 
   if [[ -d "${XPC_SERVICES_DIR}" ]]; then
@@ -139,7 +140,7 @@ if [[ "${BUILD_XPC}" == "1" ]]; then
 
       mkdir -p "${svc_bundle}/Contents/MacOS"
       cp "${svc_info}" "${svc_bundle}/Contents/Info.plist"
-      "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" -O -o "${svc_bundle}/Contents/MacOS/${svc_name}" "${XPC_API_FILE}" "${svc_main}"
+      "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" -O -o "${svc_bundle}/Contents/MacOS/${svc_name}" "${XPC_API_FILE}" "${XPC_PROBE_CORE_FILE}" "${svc_main}"
       chmod +x "${svc_bundle}/Contents/MacOS/${svc_name}"
     done
   fi
@@ -177,6 +178,10 @@ if [[ -d "${APP_BUNDLE}/Contents/Helpers" ]]; then
     sign_macho_inherit "${f}"
   done < <(find "${APP_BUNDLE}/Contents/Helpers" -type f -print0)
 fi
+
+echo "==> Codesigning embedded MacOS helper tools (App Sandbox inheritance)"
+sign_macho_inherit "${APP_BUNDLE}/Contents/MacOS/xpc-probe-client"
+sign_macho_inherit "${APP_BUNDLE}/Contents/MacOS/xpc-quarantine-client"
 
 echo "==> Codesigning embedded XPC services"
 if [[ "${BUILD_XPC}" == "1" ]] && [[ -d "${XPC_SERVICES_DIR}" ]]; then
