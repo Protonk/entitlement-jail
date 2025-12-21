@@ -134,12 +134,12 @@ RunLoop.current.run()
 
 ### Step 2: build + embed the app (XPC included)
 
-The build script discovers services by enumerating `xpc/services/*`, embeds each one into the `.app`, signs nested code, then signs the outer app bundle.
+The Makefile build target wraps `build-macos.sh`, which discovers services by enumerating `xpc/services/*`, embeds each one into the `.app`, signs nested code, then signs the outer app bundle.
 
 Run:
 
 ```sh
-IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' ./build-macos.sh
+IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' make build
 ```
 
 After this completes, you should have:
@@ -164,7 +164,7 @@ Expected result:
 
 ### Step 4: signing (what must be signed when you add a service)
 
-If you use `./build-macos.sh`, signing is handled for you.
+If you use `make build` (preferred; wraps `build-macos.sh`), signing is handled for you.
 
 If you manually add/modify a service inside an existing `EntitlementJail.app`, you must sign **inside-out**:
 
@@ -282,7 +282,7 @@ Add the new probe id to the usage list in `experiments/substrate/main.swift` so 
 ### Step 4: build + run
 
 ```sh
-IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' ./build-macos.sh
+IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' make build
 ./experiments/bin/witness-substrate probe process_identity
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc com.yourteam.entitlement-jail.ProbeService_minimal process_identity
 ```

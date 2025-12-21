@@ -14,11 +14,11 @@ Team ID expectation:
 
 - Sign the app, embedded helpers, and embedded XPC services with the **same Team ID** (i.e. the same signing identity). Mixing Team IDs breaks assumptions around “belongs to this app” behavior (including inheritance).
 
-## Preferred path: build script
+## Preferred path: Makefile
 
-`build-macos.sh` assembles `EntitlementJail.app`, signs nested code first, then signs the outer `.app`, and produces `EntitlementJail.zip`.
+`make build` wraps `build-macos.sh`, which assembles `EntitlementJail.app`, signs nested code first, then signs the outer `.app`, and produces `EntitlementJail.zip`.
 
-- `IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' ./build-macos.sh`
+- `IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' make build`
 
 ## Manual signing (no `--deep` for signing)
 

@@ -52,16 +52,18 @@ Instead, entitlements become a first-class independent variable only via **XPC s
 
 ## Quick start
 
+Prefer the Makefile entrypoints for builds; they wrap the underlying scripts.
+
 Build the harness + substrate:
 
 ```sh
-./experiments/build-experiments.sh
+make build-experiments
 ```
 
-Build/sign the `.app` (requires a Developer ID Application identity in your keychain):
+Build/sign the `.app`:
 
 ```sh
-IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' ./build-macos.sh
+IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' make build
 ```
 
 Run the default tri-run plan (writes `experiments/out/.../atlas.json` and prints the path):

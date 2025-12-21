@@ -91,16 +91,16 @@ Quarantine Lab is the calibration anchor where parity should fail for principled
 
 ## Build + run
 
-Build the harness + unsandboxed substrate:
+Build the harness + unsandboxed substrate (preferred: Makefile):
 
 ```sh
-./experiments/build-experiments.sh
+make build-experiments
 ```
 
-Build/sign the `.app` with embedded XPC services (see `SIGNING.md` for identities/entitlements order):
+Build/sign the `.app` with embedded XPC services (preferred: Makefile; see `SIGNING.md` for identities/entitlements order):
 
 ```sh
-IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' ./build-macos.sh
+IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' make build
 ```
 
 Run a tri-run plan:
