@@ -56,6 +56,7 @@ struct SandboxLogCaptureAttempt: Codable {
     var term: String
     var observed_deny: Bool
     var deny_op: String?
+    var observation: String
     var excerpt_ref: String?
 }
 
@@ -580,7 +581,14 @@ private func sandboxLogTerm(hint: String, parsed: ParsedWitnessOutput?) -> Strin
 private func parsedPid(_ parsed: ParsedWitnessOutput?) -> String? {
     switch parsed {
     case .probe(let r):
-        if let pid = r.details?["pid"], !pid.isEmpty {
+        let details = r.details ?? [:]
+        if let pid = details["probe_pid"], !pid.isEmpty {
+            return pid
+        }
+        if let pid = details["service_pid"], !pid.isEmpty {
+            return pid
+        }
+        if let pid = details["pid"], !pid.isEmpty {
             return pid
         }
         return nil
@@ -712,13 +720,31 @@ private func parsedQuarantineDelta(_ parsed: ParsedWitnessOutput?) -> String? {
     return "absent"
 }
 
+private func parsedServiceRefusal(_ parsed: ParsedWitnessOutput?) -> String? {
+    switch parsed {
+    case .probe(let r):
+        if let v = r.layer_attribution?.service_refusal, !v.isEmpty {
+            return v
+        }
+        return nil
+    case .quarantine(let r):
+        if let v = r.layer_attribution?.service_refusal, !v.isEmpty {
+            return v
+        }
+        return nil
+    case .none:
+        return nil
+    }
+}
+
 private func inferredServiceRefusal(label: String, stderr: String, parsed: ParsedWitnessOutput?) -> String? {
     if label != "entitlement" {
         return nil
     }
-    if parsed != nil {
-        return nil
+    if let parsedRefusal = parsedServiceRefusal(parsed) {
+        return parsedRefusal
     }
+    if parsed != nil { return nil }
     let s = stderr.lowercased()
     if s.contains("xpc connection error") {
         return "xpc_connection_error"
@@ -911,6 +937,7 @@ private func sandboxLogAttempt(
     try? writeString(excerpt, to: logURL)
 
     let denyOp = firstDenyOp(in: excerpt)
+    let observation = denyOp == nil ? "no_sandbox_deny_observed_in_window" : "deny_observed"
 
     let iso = ISO8601DateFormatter()
     return SandboxLogCaptureAttempt(
@@ -920,6 +947,7 @@ private func sandboxLogAttempt(
         term: term,
         observed_deny: denyOp != nil,
         deny_op: denyOp,
+        observation: observation,
         excerpt_ref: rel(outDir, logURL)
     )
 }

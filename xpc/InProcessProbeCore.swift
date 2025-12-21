@@ -12,79 +12,503 @@ public enum InProcessProbeCore {
                 normalized_outcome: "bad_request",
                 errno: nil,
                 error: nil,
-                details: nil,
+                details: baseDetails([
+                    "probe_family": "bad_request",
+                    "probe_id": req.probe_id,
+                ]),
                 layer_attribution: nil,
                 sandbox_log_excerpt_ref: nil
             )
         }
 
-	        switch req.probe_id {
-	        case "world_shape":
-	            return probeWorldShape()
-	        case "network_tcp_connect":
-	            return probeNetworkTCPConnect(argv: req.argv)
-	        case "downloads_rw":
-	            return probeDownloadsReadWrite(argv: req.argv)
-	        case "fs_op":
-	            return probeFsOp(argv: req.argv)
-	        case "net_op":
-	            return probeNetOp(argv: req.argv)
-	        case "bookmark_op":
-	            return probeBookmarkOp(argv: req.argv)
-	        case "bookmark_make":
-	            return probeBookmarkMake(argv: req.argv)
-	        case "capabilities_snapshot":
-	            return probeCapabilitiesSnapshot()
-	        case "userdefaults_op":
-	            return probeUserDefaultsOp(argv: req.argv)
-	        case "fs_xattr":
-	            return probeFsXattr(argv: req.argv)
-	        case "fs_coordinated_op":
-	            return probeFsCoordinatedOp(argv: req.argv)
-	        default:
-	            return RunProbeResponse(
-	                rc: 2,
-	                stdout: "",
-                stderr: "unknown probe_id: \(req.probe_id)",
-                normalized_outcome: "unknown_probe",
-                errno: nil,
-                error: nil,
-                details: nil,
-                layer_attribution: nil,
-                sandbox_log_excerpt_ref: nil
-            )
-	        }
-	    }
+        let args = Argv(req.argv)
+        if args.has("--help") || args.has("-h") {
+            return probeHelpResponse(probeId: req.probe_id)
+        }
+
+        switch req.probe_id {
+        case "probe_catalog":
+            return probeCatalog()
+        case "world_shape":
+            return probeWorldShape()
+        case "network_tcp_connect":
+            return probeNetworkTCPConnect(argv: req.argv)
+        case "downloads_rw":
+            return probeDownloadsReadWrite(argv: req.argv)
+        case "fs_op":
+            return probeFsOp(argv: req.argv)
+        case "net_op":
+            return probeNetOp(argv: req.argv)
+        case "bookmark_op":
+            return probeBookmarkOp(argv: req.argv)
+        case "bookmark_make":
+            return probeBookmarkMake(argv: req.argv)
+        case "bookmark_roundtrip":
+            return probeBookmarkRoundtrip(argv: req.argv)
+        case "capabilities_snapshot":
+            return probeCapabilitiesSnapshot()
+        case "userdefaults_op":
+            return probeUserDefaultsOp(argv: req.argv)
+        case "fs_xattr":
+            return probeFsXattr(argv: req.argv)
+        case "fs_coordinated_op":
+            return probeFsCoordinatedOp(argv: req.argv)
+        default:
+            return unknownProbeResponse(req.probe_id)
+        }
+    }
 
 	    // MARK: - Common metadata
 
-	    private static func baseDetails(_ extra: [String: String] = [:]) -> [String: String] {
-	        var out: [String: String] = [
-	            "bundle_id": Bundle.main.bundleIdentifier ?? "",
-	            "process_name": ProcessInfo.processInfo.processName,
-	            "pid": "\(getpid())",
-	            "home_dir": NSHomeDirectory(),
-	            "tmp_dir": NSTemporaryDirectory(),
-	            "cwd": FileManager.default.currentDirectoryPath,
-	        ]
+    private static func baseDetails(_ extra: [String: String] = [:]) -> [String: String] {
+        let pid = getpid()
+        var out: [String: String] = [
+            "bundle_id": Bundle.main.bundleIdentifier ?? "",
+            "process_name": ProcessInfo.processInfo.processName,
+            "pid": "\(pid)",
+            "service_pid": "\(pid)",
+            "probe_pid": "\(pid)",
+            "home_dir": NSHomeDirectory(),
+            "tmp_dir": NSTemporaryDirectory(),
+            "cwd": FileManager.default.currentDirectoryPath,
+        ]
 	        for (k, v) in extra {
 	            out[k] = v
-	        }
-	        return out
-	    }
+        }
+        return out
+    }
 
-	    private static func probeWorldShape() -> RunProbeResponse {
-	        let home = NSHomeDirectory()
-	        let tmp = NSTemporaryDirectory()
-	        let cwd = FileManager.default.currentDirectoryPath
+    // MARK: - Probe catalog + help
+
+    private struct ProbeSpec: Codable {
+        var probe_id: String
+        var summary: String
+        var usage: String
+        var required_args: [String]
+        var optional_args: [String]
+        var examples: [String]
+        var entitlement_hints: [String]
+        var notes: [String]
+    }
+
+    private struct ProbeCatalog: Codable {
+        var generated_at_iso8601: String
+        var probes: [ProbeSpec]
+    }
+
+    private static let probeSpecs: [ProbeSpec] = [
+        ProbeSpec(
+            probe_id: "probe_catalog",
+            summary: "emit a JSON catalog of available probes",
+            usage: "probe_catalog",
+            required_args: [],
+            optional_args: [],
+            examples: [
+                "probe_catalog"
+            ],
+            entitlement_hints: ["none (observer)"],
+            notes: [
+                "Outputs JSON in RunProbeResponse.stdout.",
+                "Use <probe-id> --help for per-probe usage."
+            ]
+        ),
+        ProbeSpec(
+            probe_id: "world_shape",
+            summary: "report containerization and world shape metadata",
+            usage: "world_shape",
+            required_args: [],
+            optional_args: [],
+            examples: [
+                "world_shape"
+            ],
+            entitlement_hints: ["none (observer)"],
+            notes: [
+                "Reports HOME/TMP/CWD and containerization signals."
+            ]
+        ),
+        ProbeSpec(
+            probe_id: "network_tcp_connect",
+            summary: "attempt a TCP connect to an IPv4 host:port",
+            usage: "network_tcp_connect --host <ipv4> --port <1..65535>",
+            required_args: [
+                "--host <ipv4>",
+                "--port <1..65535>"
+            ],
+            optional_args: [],
+            examples: [
+                "network_tcp_connect --host 1.1.1.1 --port 443"
+            ],
+            entitlement_hints: ["com.apple.security.network.client"],
+            notes: []
+        ),
+        ProbeSpec(
+            probe_id: "downloads_rw",
+            summary: "read/write/remove a file under Downloads/entitlement-jail-harness",
+            usage: "downloads_rw [--name <file-name>]",
+            required_args: [],
+            optional_args: [
+                "--name <file-name>"
+            ],
+            examples: [
+                "downloads_rw",
+                "downloads_rw --name demo.txt"
+            ],
+            entitlement_hints: ["com.apple.security.files.downloads.read-write"],
+            notes: [
+                "Writes under Downloads/entitlement-jail-harness."
+            ]
+        ),
+        ProbeSpec(
+            probe_id: "fs_op",
+            summary: "parameterized filesystem operations",
+            usage: """
+fs_op --op <stat|open_read|open_write|create|truncate|rename|unlink|mkdir|rmdir|listdir|readlink|realpath>
+      (--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches>)
+      [--target <base|harness_dir|run_dir|specimen_file>] [--name <file-name>]
+      [--to <path>|--to-path <path>|--to-name <file-name>] [--max-entries <n>] [--allow-unsafe-path]
+""",
+            required_args: [
+                "--op <stat|open_read|open_write|create|truncate|rename|unlink|mkdir|rmdir|listdir|readlink|realpath>",
+                "--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches>"
+            ],
+            optional_args: [
+                "--target <base|harness_dir|run_dir|specimen_file>",
+                "--name <file-name>",
+                "--to <path> | --to-path <path> | --to-name <file-name>",
+                "--max-entries <n>",
+                "--allow-unsafe-path"
+            ],
+            examples: [
+                "fs_op --op stat --path-class downloads",
+                "fs_op --op create --path-class tmp --target run_dir"
+            ],
+            entitlement_hints: ["path-dependent (file access entitlements)"],
+            notes: [
+                "Destructive direct-path ops are refused unless you use --path-class/--target (or a path under */entitlement-jail-harness/*) or set --allow-unsafe-path."
+            ]
+        ),
+        ProbeSpec(
+            probe_id: "net_op",
+            summary: "parameterized network operations",
+            usage: "net_op --op <getaddrinfo|tcp_connect|udp_send> --host <host> [--port <1..65535>] [--numeric]",
+            required_args: [
+                "--op <getaddrinfo|tcp_connect|udp_send>",
+                "--host <host>"
+            ],
+            optional_args: [
+                "--port <1..65535>",
+                "--numeric"
+            ],
+            examples: [
+                "net_op --op getaddrinfo --host example.com",
+                "net_op --op tcp_connect --host 127.0.0.1 --port 80"
+            ],
+            entitlement_hints: ["com.apple.security.network.client"],
+            notes: [
+                "--port is required for tcp_connect and udp_send."
+            ]
+        ),
+        ProbeSpec(
+            probe_id: "bookmark_op",
+            summary: "resolve a bookmark token and run a filesystem op against it",
+            usage: """
+bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
+            [--relative <rel>] [--op <fs_op-op>] [--allow-unsafe-path]
+""",
+            required_args: [
+                "--bookmark-b64 <base64> | --bookmark-path <path>"
+            ],
+            optional_args: [
+                "--relative <rel>",
+                "--op <fs_op-op> (default: stat)",
+                "--allow-unsafe-path"
+            ],
+            examples: [
+                "bookmark_op --bookmark-b64 <b64> --op stat",
+                "bookmark_op --bookmark-path /tmp/token.txt --op open_read --relative file.txt"
+            ],
+            entitlement_hints: [
+                "com.apple.security.files.bookmarks.app-scope",
+                "com.apple.security.files.user-selected.read-only",
+                "com.apple.security.files.user-selected.read-write"
+            ],
+            notes: [
+                "Uses ScopedBookmarksAgent IPC for security-scoped bookmarks."
+            ]
+        ),
+        ProbeSpec(
+            probe_id: "bookmark_make",
+            summary: "create a security-scoped bookmark token for a path",
+            usage: "bookmark_make --path <abs> [--no-security-scope] [--read-only] [--allow-missing]",
+            required_args: [
+                "--path <abs>"
+            ],
+            optional_args: [
+                "--no-security-scope",
+                "--read-only",
+                "--allow-missing"
+            ],
+            examples: [
+                "bookmark_make --path /Users/me/Downloads",
+                "bookmark_make --path /Users/me/Downloads --read-only"
+            ],
+            entitlement_hints: [
+                "com.apple.security.files.bookmarks.app-scope",
+                "com.apple.security.files.user-selected.read-only",
+                "com.apple.security.files.user-selected.read-write"
+            ],
+            notes: [
+                "Security-scoped bookmarks use ScopedBookmarksAgent IPC."
+            ]
+        ),
+        ProbeSpec(
+            probe_id: "bookmark_roundtrip",
+            summary: "create a bookmark token and immediately resolve + run a filesystem op",
+            usage: "bookmark_roundtrip --path <abs> [--op <fs_op-op>] [--relative <rel>] [--no-security-scope] [--read-only] [--allow-missing] [--allow-unsafe-path]",
+            required_args: [
+                "--path <abs>"
+            ],
+            optional_args: [
+                "--op <fs_op-op> (default: stat)",
+                "--relative <rel>",
+                "--no-security-scope",
+                "--read-only",
+                "--allow-missing",
+                "--allow-unsafe-path"
+            ],
+            examples: [
+                "bookmark_roundtrip --path /Users/me/Downloads --op stat",
+                "bookmark_roundtrip --path /Users/me/Downloads --op open_read --relative file.txt"
+            ],
+            entitlement_hints: [
+                "com.apple.security.files.bookmarks.app-scope",
+                "com.apple.security.files.user-selected.read-only",
+                "com.apple.security.files.user-selected.read-write"
+            ],
+            notes: [
+                "Returns the bookmark token in stdout and the fs_op result in details."
+            ]
+        ),
+        ProbeSpec(
+            probe_id: "capabilities_snapshot",
+            summary: "report entitlements and resolved standard directories",
+            usage: "capabilities_snapshot",
+            required_args: [],
+            optional_args: [],
+            examples: [
+                "capabilities_snapshot"
+            ],
+            entitlement_hints: ["none (observer)"],
+            notes: [
+                "Includes entitlement presence booleans and standard directory paths."
+            ]
+        ),
+        ProbeSpec(
+            probe_id: "userdefaults_op",
+            summary: "read/write/remove/sync a UserDefaults key",
+            usage: "userdefaults_op --op <read|write|remove|sync> [--key <k>] [--value <v>] [--suite <suite>]",
+            required_args: [],
+            optional_args: [
+                "--op <read|write|remove|sync> (default: read)",
+                "--key <k>",
+                "--value <v>",
+                "--suite <suite>"
+            ],
+            examples: [
+                "userdefaults_op --op read --key example",
+                "userdefaults_op --op write --key example --value 1"
+            ],
+            entitlement_hints: ["none (containerization evidence)"],
+            notes: [
+                "Useful for observing containerized preferences paths."
+            ]
+        ),
+        ProbeSpec(
+            probe_id: "fs_xattr",
+            summary: "get/list/set/remove extended attributes",
+            usage: "fs_xattr --op <get|list|set|remove> --path <abs> [--name <xattr>] [--value <v>] [--allow-write] [--allow-unsafe-path]",
+            required_args: [
+                "--op <get|list|set|remove>",
+                "--path <abs>"
+            ],
+            optional_args: [
+                "--name <xattr>",
+                "--value <v>",
+                "--allow-write",
+                "--allow-unsafe-path"
+            ],
+            examples: [
+                "fs_xattr --op get --path /tmp/file --name com.apple.quarantine",
+                "fs_xattr --op list --path /tmp/file"
+            ],
+            entitlement_hints: ["path-dependent (file access entitlements)"],
+            notes: [
+                "xattr writes are refused outside harness paths unless --allow-write or --allow-unsafe-path is set."
+            ]
+        ),
+        ProbeSpec(
+            probe_id: "fs_coordinated_op",
+            summary: "NSFileCoordinator mediated read/write",
+            usage: "fs_coordinated_op --op <read|write> (--path <abs> | --path-class <...>) [--target <...>] [--allow-unsafe-path]",
+            required_args: [
+                "--op <read|write>",
+                "--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches>"
+            ],
+            optional_args: [
+                "--target <base|harness_dir|run_dir|specimen_file>",
+                "--allow-unsafe-path"
+            ],
+            examples: [
+                "fs_coordinated_op --op read --path-class documents",
+                "fs_coordinated_op --op write --path-class tmp --target run_dir"
+            ],
+            entitlement_hints: ["path-dependent (file access entitlements)"],
+            notes: [
+                "Coordinated writes to direct paths are refused unless you use --path-class/--target (or a path under */entitlement-jail-harness/*) or set --allow-unsafe-path."
+            ]
+        )
+    ]
+
+    private static func probeSpec(for probeId: String) -> ProbeSpec? {
+        probeSpecs.first { $0.probe_id == probeId }
+    }
+
+    private static func probeCatalog() -> RunProbeResponse {
+        let catalog = ProbeCatalog(
+            generated_at_iso8601: ISO8601DateFormatter().string(from: Date()),
+            probes: probeSpecs
+        )
+        do {
+            let data = try encodeJSON(catalog)
+            let json = String(data: data, encoding: .utf8) ?? ""
+            return RunProbeResponse(
+                rc: 0,
+                stdout: json,
+                stderr: "",
+                normalized_outcome: "ok",
+                errno: nil,
+                error: nil,
+                details: baseDetails([
+                    "probe_family": "probe_catalog",
+                    "probe_count": "\(probeSpecs.count)"
+                ]),
+                layer_attribution: nil,
+                sandbox_log_excerpt_ref: nil
+            )
+        } catch {
+            return RunProbeResponse(
+                rc: 1,
+                stdout: "",
+                stderr: "",
+                normalized_outcome: "encode_failed",
+                errno: nil,
+                error: "\(error)",
+                details: baseDetails([
+                    "probe_family": "probe_catalog"
+                ]),
+                layer_attribution: nil,
+                sandbox_log_excerpt_ref: nil
+            )
+        }
+    }
+
+    private static func probeHelpResponse(probeId: String) -> RunProbeResponse {
+        guard let spec = probeSpec(for: probeId) else {
+            return unknownProbeResponse(probeId)
+        }
+        let help = renderProbeHelp(spec)
+        return RunProbeResponse(
+            rc: 0,
+            stdout: help,
+            stderr: "",
+            normalized_outcome: "help",
+            errno: nil,
+            error: nil,
+            details: baseDetails([
+                "probe_family": "probe_help",
+                "probe_id": probeId
+            ]),
+            layer_attribution: nil,
+            sandbox_log_excerpt_ref: nil
+        )
+    }
+
+    private static func renderProbeHelp(_ spec: ProbeSpec) -> String {
+        var lines: [String] = []
+        lines.append("probe: \(spec.probe_id)")
+        lines.append("summary: \(spec.summary)")
+
+        if !spec.usage.isEmpty {
+            lines.append("usage:")
+            for line in spec.usage.split(separator: "\n", omittingEmptySubsequences: true) {
+                lines.append("  \(line)")
+            }
+        }
+
+        if !spec.required_args.isEmpty {
+            lines.append("required args:")
+            for arg in spec.required_args {
+                lines.append("  \(arg)")
+            }
+        }
+
+        if !spec.optional_args.isEmpty {
+            lines.append("optional args:")
+            for arg in spec.optional_args {
+                lines.append("  \(arg)")
+            }
+        }
+
+        if !spec.entitlement_hints.isEmpty {
+            lines.append("entitlement hints:")
+            for ent in spec.entitlement_hints {
+                lines.append("  \(ent)")
+            }
+        }
+
+        if !spec.examples.isEmpty {
+            lines.append("examples:")
+            for ex in spec.examples {
+                lines.append("  \(ex)")
+            }
+        }
+
+        if !spec.notes.isEmpty {
+            lines.append("notes:")
+            for note in spec.notes {
+                lines.append("  \(note)")
+            }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private static func unknownProbeResponse(_ probeId: String) -> RunProbeResponse {
+        RunProbeResponse(
+            rc: 2,
+            stdout: "",
+            stderr: "unknown probe_id: \(probeId)",
+            normalized_outcome: "unknown_probe",
+            errno: nil,
+            error: nil,
+            details: baseDetails([
+                "probe_family": "unknown_probe",
+                "probe_id": probeId,
+            ]),
+            layer_attribution: nil,
+            sandbox_log_excerpt_ref: nil
+        )
+    }
+
+    private static func probeWorldShape() -> RunProbeResponse {
+        let home = NSHomeDirectory()
+        let tmp = NSTemporaryDirectory()
+        let cwd = FileManager.default.currentDirectoryPath
 
         let looksContainerized = home.contains("/Library/Containers/")
         let worldShapeChange = looksContainerized ? "home_containerized" : nil
 
-        let details: [String: String] = [
-            "bundle_id": Bundle.main.bundleIdentifier ?? "",
-            "process_name": ProcessInfo.processInfo.processName,
-            "pid": "\(getpid())",
+        let details = baseDetails([
             "home_dir": home,
             "tmp_dir": tmp,
             "cwd": cwd,
@@ -92,7 +516,7 @@ public enum InProcessProbeCore {
             "has_network_client": entitlementBool("com.apple.security.network.client") ? "true" : "false",
             "has_downloads_rw": entitlementBool("com.apple.security.files.downloads.read-write") ? "true" : "false",
             "has_user_selected_executable": entitlementBool("com.apple.security.files.user-selected.executable") ? "true" : "false",
-        ]
+        ])
 
         return RunProbeResponse(
             rc: 0,
@@ -116,13 +540,10 @@ public enum InProcessProbeCore {
             return badRequest("missing/invalid --port (expected 1..65535)")
         }
 
-        let baseDetails: [String: String] = [
-            "bundle_id": Bundle.main.bundleIdentifier ?? "",
-            "process_name": ProcessInfo.processInfo.processName,
-            "pid": "\(getpid())",
+        let detailsBase = baseDetails([
             "host": host,
             "port": "\(port)",
-        ]
+        ])
 
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
@@ -146,7 +567,7 @@ public enum InProcessProbeCore {
                 normalized_outcome: "socket_failed",
                 errno: Int(e),
                 error: String(cString: strerror(e)),
-                details: baseDetails,
+                details: detailsBase,
                 layer_attribution: nil,
                 sandbox_log_excerpt_ref: nil
             )
@@ -168,7 +589,7 @@ public enum InProcessProbeCore {
                 normalized_outcome: "ok",
                 errno: nil,
                 error: nil,
-                details: baseDetails.merging(["connect": "ok"], uniquingKeysWith: { cur, _ in cur }),
+                details: detailsBase.merging(["connect": "ok"], uniquingKeysWith: { cur, _ in cur }),
                 layer_attribution: nil,
                 sandbox_log_excerpt_ref: nil
             )
@@ -196,7 +617,7 @@ public enum InProcessProbeCore {
             normalized_outcome: outcome,
             errno: Int(e),
             error: String(cString: strerror(e)),
-            details: baseDetails.merging(["connect": "failed"], uniquingKeysWith: { cur, _ in cur }),
+            details: detailsBase.merging(["connect": "failed"], uniquingKeysWith: { cur, _ in cur }),
             layer_attribution: nil,
             sandbox_log_excerpt_ref: nil
         )
@@ -206,11 +627,7 @@ public enum InProcessProbeCore {
         let args = Argv(argv)
         let requestedName = args.value("--name")
 
-        let baseDetails: [String: String] = [
-            "bundle_id": Bundle.main.bundleIdentifier ?? "",
-            "process_name": ProcessInfo.processInfo.processName,
-            "pid": "\(getpid())",
-        ]
+        let detailsBase = baseDetails()
 
         guard let downloadsDir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first else {
             return RunProbeResponse(
@@ -220,7 +637,7 @@ public enum InProcessProbeCore {
                 normalized_outcome: "downloads_dir_unavailable",
                 errno: nil,
                 error: "failed to resolve downloads directory",
-                details: baseDetails,
+                details: detailsBase,
                 layer_attribution: nil,
                 sandbox_log_excerpt_ref: nil
             )
@@ -232,7 +649,7 @@ public enum InProcessProbeCore {
 
         func opError(_ outcome: String, _ error: Error, op: String) -> RunProbeResponse {
             let e = extractErrno(error)
-            let details: [String: String] = baseDetails.merging([
+            let details: [String: String] = detailsBase.merging([
                 "downloads_dir": downloadsDir.path,
                 "target_dir": harnessDir.path,
                 "file_path": fileURL.path,
@@ -280,7 +697,7 @@ public enum InProcessProbeCore {
             cleanupError = "\(error)"
         }
 
-        let details: [String: String] = baseDetails.merging([
+        let details: [String: String] = detailsBase.merging([
             "downloads_dir": downloadsDir.path,
             "target_dir": harnessDir.path,
             "file_path": fileURL.path,
@@ -385,20 +802,20 @@ public enum InProcessProbeCore {
 	            "run_dir": resolvedTarget.runDir ?? "",
 	        ])
 
-	        let destructiveOps: Set<FsOp> = [.open_write, .create, .truncate, .rename, .unlink, .mkdir, .rmdir]
-	        if directPath != nil, destructiveOps.contains(op), !allowUnsafe, !isSafeWritePath(resolvedTarget.path) {
-	            return RunProbeResponse(
-	                rc: 2,
-	                stdout: "",
-	                stderr: "",
-	                normalized_outcome: "bad_request",
-	                errno: nil,
-	                error: "refusing potentially destructive op=\(op.rawValue) on non-harness path (use --allow-unsafe-path to override)",
-	                details: details,
-	                layer_attribution: nil,
-	                sandbox_log_excerpt_ref: nil
-	            )
-	        }
+        let destructiveOps: Set<FsOp> = [.open_write, .create, .truncate, .rename, .unlink, .mkdir, .rmdir]
+        if directPath != nil, destructiveOps.contains(op), !allowUnsafe, !isSafeWritePath(resolvedTarget.path) {
+            return RunProbeResponse(
+                rc: 2,
+                stdout: "",
+                stderr: "",
+                normalized_outcome: "bad_request",
+                errno: nil,
+                error: "refusing potentially destructive op=\(op.rawValue) on non-harness path (use --path-class <...> or a path under */entitlement-jail-harness/*; use --allow-unsafe-path to override)",
+                details: details,
+                layer_attribution: nil,
+                sandbox_log_excerpt_ref: nil
+            )
+        }
 
 	        let started = Date()
 	        var cleanupErrors: [String] = []
@@ -582,14 +999,14 @@ public enum InProcessProbeCore {
 	            case .rename:
 	                let toPath: String
 	                if directPath != nil {
-	                    guard let to = args.value("--to") ?? args.value("--to-path") else {
-	                        return badRequest("rename requires --to <path> (or --to-path)")
-	                    }
-	                    toPath = to
-	                    if !allowUnsafe, (!isSafeWritePath(targetPath) || !isSafeWritePath(toPath)) {
-	                        return badRequest("refusing rename outside harness paths (use --allow-unsafe-path to override)")
-	                    }
-	                } else {
+                    guard let to = args.value("--to") ?? args.value("--to-path") else {
+                        return badRequest("rename requires --to <path> (or --to-path)")
+                    }
+                    toPath = to
+                    if !allowUnsafe, (!isSafeWritePath(targetPath) || !isSafeWritePath(toPath)) {
+                        return badRequest("refusing rename outside harness paths (use --path-class <...> or a path under */entitlement-jail-harness/*; use --allow-unsafe-path to override)")
+                    }
+                } else {
 	                    let runDir = resolvedTarget.runDir ?? URL(fileURLWithPath: targetPath).deletingLastPathComponent().path
 	                    let toName = args.value("--to-name") ?? "renamed-\(UUID().uuidString)"
 	                    guard isSinglePathComponent(toName) else {
@@ -954,30 +1371,31 @@ public enum InProcessProbeCore {
 
 	        var isStale = false
 	        let resolvedURL: URL
-	        do {
-	            resolvedURL = try URL(
-	                resolvingBookmarkData: bookmarkData,
-	                options: [.withSecurityScope, .withoutUI],
-	                relativeTo: nil,
-	                bookmarkDataIsStale: &isStale
-	            )
-	        } catch {
-	            return RunProbeResponse(
-	                rc: 1,
-	                stdout: "",
-	                stderr: "",
-	                normalized_outcome: "bookmark_resolve_failed",
-	                errno: extractErrno(error),
-	                error: "\(error)",
-	                details: baseDetails([
-	                    "probe_family": "bookmark_op",
-	                    "op": fsOp.rawValue,
-	                    "bookmark_is_stale": isStale ? "true" : "false",
-	                ]),
-	                layer_attribution: nil,
-	                sandbox_log_excerpt_ref: nil
-	            )
-	        }
+        do {
+            resolvedURL = try URL(
+                resolvingBookmarkData: bookmarkData,
+                options: [.withSecurityScope, .withoutUI],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+        } catch {
+            let hint = bookmarkEntitlementHint(error)
+            return RunProbeResponse(
+                rc: 1,
+                stdout: "",
+                stderr: "",
+                normalized_outcome: "bookmark_resolve_failed",
+                errno: extractErrno(error),
+                error: "\(error)",
+                details: baseDetails([
+                    "probe_family": "bookmark_op",
+                    "op": fsOp.rawValue,
+                    "bookmark_is_stale": isStale ? "true" : "false",
+                ]),
+                layer_attribution: hint.map { LayerAttribution(service_refusal: $0) },
+                sandbox_log_excerpt_ref: nil
+            )
+        }
 
 	        let startAccessing = resolvedURL.startAccessingSecurityScopedResource()
 	        defer { resolvedURL.stopAccessingSecurityScopedResource() }
@@ -1014,25 +1432,33 @@ public enum InProcessProbeCore {
 	        )
 	    }
 
-	    private static func safeAppendRelativePath(base: URL, relative: String) -> URL? {
-	        if relative.hasPrefix("/") { return nil }
-	        let comps = relative.split(separator: "/").map(String.init)
-	        if comps.isEmpty { return nil }
-	        for c in comps {
-	            if c.isEmpty || c == "." || c == ".." { return nil }
-	            if c.contains("\\") { return nil }
-	        }
-	        var out = base
-	        for c in comps {
-	            out.appendPathComponent(c)
-	        }
-	        return out
-	    }
+    private static func safeAppendRelativePath(base: URL, relative: String) -> URL? {
+        guard isSafeRelativePath(relative) else {
+            return nil
+        }
+        let comps = relative.split(separator: "/").map(String.init)
+        var out = base
+        for c in comps {
+            out.appendPathComponent(c)
+        }
+        return out
+    }
 
-	    private static func synthesizeFsOpArgv(original: [String], fsOp: FsOp, targetPath: String) -> [String] {
-	        var out: [String] = []
-	        var i = 0
-	        while i < original.count {
+    private static func isSafeRelativePath(_ relative: String) -> Bool {
+        if relative.hasPrefix("/") { return false }
+        let comps = relative.split(separator: "/").map(String.init)
+        if comps.isEmpty { return false }
+        for c in comps {
+            if c.isEmpty || c == "." || c == ".." { return false }
+            if c.contains("\\") { return false }
+        }
+        return true
+    }
+
+    private static func synthesizeFsOpArgv(original: [String], fsOp: FsOp, targetPath: String) -> [String] {
+        var out: [String] = []
+        var i = 0
+        while i < original.count {
 	            let a = original[i]
 	            if a == "--bookmark-b64" || a == "--bookmark-path" || a == "--relative" {
 	                i += 2
@@ -1067,18 +1493,38 @@ public enum InProcessProbeCore {
 	            }
 	        }
 
-	        if out.contains("--op") == false {
-	            out.append(contentsOf: ["--op", fsOp.rawValue])
-	        }
-	        out.append(contentsOf: ["--path", targetPath])
-	        return out
-	    }
+        if out.contains("--op") == false {
+            out.append(contentsOf: ["--op", fsOp.rawValue])
+        }
+        out.append(contentsOf: ["--path", targetPath])
+        return out
+    }
 
-	    private static func probeBookmarkMake(argv: [String]) -> RunProbeResponse {
-	        let args = Argv(argv)
-	        guard let path = args.value("--path"), path.hasPrefix("/") else {
-	            return badRequest("bookmark_make requires --path <absolute-path>")
-	        }
+    private static func bookmarkEntitlementHint(_ error: Error) -> String? {
+        let ns = error as NSError
+        var parts: [String] = []
+        if let debug = ns.userInfo[NSDebugDescriptionErrorKey] as? String {
+            parts.append(debug)
+        }
+        parts.append(ns.localizedDescription)
+        if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError {
+            if let debug = underlying.userInfo[NSDebugDescriptionErrorKey] as? String {
+                parts.append(debug)
+            }
+            parts.append(underlying.localizedDescription)
+        }
+        let haystack = parts.joined(separator: " ").lowercased()
+        if haystack.contains("scopedbookmarksagent") || haystack.contains("scoped bookmarks agent") || haystack.contains("com.apple.scopedbookmarksagent.xpc") {
+            return "entitlement_missing_bookmarks_app_scope"
+        }
+        return nil
+    }
+
+    private static func probeBookmarkMake(argv: [String]) -> RunProbeResponse {
+        let args = Argv(argv)
+        guard let path = args.value("--path"), path.hasPrefix("/") else {
+            return badRequest("bookmark_make requires --path <absolute-path>")
+        }
 
 	        let url = URL(fileURLWithPath: path)
 	        let requireExists = !args.has("--allow-missing")
@@ -1128,27 +1574,169 @@ public enum InProcessProbeCore {
 	                layer_attribution: nil,
 	                sandbox_log_excerpt_ref: nil
 	            )
-	        } catch {
-	            let e = extractErrno(error)
-	            let outcome = isPermissionError(error) ? "permission_error" : "bookmark_make_failed"
-	            return RunProbeResponse(
-	                rc: 1,
-	                stdout: "",
-	                stderr: "",
-	                normalized_outcome: outcome,
-	                errno: e,
-	                error: "\(error)",
-	                details: baseDetails([
-	                    "probe_family": "bookmark_make",
-	                    "file_path": path,
-	                    "security_scope": useSecurityScope ? "true" : "false",
-	                    "read_only": args.has("--read-only") ? "true" : "false",
-	                ]),
-	                layer_attribution: nil,
-	                sandbox_log_excerpt_ref: nil
-	            )
-	        }
-	    }
+        } catch {
+            let e = extractErrno(error)
+            let outcome = isPermissionError(error) ? "permission_error" : "bookmark_make_failed"
+            let hint = useSecurityScope ? bookmarkEntitlementHint(error) : nil
+            return RunProbeResponse(
+                rc: 1,
+                stdout: "",
+                stderr: "",
+                normalized_outcome: outcome,
+                errno: e,
+                error: "\(error)",
+                details: baseDetails([
+                    "probe_family": "bookmark_make",
+                    "file_path": path,
+                    "security_scope": useSecurityScope ? "true" : "false",
+                    "read_only": args.has("--read-only") ? "true" : "false",
+                ]),
+                layer_attribution: hint.map { LayerAttribution(service_refusal: $0) },
+                sandbox_log_excerpt_ref: nil
+            )
+        }
+    }
+
+    // MARK: - bookmark_roundtrip (make + resolve + fs_op)
+
+    private static func probeBookmarkRoundtrip(argv: [String]) -> RunProbeResponse {
+        let args = Argv(argv)
+        guard let path = args.value("--path"), path.hasPrefix("/") else {
+            return badRequest("bookmark_roundtrip requires --path <absolute-path>")
+        }
+
+        let fsOpStr = args.value("--op") ?? "stat"
+        let expectedOps = FsOp.allCases.map(\.rawValue).joined(separator: "|")
+        guard let fsOp = FsOp(rawValue: fsOpStr) else {
+            return badRequest("missing/invalid --op (expected: \(expectedOps))")
+        }
+
+        if let rel = args.value("--relative"), !rel.isEmpty, !isSafeRelativePath(rel) {
+            return badRequest("invalid --relative (must be a safe relative path with no traversal)")
+        }
+
+        let url = URL(fileURLWithPath: path)
+        let requireExists = !args.has("--allow-missing")
+        if requireExists, !FileManager.default.fileExists(atPath: path) {
+            return RunProbeResponse(
+                rc: 1,
+                stdout: "",
+                stderr: "",
+                normalized_outcome: "not_found",
+                errno: Int(ENOENT),
+                error: "file not found",
+                details: baseDetails([
+                    "probe_family": "bookmark_roundtrip",
+                    "file_path": path,
+                ]),
+                layer_attribution: nil,
+                sandbox_log_excerpt_ref: nil
+            )
+        }
+
+        let useSecurityScope = !args.has("--no-security-scope")
+        var options: URL.BookmarkCreationOptions = []
+        if useSecurityScope {
+            options.insert(.withSecurityScope)
+        }
+        if args.has("--read-only") {
+            options.insert(.securityScopeAllowOnlyReadAccess)
+        }
+
+        let bookmarkData: Data
+        do {
+            bookmarkData = try url.bookmarkData(options: options, includingResourceValuesForKeys: nil, relativeTo: nil)
+        } catch {
+            let e = extractErrno(error)
+            let outcome = isPermissionError(error) ? "permission_error" : "bookmark_make_failed"
+            let hint = useSecurityScope ? bookmarkEntitlementHint(error) : nil
+            return RunProbeResponse(
+                rc: 1,
+                stdout: "",
+                stderr: "",
+                normalized_outcome: outcome,
+                errno: e,
+                error: "\(error)",
+                details: baseDetails([
+                    "probe_family": "bookmark_roundtrip",
+                    "file_path": path,
+                    "security_scope": useSecurityScope ? "true" : "false",
+                    "read_only": args.has("--read-only") ? "true" : "false",
+                ]),
+                layer_attribution: hint.map { LayerAttribution(service_refusal: $0) },
+                sandbox_log_excerpt_ref: nil
+            )
+        }
+
+        let b64 = bookmarkData.base64EncodedString()
+        var isStale = false
+        let resolvedURL: URL
+        do {
+            resolvedURL = try URL(
+                resolvingBookmarkData: bookmarkData,
+                options: [.withSecurityScope, .withoutUI],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+        } catch {
+            let hint = bookmarkEntitlementHint(error)
+            return RunProbeResponse(
+                rc: 1,
+                stdout: b64,
+                stderr: "",
+                normalized_outcome: "bookmark_resolve_failed",
+                errno: extractErrno(error),
+                error: "\(error)",
+                details: baseDetails([
+                    "probe_family": "bookmark_roundtrip",
+                    "file_path": path,
+                    "bookmark_is_stale": isStale ? "true" : "false",
+                    "bookmark_len": "\(bookmarkData.count)",
+                    "security_scope": useSecurityScope ? "true" : "false",
+                    "read_only": args.has("--read-only") ? "true" : "false",
+                ]),
+                layer_attribution: hint.map { LayerAttribution(service_refusal: $0) },
+                sandbox_log_excerpt_ref: nil
+            )
+        }
+
+        let startAccessing = resolvedURL.startAccessingSecurityScopedResource()
+        defer { resolvedURL.stopAccessingSecurityScopedResource() }
+
+        var targetURL = resolvedURL
+        if let rel = args.value("--relative"), !rel.isEmpty {
+            guard let appended = safeAppendRelativePath(base: resolvedURL, relative: rel) else {
+                return badRequest("invalid --relative (must be a safe relative path with no traversal)")
+            }
+            targetURL = appended
+        }
+
+        let syntheticArgv = synthesizeFsOpArgv(original: argv, fsOp: fsOp, targetPath: targetURL.path)
+        let resp = probeFsOp(argv: syntheticArgv)
+
+        var merged = resp.details ?? [:]
+        merged["probe_family"] = "bookmark_roundtrip"
+        merged["bookmark_is_stale"] = isStale ? "true" : "false"
+        merged["bookmark_start_accessing"] = startAccessing ? "true" : "false"
+        merged["bookmark_resolved_path"] = resolvedURL.path
+        merged["bookmark_target_path"] = targetURL.path
+        merged["bookmark_len"] = "\(bookmarkData.count)"
+        merged["security_scope"] = useSecurityScope ? "true" : "false"
+        merged["read_only"] = args.has("--read-only") ? "true" : "false"
+        merged["file_path"] = targetURL.path
+
+        return RunProbeResponse(
+            rc: resp.rc,
+            stdout: b64,
+            stderr: resp.stderr,
+            normalized_outcome: resp.normalized_outcome,
+            errno: resp.errno,
+            error: resp.error,
+            details: merged,
+            layer_attribution: resp.layer_attribution,
+            sandbox_log_excerpt_ref: resp.sandbox_log_excerpt_ref
+        )
+    }
 
 	    // MARK: - fs_coordinated_op (NSFileCoordinator mediated fs ops)
 
@@ -1185,10 +1773,10 @@ public enum InProcessProbeCore {
 	            return badRequest("internal: failed to resolve target path")
 	        }
 
-	        let targetPath = resolvedTarget.path
-	        if op == .write, directPath != nil, !allowUnsafe, !isSafeWritePath(targetPath) {
-	            return badRequest("refusing potentially destructive coordinated write on non-harness path (use --allow-unsafe-path to override)")
-	        }
+        let targetPath = resolvedTarget.path
+        if op == .write, directPath != nil, !allowUnsafe, !isSafeWritePath(targetPath) {
+            return badRequest("refusing potentially destructive coordinated write on non-harness path (use --path-class <...> or a path under */entitlement-jail-harness/*; use --allow-unsafe-path to override)")
+        }
 
 	        var details = baseDetails([
 	            "probe_family": "fs_coordinated_op",
@@ -1420,20 +2008,20 @@ public enum InProcessProbeCore {
 	            return badRequest("fs_xattr requires --path <absolute-path>")
 	        }
 
-	        let allowWrite = args.has("--allow-write") || args.has("--allow-unsafe-path")
-	        if (op == .set || op == .remove), !allowWrite, !isSafeWritePath(path) {
-	            return RunProbeResponse(
-	                rc: 2,
-	                stdout: "",
-	                stderr: "",
-	                normalized_outcome: "bad_request",
-	                errno: nil,
-	                error: "refusing xattr write on non-harness path (use --allow-write or --allow-unsafe-path to override)",
-	                details: baseDetails([
-	                    "probe_family": "fs_xattr",
-	                    "op": op.rawValue,
-	                    "file_path": path,
-	                ]),
+        let allowWrite = args.has("--allow-write") || args.has("--allow-unsafe-path")
+        if (op == .set || op == .remove), !allowWrite, !isSafeWritePath(path) {
+            return RunProbeResponse(
+                rc: 2,
+                stdout: "",
+                stderr: "",
+                normalized_outcome: "bad_request",
+                errno: nil,
+                error: "refusing xattr write on non-harness path (use a path under */entitlement-jail-harness/*; use --allow-write or --allow-unsafe-path to override)",
+                details: baseDetails([
+                    "probe_family": "fs_xattr",
+                    "op": op.rawValue,
+                    "file_path": path,
+                ]),
 	                layer_attribution: nil,
 	                sandbox_log_excerpt_ref: nil
 	            )
@@ -1538,15 +2126,17 @@ public enum InProcessProbeCore {
 	        }
 	    }
 
-	    private static func badRequest(_ msg: String) -> RunProbeResponse {
-	        RunProbeResponse(
-	            rc: 2,
+    private static func badRequest(_ msg: String) -> RunProbeResponse {
+        RunProbeResponse(
+            rc: 2,
             stdout: "",
             stderr: msg,
             normalized_outcome: "bad_request",
             errno: nil,
             error: nil,
-            details: nil,
+            details: baseDetails([
+                "probe_family": "bad_request",
+            ]),
             layer_attribution: nil,
             sandbox_log_excerpt_ref: nil
         )

@@ -24,7 +24,7 @@ Usage:
 ```sh
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-system <absolute-platform-binary> [args...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-embedded <tool-name> [args...]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc <xpc-service-bundle-id> <probe-id> [probe-args...]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] <xpc-service-bundle-id> <probe-id> [probe-args...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
 ```
 
@@ -83,26 +83,33 @@ Helper location (important):
 
 Invocation:
 
-- `run-xpc <xpc-service-bundle-id> <probe-id> [probe-args...]`
+- `run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] <xpc-service-bundle-id> <probe-id> [probe-args...]`
 - Example service bundle id: `com.yourteam.entitlement-jail.ProbeService_minimal`
 
 Built-in probe ids (in-process):
 
+- `probe_catalog`
 - `world_shape`
 - `network_tcp_connect` (`--host <ipv4> --port <1..65535>`)
 - `downloads_rw` (`[--name <file-name>]`)
 - `fs_op` (`--op <...> (--path <abs> | --path-class <...>) [--allow-unsafe-path]`)
 - `net_op` (`--op <getaddrinfo|tcp_connect|udp_send> --host <host> [--port <1..65535>] [--numeric]`)
-- `bookmark_op` (`--bookmark-b64 <base64> [--bookmark-path <path>] [--relative <rel>] --op <fs-op> [--allow-unsafe-path]`)
+- `bookmark_op` (`--bookmark-b64 <base64> | --bookmark-path <path> [--relative <rel>] [--op <fs-op>] [--allow-unsafe-path]`)
 - `bookmark_make` (`--path <abs> [--no-security-scope] [--read-only] [--allow-missing]`)
+- `bookmark_roundtrip` (`--path <abs> [--op <fs-op>] [--relative <rel>] [--no-security-scope] [--read-only] [--allow-missing] [--allow-unsafe-path]`)
 - `capabilities_snapshot`
 - `userdefaults_op` (`--op <read|write|remove|sync> [--key <k>] [--value <v>] [--suite <suite>]`)
-- `fs_xattr` (`--op <get|list|set|remove> --path <abs> [--name <xattr>] [--value <v>] [--allow-write]`)
+- `fs_xattr` (`--op <get|list|set|remove> --path <abs> [--name <xattr>] [--value <v>] [--allow-write] [--allow-unsafe-path]`)
 - `fs_coordinated_op` (`--op <read|write> (--path <abs> | --path-class <...>) [--allow-unsafe-path]`)
 
 Notes:
 
-- `fs_op` is safe-by-default: potentially destructive operations on direct paths (outside `*/entitlement-jail-harness/*`) are refused unless you pass `--allow-unsafe-path`.
+- `probe_catalog` outputs JSON in `stdout`; use `<probe-id> --help` for per-probe usage (help text is returned in JSON `stdout`).
+- Filesystem probes are safe-by-default: destructive direct-path operations are refused unless you target a harness path (for `fs_op`/`fs_coordinated_op` via `--path-class`/`--target`, or for `fs_xattr` via an explicit path under `*/entitlement-jail-harness/*`) or pass `--allow-unsafe-path` (or `--allow-write` for `fs_xattr`).
+- `--log-sandbox`/`--log-stream` writes a best-effort unified log excerpt filtered to `Sandbox:` lines for the probe PID (uses `log show`; absence of deny lines is not a denial claim).
+- When `run-xpc` runs inside `EntitlementJail.app`, `/usr/bin/log` may be blocked by the app sandbox; log capture will report an error instead of a denial signal.
+- `--log-sandbox`/`--log-predicate` must appear before `<xpc-service-bundle-id>`.
+- `--log-predicate` overrides the default `log show` predicate (pass a full predicate string).
 
 High-level flow:
 

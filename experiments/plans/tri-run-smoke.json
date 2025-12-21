@@ -1,0 +1,39 @@
+{
+  "plan_id": "tri-run-smoke",
+  "probes": [
+    {
+      "probe_id": "probe_catalog",
+      "inputs": { "kind": "probe", "argv": [] },
+      "expected_side_effects": ["none"],
+      "capture_spec": { "capture_sandbox_log": false }
+    },
+    {
+      "probe_id": "capabilities_snapshot",
+      "inputs": { "kind": "probe", "argv": [] },
+      "expected_side_effects": ["none"],
+      "capture_spec": { "capture_sandbox_log": false }
+    },
+    {
+      "probe_id": "world_shape",
+      "inputs": { "kind": "probe", "argv": [] },
+      "expected_side_effects": ["none"],
+      "capture_spec": { "capture_sandbox_log": false }
+    },
+    {
+      "probe_id": "fs_op",
+      "inputs": { "kind": "probe", "argv": ["--op", "stat", "--path-class", "tmp"] },
+      "expected_side_effects": ["stats a temp directory (no writes)"],
+      "capture_spec": { "capture_sandbox_log": false }
+    },
+    {
+      "probe_id": "quarantine_text_smoke",
+      "inputs": {
+        "kind": "quarantine-lab",
+        "payload_class": "text",
+        "argv": ["--dir", "tmp", "--operation", "create_new", "--name", "smoke"]
+      },
+      "expected_side_effects": ["writes a text specimen under TMPDIR/entitlement-jail-quarantine-lab (no execution)"],
+      "capture_spec": { "capture_sandbox_log": false }
+    }
+  ]
+}

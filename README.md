@@ -10,7 +10,7 @@ The core output is a **tri-run mismatch atlas**: for the same probe + inputs, pr
 
 Every result carries explicit layer attribution:
 
-- **Seatbelt/App Sandbox**: only when an actual deny-op is observed (via unified log capture)
+- **Seatbelt/App Sandbox**: only when an actual deny-op is observed via **host-side** unified log capture (in-app log capture is diagnostic only)
 - **Quarantine/Gatekeeper**: measured via `com.apple.quarantine` deltas (and optional observer assessment; assessment is not execution)
 - **Service/API refusal**: permission-shaped failures without a deny-op excerpt
 - **World-shape effects**: containerization/path-class differences treated as an explicit dimension, not a background confound
@@ -76,4 +76,5 @@ Outputs emphasize provenance and **layer attribution** (Seatbelt vs quarantine/G
 
 - The Quarantine Lab writes/opens artifacts and reports `com.apple.quarantine` deltas **without executing anything**.
 - The quarantine observer is intentionally run **outside** `EntitlementJail.app` to avoid attribution mixing.
+- Deny attribution is only valid when produced by **host-side** log capture; in-app log capture is diagnostic only and may be blocked by the app sandbox.
 - If the harness cannot capture a deny-op for a permission-shaped failure, it records the capture attempts and treats the mechanism as “needs evidence”, not as “policy denied”.

@@ -121,10 +121,16 @@ Run the parametric demo plan (shows `row_id` with multiple `fs_op` rows):
 ./experiments/bin/ej-harness run --plan experiments/plans/tri-run-parametric-demo.json
 ```
 
+Run the smoke plan (minimal, low-side-effect):
+
+```sh
+./experiments/bin/ej-harness run --plan experiments/plans/tri-run-smoke.json
+```
+
 Artifacts land under `experiments/out/…/atlas.json` (the harness prints the absolute path it wrote).
 
 ## Notes
 
 - Policy witness profiles in `experiments/policy/*.sb` use `HOME` as a profile parameter; the harness passes it automatically via `sandbox-exec -D HOME=<path> ...`.
-- Sandbox log capture is best-effort and PID-scoped: for probe runs the harness keys log searches on `ProcessName(pid)` from the JSON `details.pid` field, to avoid cross-run contamination.
+- Sandbox log capture is best-effort and PID-scoped: for probe runs the harness keys log searches on `ProcessName(pid)` from the JSON `details.probe_pid`/`details.service_pid` fields (falls back to `details.pid`), to avoid cross-run contamination.
 - Entitlement witness tightening: when a probe returns a permission-shaped error and no deny op is observed, the harness automatically retries sandbox log capture with a wider window and a stricter predicate (see `sandbox-log-retry.txt` when present).

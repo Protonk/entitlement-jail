@@ -11,6 +11,7 @@ private func printUsage() {
           \(exe) quarantine-lab <payload-class> [options...]
 
         probe-id:
+          probe_catalog
           world_shape
           network_tcp_connect   --host <ipv4> --port <1..65535>
           downloads_rw          [--name <file-name>]
@@ -19,13 +20,17 @@ private func printUsage() {
                                [--target <base|harness_dir|run_dir|specimen_file>] [--name <file-name>] [--to <path>] [--to-name <file-name>]
                                [--max-entries <n>] [--allow-unsafe-path]
           net_op                --op <getaddrinfo|tcp_connect|udp_send> --host <host> [--port <1..65535>] [--numeric]
-          bookmark_op           --bookmark-b64 <base64> [--bookmark-path <path>] [--relative <rel>]
-                               --op <fs_op-op> [--allow-unsafe-path]
+          bookmark_op           --bookmark-b64 <base64> | --bookmark-path <path>
+                               [--relative <rel>] [--op <fs_op-op>] [--allow-unsafe-path]
           bookmark_make         --path <abs> [--no-security-scope] [--read-only] [--allow-missing]
+          bookmark_roundtrip    --path <abs> [--op <fs_op-op>] [--relative <rel>] [--no-security-scope] [--read-only] [--allow-missing] [--allow-unsafe-path]
           capabilities_snapshot
           userdefaults_op       --op <read|write|remove|sync> [--key <k>] [--value <v>] [--suite <suite>]
-          fs_xattr              --op <get|list|set|remove> --path <abs> [--name <xattr>] [--value <v>] [--allow-write]
+          fs_xattr              --op <get|list|set|remove> --path <abs> [--name <xattr>] [--value <v>] [--allow-write] [--allow-unsafe-path]
           fs_coordinated_op     --op <read|write> (--path <abs> | --path-class <...>) [--allow-unsafe-path]
+
+        tip:
+          use "<probe-id> --help" for per-probe usage (help text is returned in JSON stdout)
 
         payload-class:
           shell_script | command_file | text | webarchive_like

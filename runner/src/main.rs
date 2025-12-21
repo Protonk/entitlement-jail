@@ -10,7 +10,7 @@ fn print_usage() {
 usage:
   entitlement-jail run-system <absolute-platform-binary> [args...]
   entitlement-jail run-embedded <tool-name> [args...]
-  entitlement-jail run-xpc <xpc-service-bundle-id> <probe-id> [probe-args...]
+  entitlement-jail run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] <xpc-service-bundle-id> <probe-id> [probe-args...]
   entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
 
 notes:
@@ -82,6 +82,35 @@ fn validate_tool_name(tool_name: &str) -> Result<(), String> {
         _ => Err(format!(
             "invalid tool name {tool_name:?} (must be a single path component)"
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allows_platform_system_paths() {
+        assert!(is_allowed_system_path(Path::new("/bin/ls")));
+        assert!(is_allowed_system_path(Path::new("/usr/bin/env")));
+        assert!(is_allowed_system_path(Path::new("/System/Library/CoreServices")));
+        assert!(!is_allowed_system_path(Path::new("/usr/local/bin/ls")));
+        assert!(!is_allowed_system_path(Path::new("/tmp/ls")));
+        assert!(!is_allowed_system_path(Path::new("relative/path")));
+    }
+
+    #[test]
+    fn validates_tool_name_single_component() {
+        assert!(validate_tool_name("tool").is_ok());
+        assert!(validate_tool_name("xpc-probe-client").is_ok());
+    }
+
+    #[test]
+    fn rejects_tool_name_traversal_or_subpaths() {
+        assert!(validate_tool_name("../tool").is_err());
+        assert!(validate_tool_name("./tool").is_err());
+        assert!(validate_tool_name("tools/tool").is_err());
+        assert!(validate_tool_name("tool/../x").is_err());
     }
 }
 
@@ -189,7 +218,25 @@ fn main() {
             run_and_wait(cmd_path, args[2..].to_vec());
         }
         Some("run-xpc") => {
-            if args.len() < 3 {
+            let mut idx = 1;
+            while idx < args.len() {
+                match args.get(idx).and_then(|s| s.to_str()) {
+                    Some("-h") | Some("--help") => {
+                        print_usage();
+                        return;
+                    }
+                    Some("--log-sandbox") | Some("--log-stream") | Some("--log-predicate") => {
+                        if idx + 1 >= args.len() {
+                            eprintln!("missing value for {}", args[idx].to_string_lossy());
+                            print_usage();
+                            std::process::exit(2);
+                        }
+                        idx += 2;
+                    }
+                    _ => break,
+                }
+            }
+            if args.len() - idx < 2 {
                 print_usage();
                 std::process::exit(2);
             }

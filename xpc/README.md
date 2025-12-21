@@ -70,6 +70,7 @@ Current services:
 
 Built-in probe ids (in-process):
 
+- `probe_catalog`
 - `world_shape`
 - `network_tcp_connect` (`--host <ipv4> --port <1..65535>`)
 - `downloads_rw` (`[--name <file-name>]`)
@@ -77,10 +78,15 @@ Built-in probe ids (in-process):
 - `net_op` (parameterized network op; see `--op` help in `experiments/bin/witness-substrate`)
 - `bookmark_op` (filesystem op gated by an input bookmark token)
 - `bookmark_make` (best-effort bookmark generator; security-scoped bookmark creation requires ScopedBookmarksAgent IPC, which is denied unless the target has bookmarks or user-selected read-only/read-write entitlements)
+- `bookmark_roundtrip` (make + resolve + run a bookmark-scoped fs op in one call)
 - `capabilities_snapshot` (observer: entitlements + resolved standard directories)
 - `userdefaults_op` (UserDefaults read/write/remove + inferred prefs path)
 - `fs_xattr` (get/list/set/remove xattrs; xattr writes are refused outside harness paths unless explicitly allowed)
 - `fs_coordinated_op` (NSFileCoordinator mediated read/write; best-effort and environment-dependent)
+
+Notes:
+
+- `probe_catalog` outputs a JSON catalog in `stdout`; use `<probe-id> --help` for per-probe usage (help text is returned in JSON `stdout`).
 
 ## Safe probe resolution (no traversal, no container staging)
 
