@@ -1,3 +1,5 @@
+mod debug_entitlements_probe;
+
 use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
@@ -161,6 +163,8 @@ fn run_and_wait(cmd_path: PathBuf, cmd_args: Vec<OsString>) -> ! {
 }
 
 fn main() {
+    debug_entitlements_probe::try_dlopen_external_library();
+
     let args: Vec<OsString> = env::args_os().skip(1).collect();
     if args.is_empty() {
         print_usage();

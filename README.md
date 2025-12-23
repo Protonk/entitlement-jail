@@ -33,6 +33,7 @@ Instead, entitlements become a first-class independent variable only via **XPC s
   - `run-embedded`: bundle-embedded helper tools (sandbox inheritance; strict signing constraints)
   - `run-xpc`: delegate probe execution to a selected XPC service target
   - `quarantine-lab`: write/open/copy artifacts and report `com.apple.quarantine` deltas (no execution)
+- **Main app entitlements (research defaults)**: `com.apple.security.app-sandbox`, `com.apple.security.get-task-allow`, `com.apple.security.cs.disable-library-validation` (main app only; XPC services keep their own entitlements; this does not grant filesystem access).
 - **Entitlement lattice (XPC targets)**: one-knob-per-service, currently including:
   - minimal sandbox
   - network client

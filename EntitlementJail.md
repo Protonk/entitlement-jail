@@ -31,6 +31,20 @@ Key components you may see under `EntitlementJail.app/Contents/`:
 - `XPCServices/*.xpc`: launchd-managed XPC service targets (each is its own signed sandbox with its own entitlements)
 - `Helpers/` (optional): bundle-embedded helper executables (only used with `run-embedded`, if present)
 
+## Main app entitlements (research defaults)
+
+The main app is signed with App Sandbox plus two debug-focused entitlements:
+
+- `com.apple.security.get-task-allow`
+- `com.apple.security.cs.disable-library-validation`
+
+These apply to the **main app only**. XPC services remain separate signed targets with their own entitlements and are still the “entitlements as the variable” surface.
+
+Important boundaries:
+
+- These entitlements do **not** grant filesystem access or execution rights; Seatbelt/App Sandbox policy still governs file access and `dlopen` path visibility.
+- Treat debugger attach or library-load outcomes as **observed behavior**, not a blanket guarantee.
+
 ## Core commands (how to use it)
 
 ### 1) `run-system` — run allowlisted platform binaries
