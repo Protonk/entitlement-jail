@@ -270,7 +270,9 @@ for probe in plan.probes {
             entitlementJailPath: entitlementJailPath,
             probe: probe,
             node: node,
-            tcpPort: tcpPort
+            tcpPort: tcpPort,
+            planId: plan.plan_id,
+            rowId: rowId
         )
 
         let nodeDir = outDir
@@ -375,7 +377,14 @@ private func makeBaselineCommand(substratePath: String, probe: ProbeRow, tcpPort
     }
 }
 
-private func makeEntitlementCommand(entitlementJailPath: String, probe: ProbeRow, node: EntitlementNode, tcpPort: Int) throws -> CommandSpec? {
+private func makeEntitlementCommand(
+    entitlementJailPath: String,
+    probe: ProbeRow,
+    node: EntitlementNode,
+    tcpPort: Int,
+    planId: String,
+    rowId: String
+) throws -> CommandSpec? {
     let ej = resolvePath(entitlementJailPath).path
     let kind = probe.inputs.kind
     let argv = probe.inputs.argv ?? []
@@ -386,7 +395,7 @@ private func makeEntitlementCommand(entitlementJailPath: String, probe: ProbeRow
         let svc = node.xpc_probe_service_bundle_id
         let hint = SandboxLogHint(term: xpcExecutableName(fromBundleId: svc) ?? svc)
         return CommandSpec(
-            argv: [ej, "run-xpc", svc, probe.probe_id] + adjusted,
+            argv: [ej, "run-xpc", "--plan-id", planId, "--row-id", rowId, svc, probe.probe_id] + adjusted,
             logHint: hint,
             serviceBundleId: svc
         )

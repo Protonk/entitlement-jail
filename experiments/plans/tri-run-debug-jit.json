@@ -1,0 +1,23 @@
+{
+  "plan_id": "tri-run-debug-jit",
+  "probes": [
+    {
+      "probe_id": "capabilities_snapshot",
+      "inputs": { "kind": "probe", "argv": [] },
+      "expected_side_effects": ["none"],
+      "capture_spec": { "capture_sandbox_log": false }
+    },
+    {
+      "probe_id": "jit_map_jit",
+      "inputs": { "kind": "probe", "argv": [] },
+      "expected_side_effects": ["attempts MAP_JIT mmap and unmaps"],
+      "capture_spec": { "capture_sandbox_log": false }
+    },
+    {
+      "probe_id": "jit_rwx_legacy",
+      "inputs": { "kind": "probe", "argv": [] },
+      "expected_side_effects": ["attempts RWX mmap and unmaps"],
+      "capture_spec": { "capture_sandbox_log": false }
+    }
+  ]
+}

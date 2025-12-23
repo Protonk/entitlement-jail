@@ -27,6 +27,8 @@ XPC gives you:
 
 Both requests and responses are serialized as JSON bytes (`Data`) rather than passing rich Objective‑C objects over XPC. This keeps the interface inspectable and stable, and makes it easy for callers to treat the service output as a structured research record.
 
+`RunProbeResponse` now includes correlation metadata (for example `correlation_id`, `probe_id`, `argv`), service identity/build fields, and timing/thread hints (`started_at_iso8601`, `ended_at_iso8601`, `thread_id`) when available.
+
 ### Client helpers (why the main binary delegates)
 
 The sandboxed Rust launcher does not speak NSXPC directly. Instead it runs embedded Swift helper executables:
@@ -62,6 +64,12 @@ Current services:
 - `ProbeService_downloads_rw`: identical code to `ProbeService_minimal`, but with `com.apple.security.files.downloads.read-write`.
 - `ProbeService_user_selected_executable`: identical code to `ProbeService_minimal`, but with `com.apple.security.files.user-selected.executable`.
 - `ProbeService_bookmarks_app_scope`: identical code to `ProbeService_minimal`, but with `com.apple.security.files.bookmarks.app-scope` (enables `mach-lookup` to `com.apple.scopedbookmarksagent.xpc`, used by security-scoped bookmark creation/resolution).
+- `ProbeService_debuggable`: identical code to `ProbeService_minimal`, but with `com.apple.security.get-task-allow`.
+- `ProbeService_plugin_host_relaxed`: identical code to `ProbeService_minimal`, but with `com.apple.security.cs.disable-library-validation`.
+- `ProbeService_dyld_env_enabled`: identical code to `ProbeService_minimal`, but with `com.apple.security.cs.allow-dyld-environment-variables`.
+- `ProbeService_fully_injectable`: identical code to `ProbeService_minimal`, but with `com.apple.security.cs.disable-library-validation` + `com.apple.security.cs.allow-dyld-environment-variables`.
+- `ProbeService_jit_map_jit`: identical code to `ProbeService_minimal`, but with `com.apple.security.cs.allow-jit`.
+- `ProbeService_jit_rwx_legacy`: identical code to `ProbeService_minimal`, but with `com.apple.security.cs.allow-unsigned-executable-memory`.
 - `QuarantineLab_default`: writes/opens/copies artifacts and reports `com.apple.quarantine` deltas.
 - `QuarantineLab_net_client`: identical code to `QuarantineLab_default`, but with `com.apple.security.network.client`.
 - `QuarantineLab_downloads_rw`: identical code to `QuarantineLab_default`, but with `com.apple.security.files.downloads.read-write`.
@@ -76,6 +84,9 @@ Built-in probe ids (in-process):
 - `downloads_rw` (`[--name <file-name>]`)
 - `fs_op` (parameterized filesystem op; see `--op` help in `experiments/bin/witness-substrate`)
 - `net_op` (parameterized network op; see `--op` help in `experiments/bin/witness-substrate`)
+- `dlopen_external` (`--path <abs>` or `EJ_DLOPEN_PATH`)
+- `jit_map_jit` (`[--size <bytes>]`)
+- `jit_rwx_legacy` (`[--size <bytes>]`)
 - `bookmark_op` (filesystem op gated by an input bookmark token)
 - `bookmark_make` (best-effort bookmark generator; security-scoped bookmark creation requires ScopedBookmarksAgent IPC, which is denied unless the target has bookmarks or user-selected read-only/read-write entitlements)
 - `bookmark_roundtrip` (make + resolve + run a bookmark-scoped fs op in one call)
@@ -87,6 +98,7 @@ Built-in probe ids (in-process):
 Notes:
 
 - `probe_catalog` outputs a JSON catalog in `stdout`; use `<probe-id> --help` for per-probe usage (help text is returned in JSON `stdout`).
+- `dlopen_external` executes dylib initializers; treat it as code execution.
 
 ## Safe probe resolution (no traversal, no container staging)
 

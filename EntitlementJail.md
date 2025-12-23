@@ -33,16 +33,11 @@ Key components you may see under `EntitlementJail.app/Contents/`:
 
 ## Main app entitlements (research defaults)
 
-The main app is signed with App Sandbox plus two debug-focused entitlements:
-
-- `com.apple.security.get-task-allow`
-- `com.apple.security.cs.disable-library-validation`
-
-These apply to the **main app only**. XPC services remain separate signed targets with their own entitlements and are still the “entitlements as the variable” surface.
+The main app is signed with **App Sandbox only**. Debug/injection/JIT entitlements are isolated to dedicated XPC targets so the controller stays a clean reference point.
 
 Important boundaries:
 
-- These entitlements do **not** grant filesystem access or execution rights; Seatbelt/App Sandbox policy still governs file access and `dlopen` path visibility.
+- This does **not** grant filesystem access or execution rights; Seatbelt/App Sandbox policy still governs file access and `dlopen` path visibility.
 - Treat debugger attach or library-load outcomes as **observed behavior**, not a blanket guarantee.
 
 ## Core commands (how to use it)
@@ -72,7 +67,7 @@ If your bundle does not contain any helpers under `Contents/Helpers/`, this comm
 This is the core “entitlements as the variable” mode.
 
 ```sh
-$EJ run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] <xpc-service-bundle-id> <probe-id> [probe-args...]
+$EJ run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] <xpc-service-bundle-id> <probe-id> [probe-args...]
 ```
 
 The probe executes **in-process inside the XPC service** (no child-process exec), and returns a JSON result on stdout; the CLI exits with the returned `rc`.
@@ -120,6 +115,12 @@ Probe services:
 - `com.yourteam.entitlement-jail.ProbeService_downloads_rw` — adds `com.apple.security.files.downloads.read-write`
 - `com.yourteam.entitlement-jail.ProbeService_bookmarks_app_scope` — adds `com.apple.security.files.bookmarks.app-scope` (enables ScopedBookmarksAgent IPC used by security-scoped bookmarks)
 - `com.yourteam.entitlement-jail.ProbeService_user_selected_executable` — adds `com.apple.security.files.user-selected.executable` (used primarily for Quarantine Lab calibration)
+- `com.yourteam.entitlement-jail.ProbeService_debuggable` — adds `com.apple.security.get-task-allow`
+- `com.yourteam.entitlement-jail.ProbeService_plugin_host_relaxed` — adds `com.apple.security.cs.disable-library-validation`
+- `com.yourteam.entitlement-jail.ProbeService_dyld_env_enabled` — adds `com.apple.security.cs.allow-dyld-environment-variables`
+- `com.yourteam.entitlement-jail.ProbeService_fully_injectable` — adds `com.apple.security.cs.disable-library-validation` + `com.apple.security.cs.allow-dyld-environment-variables`
+- `com.yourteam.entitlement-jail.ProbeService_jit_map_jit` — adds `com.apple.security.cs.allow-jit`
+- `com.yourteam.entitlement-jail.ProbeService_jit_rwx_legacy` — adds `com.apple.security.cs.allow-unsigned-executable-memory`
 
 Quarantine Lab services:
 
@@ -131,7 +132,7 @@ Quarantine Lab services:
 
 ## Built-in probes (for `run-xpc`)
 
-Probe ids are stable identifiers (not paths). Each returns JSON with fields like `rc`, `normalized_outcome`, `errno`, `error`, `details`, and optional `layer_attribution`.
+Probe ids are stable identifiers (not paths). Each returns JSON with fields like `rc`, `normalized_outcome`, `errno`, `error`, `details`, optional `layer_attribution`, plus correlation and service metadata (`correlation_id`, `service_bundle_id`, timestamps).
 
 Common probes:
 
@@ -140,6 +141,9 @@ Common probes:
 - `world_shape` — reports “world shape” (for example, containerized `HOME`) as an explicit dimension
 - `fs_op` — parameterized filesystem operations (`--op stat|open_read|...`); destructive direct-path ops are refused unless `--allow-unsafe-path` is provided (prefer `--path-class`)
 - `net_op` — parameterized networking (`--op getaddrinfo|tcp_connect|udp_send`)
+- `dlopen_external` — dlopen a signed dylib by absolute path (or `EJ_DLOPEN_PATH`; executes code; use a test dylib)
+- `jit_map_jit` — attempt `mmap` with `MAP_JIT` (`--size <bytes>`)
+- `jit_rwx_legacy` — attempt `mmap` with RWX permissions (`--size <bytes>`)
 - `downloads_rw` — best-effort read/write/remove under Downloads (for the Downloads entitlement)
 - `bookmark_make` / `bookmark_op` — bookmark token generation and bookmark-driven `fs_op` (security-scoped bookmarks require the bookmarks/user-selected entitlement boundary)
 - `bookmark_roundtrip` — create a bookmark token and immediately resolve + run a bookmark-scoped `fs_op`
@@ -162,6 +166,6 @@ If you need Seatbelt-level attribution, inspect unified logs for `Sandbox:` line
 
 ## Safety notes
 
-- `run-xpc` runs probes **in-process** and does not execute arbitrary binaries.
+- `run-xpc` runs probes **in-process** and does not execute arbitrary binaries, except `dlopen_external` (which loads and executes dylib initializers by design).
 - `quarantine-lab` does **not** execute artifacts.
 - `run-system` and `run-embedded` *do* execute processes by design; use them deliberately.

@@ -10,19 +10,47 @@ import Foundation
 
 public struct RunProbeRequest: Codable {
     public var plan_id: String?
+    public var row_id: String?
+    public var correlation_id: String?
     public var probe_id: String
     public var argv: [String]
+    public var expected_outcome: String?
     public var env_overrides: [String: String]?
 
-    public init(plan_id: String?, probe_id: String, argv: [String], env_overrides: [String: String]?) {
+    public init(
+        plan_id: String?,
+        row_id: String? = nil,
+        correlation_id: String? = nil,
+        probe_id: String,
+        argv: [String],
+        expected_outcome: String? = nil,
+        env_overrides: [String: String]?
+    ) {
         self.plan_id = plan_id
+        self.row_id = row_id
+        self.correlation_id = correlation_id
         self.probe_id = probe_id
         self.argv = argv
+        self.expected_outcome = expected_outcome
         self.env_overrides = env_overrides
     }
 }
 
 public struct RunProbeResponse: Codable {
+    public var plan_id: String?
+    public var row_id: String?
+    public var correlation_id: String?
+    public var probe_id: String?
+    public var argv: [String]?
+    public var expected_outcome: String?
+    public var service_bundle_id: String?
+    public var service_name: String?
+    public var service_version: String?
+    public var service_build: String?
+    public var started_at_iso8601: String?
+    public var ended_at_iso8601: String?
+    public var thread_id: String?
+    public var os_status: Int?
     public var rc: Int
     public var stdout: String
     public var stderr: String
@@ -34,6 +62,20 @@ public struct RunProbeResponse: Codable {
     public var sandbox_log_excerpt_ref: String?
 
     public init(
+        plan_id: String? = nil,
+        row_id: String? = nil,
+        correlation_id: String? = nil,
+        probe_id: String? = nil,
+        argv: [String]? = nil,
+        expected_outcome: String? = nil,
+        service_bundle_id: String? = nil,
+        service_name: String? = nil,
+        service_version: String? = nil,
+        service_build: String? = nil,
+        started_at_iso8601: String? = nil,
+        ended_at_iso8601: String? = nil,
+        thread_id: String? = nil,
+        os_status: Int? = nil,
         rc: Int,
         stdout: String,
         stderr: String,
@@ -44,6 +86,20 @@ public struct RunProbeResponse: Codable {
         layer_attribution: LayerAttribution? = nil,
         sandbox_log_excerpt_ref: String?
     ) {
+        self.plan_id = plan_id
+        self.row_id = row_id
+        self.correlation_id = correlation_id
+        self.probe_id = probe_id
+        self.argv = argv
+        self.expected_outcome = expected_outcome
+        self.service_bundle_id = service_bundle_id
+        self.service_name = service_name
+        self.service_version = service_version
+        self.service_build = service_build
+        self.started_at_iso8601 = started_at_iso8601
+        self.ended_at_iso8601 = ended_at_iso8601
+        self.thread_id = thread_id
+        self.os_status = os_status
         self.rc = rc
         self.stdout = stdout
         self.stderr = stderr

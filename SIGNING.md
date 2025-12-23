@@ -9,6 +9,7 @@ This document is the canonical reference for identities, entitlements, signing o
 - XPC services are separate signed targets with their own entitlement plists under `xpc/services/<ServiceName>/Entitlements.plist` (treat the service entitlements as the experimental variable).
 - Every Mach-O executable inside a sandboxed app bundle (helpers, XPC services, etc.) needs explicit signing/sandboxing attention; don’t assume the outer app signature “covers” nested executables (see [Apple Developer QA1773: Common app sandboxing issues](https://developer.apple.com/library/archive/qa/qa1773/_index.html?utm_source=chatgpt.com)).
 - The XPC client helper tools (`xpc-probe-client`, `xpc-quarantine-client`) are embedded under `EntitlementJail.app/Contents/MacOS/` to preserve app bundle context for XPC lookup; they must be signed for sandbox inheritance like other embedded helpers.
+- Optional debugger-side tooling (for example `runner/target/release/ej-inspector`) should be signed separately with `Inspector.entitlements` (`com.apple.security.cs.debugger`) and must **not** be embedded in the app bundle.
 
 Team ID expectation:
 
@@ -42,10 +43,19 @@ codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeServ
 codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_net_client/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_net_client.xpc"
 codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_downloads_rw/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_downloads_rw.xpc"
 codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_user_selected_executable/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_user_selected_executable.xpc"
+codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_debuggable/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_debuggable.xpc"
+codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_plugin_host_relaxed/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_plugin_host_relaxed.xpc"
+codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_dyld_env_enabled/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_dyld_env_enabled.xpc"
+codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_fully_injectable/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_fully_injectable.xpc"
+codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_jit_map_jit/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_jit_map_jit.xpc"
+codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_jit_rwx_legacy/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_jit_rwx_legacy.xpc"
 
 codesign -f --options runtime --timestamp --entitlements "$APP_ENT" -s "$ID" "$APP"
 
 codesign --verify --deep --strict --verbose=4 "$APP"
+
+# Optional: sign the inspector CLI (debugger-side only)
+codesign -f --options runtime --timestamp --entitlements "Inspector.entitlements" -s "$ID" "runner/target/release/ej-inspector"
 ```
 
 Notes:

@@ -85,6 +85,7 @@ Entitlements are a first-class independent variable **only via XPC service targe
 See:
 
 - `experiments/nodes/entitlement-lattice.json` for the entitlement lattice (E0–E4)
+- `experiments/nodes/entitlement-lattice-debug-jit.json` for the debug/JIT/profile lattice (E0, E5–E10; policy profile remains P0_minimal as a baseline reference)
 - `experiments/policy/` for the “attempted equivalent” `.sb` profiles (P0–P4)
 
 Quarantine Lab is the calibration anchor where parity should fail for principled reasons: quarantine metadata deltas are not a Seatbelt policy knob.
@@ -95,6 +96,12 @@ Build the harness + unsandboxed substrate (preferred: Makefile):
 
 ```sh
 make build-experiments
+```
+
+Inspection-friendly Swift build (no optimization):
+
+```sh
+SWIFT_OPT_LEVEL=-Onone make build-experiments
 ```
 
 Build/sign the `.app` with embedded XPC services (preferred: Makefile; see `SIGNING.md` for identities/entitlements order):
@@ -114,6 +121,14 @@ Run the trimmed lattice (E0–E2):
 ```sh
 ./experiments/bin/ej-harness run --nodes experiments/nodes/entitlement-lattice-e0-e2.json
 ```
+
+Run the debug/JIT lattice plan:
+
+```sh
+./experiments/bin/ej-harness run --nodes experiments/nodes/entitlement-lattice-debug-jit.json --plan experiments/plans/tri-run-debug-jit.json
+```
+
+Note: `dlopen_external` is a manual probe (requires an explicit path or `EJ_DLOPEN_PATH`), and DYLD env behavior is intentionally not exercised here.
 
 Run the parametric demo plan (shows `row_id` with multiple `fs_op` rows):
 

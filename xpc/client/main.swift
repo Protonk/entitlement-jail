@@ -3,7 +3,7 @@ import Darwin
 
 private func printUsage() {
     let exe = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "xpc-probe-client"
-    fputs("usage: \(exe) [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] <xpc-service-bundle-id> <probe-id> [probe-args...]\n", stderr)
+    fputs("usage: \(exe) [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] <xpc-service-bundle-id> <probe-id> [probe-args...]\n", stderr)
 }
 
 if ProcessInfo.processInfo.environment["EJ_XPC_CLIENT_DEBUG"] == "1" {
@@ -132,6 +132,10 @@ let args = CommandLine.arguments
 
 var logPath: String?
 var logPredicate: String?
+var planId: String?
+var rowId: String?
+var correlationId: String?
+var expectedOutcome: String?
 
 var idx = 1
 parseLoop: while idx < args.count {
@@ -156,6 +160,38 @@ parseLoop: while idx < args.count {
         }
         logPredicate = args[idx + 1]
         idx += 2
+    case "--plan-id":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --plan-id\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        planId = args[idx + 1]
+        idx += 2
+    case "--row-id":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --row-id\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        rowId = args[idx + 1]
+        idx += 2
+    case "--correlation-id":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --correlation-id\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        correlationId = args[idx + 1]
+        idx += 2
+    case "--expected-outcome":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --expected-outcome\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        expectedOutcome = args[idx + 1]
+        idx += 2
     default:
         break parseLoop
     }
@@ -178,7 +214,19 @@ let probeArgs = Array(args.dropFirst(idx + 2))
 
 let logSpec = logPath.map { LogCaptureSpec(path: $0, predicate: logPredicate) }
 
-let request = RunProbeRequest(plan_id: nil, probe_id: probeId, argv: probeArgs, env_overrides: nil)
+if correlationId == nil {
+    correlationId = UUID().uuidString
+}
+
+let request = RunProbeRequest(
+    plan_id: planId,
+    row_id: rowId,
+    correlation_id: correlationId,
+    probe_id: probeId,
+    argv: probeArgs,
+    expected_outcome: expectedOutcome,
+    env_overrides: nil
+)
 let requestData: Data
 do {
     requestData = try encodeJSON(request)

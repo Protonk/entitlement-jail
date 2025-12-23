@@ -4,8 +4,10 @@ import Security
 
 public enum InProcessProbeCore {
     public static func run(_ req: RunProbeRequest) -> RunProbeResponse {
+        let started = Date()
+        let response: RunProbeResponse
         guard validateProbeId(req.probe_id) else {
-            return RunProbeResponse(
+            response = RunProbeResponse(
                 rc: 2,
                 stdout: "",
                 stderr: "invalid probe_id: \(req.probe_id)",
@@ -19,46 +21,94 @@ public enum InProcessProbeCore {
                 layer_attribution: nil,
                 sandbox_log_excerpt_ref: nil
             )
+            let ended = Date()
+            return decorate(response, req: req, started: started, ended: ended)
         }
 
         let args = Argv(req.argv)
         if args.has("--help") || args.has("-h") {
-            return probeHelpResponse(probeId: req.probe_id)
+            response = probeHelpResponse(probeId: req.probe_id)
+            let ended = Date()
+            return decorate(response, req: req, started: started, ended: ended)
         }
 
         switch req.probe_id {
         case "probe_catalog":
-            return probeCatalog()
+            response = probeCatalog()
         case "world_shape":
-            return probeWorldShape()
+            response = probeWorldShape()
         case "network_tcp_connect":
-            return probeNetworkTCPConnect(argv: req.argv)
+            response = probeNetworkTCPConnect(argv: req.argv)
         case "downloads_rw":
-            return probeDownloadsReadWrite(argv: req.argv)
+            response = probeDownloadsReadWrite(argv: req.argv)
         case "fs_op":
-            return probeFsOp(argv: req.argv)
+            response = probeFsOp(argv: req.argv)
         case "net_op":
-            return probeNetOp(argv: req.argv)
+            response = probeNetOp(argv: req.argv)
+        case "dlopen_external":
+            response = probeDlopenExternal(argv: req.argv)
+        case "jit_map_jit":
+            response = probeJitMapJit(argv: req.argv)
+        case "jit_rwx_legacy":
+            response = probeJitRwxLegacy(argv: req.argv)
         case "bookmark_op":
-            return probeBookmarkOp(argv: req.argv)
+            response = probeBookmarkOp(argv: req.argv)
         case "bookmark_make":
-            return probeBookmarkMake(argv: req.argv)
+            response = probeBookmarkMake(argv: req.argv)
         case "bookmark_roundtrip":
-            return probeBookmarkRoundtrip(argv: req.argv)
+            response = probeBookmarkRoundtrip(argv: req.argv)
         case "capabilities_snapshot":
-            return probeCapabilitiesSnapshot()
+            response = probeCapabilitiesSnapshot()
         case "userdefaults_op":
-            return probeUserDefaultsOp(argv: req.argv)
+            response = probeUserDefaultsOp(argv: req.argv)
         case "fs_xattr":
-            return probeFsXattr(argv: req.argv)
+            response = probeFsXattr(argv: req.argv)
         case "fs_coordinated_op":
-            return probeFsCoordinatedOp(argv: req.argv)
+            response = probeFsCoordinatedOp(argv: req.argv)
         default:
-            return unknownProbeResponse(req.probe_id)
+            response = unknownProbeResponse(req.probe_id)
         }
+        let ended = Date()
+        return decorate(response, req: req, started: started, ended: ended)
     }
 
 	    // MARK: - Common metadata
+
+    private static func decorate(_ response: RunProbeResponse, req: RunProbeRequest, started: Date, ended: Date) -> RunProbeResponse {
+        var response = response
+        let correlationId = req.correlation_id ?? response.correlation_id ?? UUID().uuidString
+
+        response.plan_id = req.plan_id ?? response.plan_id
+        response.row_id = req.row_id ?? response.row_id
+        response.correlation_id = correlationId
+        response.probe_id = req.probe_id
+        response.argv = req.argv
+        response.expected_outcome = req.expected_outcome ?? response.expected_outcome
+        response.service_bundle_id = Bundle.main.bundleIdentifier ?? response.service_bundle_id
+        response.service_name = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? response.service_name
+        response.service_version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? response.service_version
+        response.service_build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? response.service_build
+        response.started_at_iso8601 = iso8601(started)
+        response.ended_at_iso8601 = iso8601(ended)
+        response.thread_id = threadIdString()
+
+        var details = response.details ?? [:]
+        details["correlation_id"] = correlationId
+        response.details = details
+
+        return response
+    }
+
+    private static func iso8601(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+
+    private static func threadIdString() -> String {
+        let tid = pthread_mach_thread_np(pthread_self())
+        return "\(tid)"
+    }
 
     private static func baseDetails(_ extra: [String: String] = [:]) -> [String: String] {
         let pid = getpid()
@@ -206,6 +256,60 @@ fs_op --op <stat|open_read|open_write|create|truncate|rename|unlink|mkdir|rmdir|
             entitlement_hints: ["com.apple.security.network.client"],
             notes: [
                 "--port is required for tcp_connect and udp_send."
+            ]
+        ),
+        ProbeSpec(
+            probe_id: "dlopen_external",
+            summary: "dlopen a signed dylib by absolute path",
+            usage: "dlopen_external --path <abs> (or set EJ_DLOPEN_PATH)",
+            required_args: [
+                "--path <abs> (or EJ_DLOPEN_PATH)"
+            ],
+            optional_args: [],
+            examples: [
+                "dlopen_external --path /path/to/testdylib.dylib"
+            ],
+            entitlement_hints: [
+                "com.apple.security.cs.disable-library-validation",
+                "com.apple.security.cs.allow-dyld-environment-variables (if you rely on DYLD_*)"
+            ],
+            notes: [
+                "Executes dylib initializers; this is not a passive probe.",
+                "Use a signed dylib (see Tests/TestDylib)."
+            ]
+        ),
+        ProbeSpec(
+            probe_id: "jit_map_jit",
+            summary: "attempt mmap with MAP_JIT",
+            usage: "jit_map_jit [--size <bytes>]",
+            required_args: [],
+            optional_args: [
+                "--size <bytes> (default: 16384)"
+            ],
+            examples: [
+                "jit_map_jit",
+                "jit_map_jit --size 65536"
+            ],
+            entitlement_hints: ["com.apple.security.cs.allow-jit"],
+            notes: [
+                "Reports errno on MAP_JIT failure."
+            ]
+        ),
+        ProbeSpec(
+            probe_id: "jit_rwx_legacy",
+            summary: "attempt mmap with RWX permissions (legacy)",
+            usage: "jit_rwx_legacy [--size <bytes>]",
+            required_args: [],
+            optional_args: [
+                "--size <bytes> (default: 16384)"
+            ],
+            examples: [
+                "jit_rwx_legacy",
+                "jit_rwx_legacy --size 65536"
+            ],
+            entitlement_hints: ["com.apple.security.cs.allow-unsigned-executable-memory"],
+            notes: [
+                "Reports errno on RWX mmap failure."
             ]
         ),
         ProbeSpec(
@@ -577,7 +681,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
         var addrCopy = addr
         let connectResult: Int32 = withUnsafePointer(to: &addrCopy) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
-                Darwin.connect(fd, saPtr, socklen_t(MemoryLayout<sockaddr_in>.stride))
+                ej_connect(fd, saPtr, socklen_t(MemoryLayout<sockaddr_in>.stride))
             }
         }
 
@@ -935,9 +1039,9 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                if resolvedTarget.runDir != nil && !FileManager.default.fileExists(atPath: targetPath) {
 	                    try writeSmallFile(path: targetPath, bytes: Data("x".utf8))
 	                }
-	                let fd = targetPath.withCString { ptr in
-	                    open(ptr, O_RDONLY)
-	                }
+                let fd = targetPath.withCString { ptr in
+                    ej_open(ptr, O_RDONLY, 0)
+                }
 	                if fd < 0 {
 	                    let e = errno
 	                    let outcome = (e == ENOENT) ? "not_found" : ((e == EPERM || e == EACCES) ? "permission_error" : "open_failed")
@@ -959,9 +1063,9 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                if resolvedTarget.runDir != nil {
 	                    try createParentDirsIfNeeded(for: targetPath)
 	                }
-	                let fd = targetPath.withCString { ptr in
-	                    open(ptr, O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR)
-	                }
+                let fd = targetPath.withCString { ptr in
+                    ej_open(ptr, O_WRONLY | O_CREAT, Int32(S_IRUSR | S_IWUSR))
+                }
 	                if fd < 0 {
 	                    let e = errno
 	                    let outcome = (e == EPERM || e == EACCES) ? "permission_error" : "open_failed"
@@ -1202,7 +1306,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                ai_next: nil
 	            )
 	            var res: UnsafeMutablePointer<addrinfo>?
-	            let rc = getaddrinfo(host, nil, &hints, &res)
+            let rc = ej_getaddrinfo(host, nil, &hints, &res)
 	            if rc != 0 {
 	                return RunProbeResponse(
 	                    rc: 1,
@@ -1264,7 +1368,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                ai_next: nil
 	            )
 	            var res: UnsafeMutablePointer<addrinfo>?
-	            let gai = getaddrinfo(host, String(port), &hints, &res)
+            let gai = ej_getaddrinfo(host, String(port), &hints, &res)
 	            if gai != 0 {
 	                return RunProbeResponse(
 	                    rc: 1,
@@ -1295,7 +1399,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                defer { close(fd) }
 
 	                if op == .tcp_connect {
-	                    if Darwin.connect(fd, ai.ai_addr, ai.ai_addrlen) == 0 {
+                    if ej_connect(fd, ai.ai_addr, ai.ai_addrlen) == 0 {
 	                        details["attempts"] = "\(attempts)"
 	                        details["connect"] = "ok"
 	                        return RunProbeResponse(rc: 0, stdout: "", stderr: "", normalized_outcome: "ok", errno: nil, error: nil, details: details, layer_attribution: nil, sandbox_log_excerpt_ref: nil)
@@ -1303,9 +1407,9 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                    lastErrno = errno
 	                } else {
 	                    var b: UInt8 = 0x58
-	                    let sent = withUnsafePointer(to: &b) { ptr in
-	                        sendto(fd, ptr, 1, 0, ai.ai_addr, ai.ai_addrlen)
-	                    }
+                    let sent = withUnsafePointer(to: &b) { ptr in
+                        ej_sendto(fd, ptr, 1, 0, ai.ai_addr, ai.ai_addrlen)
+                    }
 	                    if sent == 1 {
 	                        details["attempts"] = "\(attempts)"
 	                        details["bytes_sent"] = "1"
@@ -1344,6 +1448,189 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                sandbox_log_excerpt_ref: nil
 	            )
 	        }
+	    }
+
+	    // MARK: - dlopen_external (library validation / injection surface)
+
+	    private static func probeDlopenExternal(argv: [String]) -> RunProbeResponse {
+	        let args = Argv(argv)
+	        let path = args.value("--path") ?? ProcessInfo.processInfo.environment["EJ_DLOPEN_PATH"]
+	        guard let path, path.hasPrefix("/") else {
+	            return badRequest("missing/invalid --path (expected absolute path or EJ_DLOPEN_PATH)")
+	        }
+
+	        var details = baseDetails([
+	            "probe_family": "dlopen_external",
+	            "dlopen_path": path,
+	            "dlopen_mode": "RTLD_NOW",
+	            "has_disable_library_validation": entitlementBool("com.apple.security.cs.disable-library-validation") ? "true" : "false",
+	            "has_allow_dyld_env": entitlementBool("com.apple.security.cs.allow-dyld-environment-variables") ? "true" : "false",
+	        ])
+
+	        if !FileManager.default.fileExists(atPath: path) {
+	            return RunProbeResponse(
+	                rc: 1,
+	                stdout: "",
+	                stderr: "",
+	                normalized_outcome: "not_found",
+	                errno: nil,
+	                error: "file not found",
+	                details: details,
+	                layer_attribution: nil,
+	                sandbox_log_excerpt_ref: nil
+	            )
+	        }
+
+	        dlerror()
+	        let handle = path.withCString { ptr in
+	            ej_dlopen(ptr, Int32(RTLD_NOW))
+	        }
+	        if let handle {
+	            dlclose(handle)
+	            return RunProbeResponse(
+	                rc: 0,
+	                stdout: "",
+	                stderr: "",
+	                normalized_outcome: "ok",
+	                errno: nil,
+	                error: nil,
+	                details: details,
+	                layer_attribution: nil,
+	                sandbox_log_excerpt_ref: nil
+	            )
+	        }
+
+	        let errPtr = dlerror()
+	        let errStr = errPtr.map { String(cString: $0) } ?? "dlopen failed (no error string)"
+	        details["dlopen_error"] = errStr
+	        return RunProbeResponse(
+	            rc: 1,
+	            stdout: "",
+	            stderr: "",
+	            normalized_outcome: "dlopen_failed",
+	            errno: nil,
+	            error: errStr,
+	            details: details,
+	            layer_attribution: nil,
+	            sandbox_log_excerpt_ref: nil
+	        )
+	    }
+
+	    // MARK: - jit_map_jit (MAP_JIT probe)
+
+	    private static func probeJitMapJit(argv: [String]) -> RunProbeResponse {
+	        let args = Argv(argv)
+	        let size = args.intValue("--size") ?? 16384
+	        guard size > 0 else {
+	            return badRequest("invalid --size (expected > 0)")
+	        }
+
+	        var details = baseDetails([
+	            "probe_family": "jit_map_jit",
+	            "size": "\(size)",
+	            "has_allow_jit": entitlementBool("com.apple.security.cs.allow-jit") ? "true" : "false",
+	        ])
+
+	        let flags = MAP_PRIVATE | MAP_ANON | MAP_JIT
+	        let prot = PROT_READ | PROT_WRITE
+	        guard let ptr = ej_mmap(nil, size, prot, flags, -1, 0), ptr != MAP_FAILED else {
+	            let e = errno
+	            let outcome = (e == EPERM || e == EACCES) ? "permission_error" : "mmap_failed"
+	            return RunProbeResponse(
+	                rc: 1,
+	                stdout: "",
+	                stderr: "",
+	                normalized_outcome: outcome,
+	                errno: Int(e),
+	                error: String(cString: strerror(e)),
+	                details: details,
+	                layer_attribution: nil,
+	                sandbox_log_excerpt_ref: nil
+	            )
+	        }
+
+	        let addr = UInt64(UInt(bitPattern: ptr))
+	        details["mmap_addr"] = String(format: "0x%llx", addr)
+
+	        pthread_jit_write_protect_np(0)
+	        pthread_jit_write_protect_np(1)
+	        details["jit_write_protect_off_rc"] = "called"
+	        details["jit_write_protect_on_rc"] = "called"
+
+	        var outcome = "ok"
+	        let unmapRc = ej_munmap(ptr, size)
+	        if unmapRc != 0 {
+	            outcome = "ok_unmap_failed"
+	            details["munmap_error"] = String(cString: strerror(errno))
+	        }
+
+	        return RunProbeResponse(
+	            rc: 0,
+	            stdout: "",
+	            stderr: "",
+	            normalized_outcome: outcome,
+	            errno: nil,
+	            error: nil,
+	            details: details,
+	            layer_attribution: nil,
+	            sandbox_log_excerpt_ref: nil
+	        )
+	    }
+
+	    // MARK: - jit_rwx_legacy (RWX mmap probe)
+
+	    private static func probeJitRwxLegacy(argv: [String]) -> RunProbeResponse {
+	        let args = Argv(argv)
+	        let size = args.intValue("--size") ?? 16384
+	        guard size > 0 else {
+	            return badRequest("invalid --size (expected > 0)")
+	        }
+
+	        var details = baseDetails([
+	            "probe_family": "jit_rwx_legacy",
+	            "size": "\(size)",
+	            "has_allow_unsigned_exec_mem": entitlementBool("com.apple.security.cs.allow-unsigned-executable-memory") ? "true" : "false",
+	        ])
+
+	        let flags = MAP_PRIVATE | MAP_ANON
+	        let prot = PROT_READ | PROT_WRITE | PROT_EXEC
+	        guard let ptr = ej_mmap(nil, size, prot, flags, -1, 0), ptr != MAP_FAILED else {
+	            let e = errno
+	            let outcome = (e == EPERM || e == EACCES) ? "permission_error" : "mmap_failed"
+	            return RunProbeResponse(
+	                rc: 1,
+	                stdout: "",
+	                stderr: "",
+	                normalized_outcome: outcome,
+	                errno: Int(e),
+	                error: String(cString: strerror(e)),
+	                details: details,
+	                layer_attribution: nil,
+	                sandbox_log_excerpt_ref: nil
+	            )
+	        }
+
+	        let addr = UInt64(UInt(bitPattern: ptr))
+	        details["mmap_addr"] = String(format: "0x%llx", addr)
+
+	        var outcome = "ok"
+	        let unmapRc = ej_munmap(ptr, size)
+	        if unmapRc != 0 {
+	            outcome = "ok_unmap_failed"
+	            details["munmap_error"] = String(cString: strerror(errno))
+	        }
+
+	        return RunProbeResponse(
+	            rc: 0,
+	            stdout: "",
+	            stderr: "",
+	            normalized_outcome: outcome,
+	            errno: nil,
+	            error: nil,
+	            details: details,
+	            layer_attribution: nil,
+	            sandbox_log_excerpt_ref: nil
+	        )
 	    }
 
 	    // MARK: - bookmark_op (security-scoped bookmark-driven fs ops)
@@ -1891,6 +2178,11 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 		        let details = baseDetails([
 		            "probe_family": "capabilities_snapshot",
 		            "has_app_sandbox": entitlementBool("com.apple.security.app-sandbox") ? "true" : "false",
+		            "has_get_task_allow": entitlementBool("com.apple.security.get-task-allow") ? "true" : "false",
+		            "has_disable_library_validation": entitlementBool("com.apple.security.cs.disable-library-validation") ? "true" : "false",
+		            "has_allow_dyld_env": entitlementBool("com.apple.security.cs.allow-dyld-environment-variables") ? "true" : "false",
+		            "has_allow_jit": entitlementBool("com.apple.security.cs.allow-jit") ? "true" : "false",
+		            "has_allow_unsigned_exec_mem": entitlementBool("com.apple.security.cs.allow-unsigned-executable-memory") ? "true" : "false",
 		            "has_network_client": entitlementBool("com.apple.security.network.client") ? "true" : "false",
 		            "has_downloads_rw": entitlementBool("com.apple.security.files.downloads.read-write") ? "true" : "false",
 		            "has_bookmarks_app_scope": entitlementBool("com.apple.security.files.bookmarks.app-scope") ? "true" : "false",
@@ -2214,3 +2506,67 @@ private struct Argv {
 	        args.contains(flag)
 	    }
 	}
+
+@_silgen_name("open")
+private func c_open(_ path: UnsafePointer<CChar>?, _ flags: Int32, _ mode: Int32) -> Int32
+
+@_cdecl("ej_open")
+@inline(never)
+public func ej_open(_ path: UnsafePointer<CChar>?, _ flags: Int32, _ mode: Int32) -> Int32 {
+    c_open(path, flags, mode)
+}
+
+@_cdecl("ej_connect")
+@inline(never)
+public func ej_connect(_ socket: Int32, _ addr: UnsafePointer<sockaddr>?, _ len: socklen_t) -> Int32 {
+    Darwin.connect(socket, addr, len)
+}
+
+@_cdecl("ej_getaddrinfo")
+@inline(never)
+public func ej_getaddrinfo(
+    _ node: UnsafePointer<CChar>?,
+    _ service: UnsafePointer<CChar>?,
+    _ hints: UnsafePointer<addrinfo>?,
+    _ res: UnsafeMutablePointer<UnsafeMutablePointer<addrinfo>?>?
+) -> Int32 {
+    getaddrinfo(node, service, hints, res)
+}
+
+@_cdecl("ej_sendto")
+@inline(never)
+public func ej_sendto(
+    _ socket: Int32,
+    _ buffer: UnsafeRawPointer?,
+    _ len: Int,
+    _ flags: Int32,
+    _ addr: UnsafePointer<sockaddr>?,
+    _ addrlen: socklen_t
+) -> Int {
+    sendto(socket, buffer, len, flags, addr, addrlen)
+}
+
+@_cdecl("ej_dlopen")
+@inline(never)
+public func ej_dlopen(_ path: UnsafePointer<CChar>?, _ mode: Int32) -> UnsafeMutableRawPointer? {
+    dlopen(path, mode)
+}
+
+@_cdecl("ej_mmap")
+@inline(never)
+public func ej_mmap(
+    _ addr: UnsafeMutableRawPointer?,
+    _ len: Int,
+    _ prot: Int32,
+    _ flags: Int32,
+    _ fd: Int32,
+    _ offset: Int64
+) -> UnsafeMutableRawPointer? {
+    mmap(addr, len, prot, flags, fd, offset)
+}
+
+@_cdecl("ej_munmap")
+@inline(never)
+public func ej_munmap(_ addr: UnsafeMutableRawPointer?, _ len: Int) -> Int32 {
+    munmap(addr, len)
+}

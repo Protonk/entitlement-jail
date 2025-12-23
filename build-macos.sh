@@ -33,6 +33,7 @@ XPC_QUARANTINE_CLIENT_MAIN="${XPC_ROOT}/quarantine-client/main.swift"
 XPC_SERVICES_DIR="${XPC_ROOT}/services"
 # Swift/Clang module cache must be writable; the harness sandbox often blocks the default path under ~/.cache.
 SWIFT_MODULE_CACHE="${SWIFT_MODULE_CACHE:-.tmp/swift-module-cache}"
+SWIFT_OPT_LEVEL="${SWIFT_OPT_LEVEL:--O}"
 
 # Signing identity. Prefer env override; otherwise require user to set it.
 IDENTITY="${IDENTITY:-}"
@@ -127,12 +128,12 @@ if [[ "${BUILD_XPC}" == "1" ]]; then
 
   echo "==> Building embedded XPC client (must live under Contents/MacOS so Bundle.main resolves to the app)"
   mkdir -p "${SWIFT_MODULE_CACHE}"
-  "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" -O -o "${APP_BUNDLE}/Contents/MacOS/xpc-probe-client" "${XPC_API_FILE}" "${XPC_CLIENT_MAIN}"
+  "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_OPT_LEVEL}" -o "${APP_BUNDLE}/Contents/MacOS/xpc-probe-client" "${XPC_API_FILE}" "${XPC_CLIENT_MAIN}"
   chmod +x "${APP_BUNDLE}/Contents/MacOS/xpc-probe-client"
 
   if [[ -f "${XPC_QUARANTINE_CLIENT_MAIN}" ]]; then
     echo "==> Building embedded XPC quarantine client"
-    "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" -O -o "${APP_BUNDLE}/Contents/MacOS/xpc-quarantine-client" "${XPC_API_FILE}" "${XPC_QUARANTINE_CLIENT_MAIN}"
+    "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_OPT_LEVEL}" -o "${APP_BUNDLE}/Contents/MacOS/xpc-quarantine-client" "${XPC_API_FILE}" "${XPC_QUARANTINE_CLIENT_MAIN}"
     chmod +x "${APP_BUNDLE}/Contents/MacOS/xpc-quarantine-client"
   fi
 
@@ -153,7 +154,7 @@ if [[ "${BUILD_XPC}" == "1" ]]; then
 
       mkdir -p "${svc_bundle}/Contents/MacOS"
       cp "${svc_info}" "${svc_bundle}/Contents/Info.plist"
-      "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" -O -o "${svc_bundle}/Contents/MacOS/${svc_name}" "${XPC_API_FILE}" "${XPC_PROBE_CORE_FILE}" "${svc_main}"
+      "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_OPT_LEVEL}" -o "${svc_bundle}/Contents/MacOS/${svc_name}" "${XPC_API_FILE}" "${XPC_PROBE_CORE_FILE}" "${svc_main}"
       chmod +x "${svc_bundle}/Contents/MacOS/${svc_name}"
     done
   fi

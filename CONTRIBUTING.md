@@ -1,6 +1,6 @@
 # CONTRIBUTING
 
-Contributions here are experiments, not product features: keep entitlements as the independent variable by adding or modifying **XPC services**, and keep probes in-process (no exec-by-path). When you add probes, use `baseDetails(...)` so every response carries `service_pid`/`probe_pid` and can be tied to **host-side** sandbox log capture; in-app log capture is diagnostic only and not evidence.
+Contributions here are experiments, not product features: keep entitlements as the independent variable by adding or modifying **XPC services**, and keep probes in-process (no exec-by-path). When you add probes, use `baseDetails(...)` so every response carries `service_pid`/`probe_pid` and can be tied to **host-side** sandbox log capture; in-app log capture is diagnostic only and not evidence. If you add new entitlement profiles, also add a focused lattice file under `experiments/nodes/` (and a plan under `experiments/plans/` when helpful) so the harness can exercise the profiles without changing the default lattice.
 
 The worked examples below cover the two most common extension paths: adding an entitlement-variant XPC service and adding a new probe. As you follow them, keep the discovery surfaces in sync (`probe_catalog`, per-probe `--help`, and the substrate usage list) so other agents can run the examples without reading source first.
 

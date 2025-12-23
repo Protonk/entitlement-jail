@@ -24,7 +24,7 @@ Usage:
 ```sh
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-system <absolute-platform-binary> [args...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-embedded <tool-name> [args...]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] <xpc-service-bundle-id> <probe-id> [probe-args...]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] <xpc-service-bundle-id> <probe-id> [probe-args...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
 ```
 
@@ -72,6 +72,8 @@ Behavior:
 - Verifies the resolved target exists and is executable.
 - Spawns it as a child process and exits with the child’s exit status.
 
+Note: treat `run-embedded` as an inheritance demo surface only; use XPC services for entitlements-as-a-variable experiments.
+
 ## `run-xpc`: launchd-managed XPC services (preferred)
 
 `run-xpc` delegates to an embedded Swift helper (`xpc-probe-client`) that speaks NSXPC. The main `entitlement-jail` binary does not talk XPC directly.
@@ -83,7 +85,7 @@ Helper location (important):
 
 Invocation:
 
-- `run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] <xpc-service-bundle-id> <probe-id> [probe-args...]`
+- `run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] <xpc-service-bundle-id> <probe-id> [probe-args...]`
 - Example service bundle id: `com.yourteam.entitlement-jail.ProbeService_minimal`
 
 Built-in probe ids (in-process):
@@ -94,6 +96,9 @@ Built-in probe ids (in-process):
 - `downloads_rw` (`[--name <file-name>]`)
 - `fs_op` (`--op <...> (--path <abs> | --path-class <...>) [--allow-unsafe-path]`)
 - `net_op` (`--op <getaddrinfo|tcp_connect|udp_send> --host <host> [--port <1..65535>] [--numeric]`)
+- `dlopen_external` (`--path <abs>` or `EJ_DLOPEN_PATH`)
+- `jit_map_jit` (`[--size <bytes>]`)
+- `jit_rwx_legacy` (`[--size <bytes>]`)
 - `bookmark_op` (`--bookmark-b64 <base64> | --bookmark-path <path> [--relative <rel>] [--op <fs-op>] [--allow-unsafe-path]`)
 - `bookmark_make` (`--path <abs> [--no-security-scope] [--read-only] [--allow-missing]`)
 - `bookmark_roundtrip` (`--path <abs> [--op <fs-op>] [--relative <rel>] [--no-security-scope] [--read-only] [--allow-missing] [--allow-unsafe-path]`)
@@ -106,6 +111,7 @@ Notes:
 
 - `probe_catalog` outputs JSON in `stdout`; use `<probe-id> --help` for per-probe usage (help text is returned in JSON `stdout`).
 - Filesystem probes are safe-by-default: destructive direct-path operations are refused unless you target a harness path (for `fs_op`/`fs_coordinated_op` via `--path-class`/`--target`, or for `fs_xattr` via an explicit path under `*/entitlement-jail-harness/*`) or pass `--allow-unsafe-path` (or `--allow-write` for `fs_xattr`).
+- `dlopen_external` loads and executes dylib initializers by design; use a signed test dylib.
 - `--log-sandbox`/`--log-stream` writes a best-effort unified log excerpt filtered to `Sandbox:` lines for the probe PID (uses `log show`; absence of deny lines is not a denial claim).
 - When `run-xpc` runs inside `EntitlementJail.app`, `/usr/bin/log` may be blocked by the app sandbox; log capture will report an error instead of a denial signal.
 - `--log-sandbox`/`--log-predicate` must appear before `<xpc-service-bundle-id>`.
@@ -122,6 +128,14 @@ Why XPC:
 
 - Each `.xpc` is a separate signed target with its own entitlements, and is launchd-managed.
 - This makes entitlements a first-class experimental variable without relying on child-process inheritance quirks.
+
+Example (dlopen_external):
+
+```sh
+IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' Tests/TestDylib/build.sh
+EJ_DLOPEN_PATH="$PWD/Tests/TestDylib/out/testdylib.dylib" \
+  ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc com.yourteam.entitlement-jail.ProbeService_plugin_host_relaxed dlopen_external
+```
 
 ## `quarantine-lab`: write/open artifacts and report `com.apple.quarantine`
 
@@ -186,6 +200,34 @@ Behavior:
 - Optionally runs `spctl --assess --type execute` (assessment only; does not execute the file).
 
 Do not run the observer from inside `EntitlementJail.app` (or any sandboxed parent), or you lose the “outside the sandbox” boundary and mix attribution.
+
+## Optional debugger-side tool: `ej-inspector`
+
+`ej-inspector` is a standalone CLI that checks a target’s codesign identity (Team ID + bundle id/prefix) before attempting `task_for_pid`. If allowed, it immediately deallocates the task port and exits; it does not attach or manipulate state.
+
+Build:
+
+```sh
+cargo build --manifest-path runner/Cargo.toml --release --bin ej-inspector
+```
+
+Sign (optional but required for `task_for_pid` in most cases):
+
+```sh
+codesign --force --options runtime --timestamp --entitlements Inspector.entitlements -s "$ID" runner/target/release/ej-inspector
+```
+
+Usage:
+
+```sh
+runner/target/release/ej-inspector <pid> --team-id <TEAMID> --bundle-id-prefix com.yourteam.entitlement-jail.
+```
+
+Notes:
+
+- The target must also carry `com.apple.security.get-task-allow` for debugger attach to succeed.
+- If you omit `--bundle-id-prefix`/`--bundle-id`, the tool defaults to `com.yourteam.entitlement-jail.`.
+- Use this tool outside the sandbox boundary; do not run it from inside `EntitlementJail.app`.
 
 ## Layer attribution model
 

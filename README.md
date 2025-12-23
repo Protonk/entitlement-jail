@@ -33,13 +33,19 @@ Instead, entitlements become a first-class independent variable only via **XPC s
   - `run-embedded`: bundle-embedded helper tools (sandbox inheritance; strict signing constraints)
   - `run-xpc`: delegate probe execution to a selected XPC service target
   - `quarantine-lab`: write/open/copy artifacts and report `com.apple.quarantine` deltas (no execution)
-- **Main app entitlements (research defaults)**: `com.apple.security.app-sandbox`, `com.apple.security.get-task-allow`, `com.apple.security.cs.disable-library-validation` (main app only; XPC services keep their own entitlements; this does not grant filesystem access).
+- **Main app entitlements (research defaults)**: `com.apple.security.app-sandbox` only. Debug/injection/JIT entitlements live on dedicated XPC targets, not the controller.
 - **Entitlement lattice (XPC targets)**: one-knob-per-service, currently including:
-  - minimal sandbox
+  - minimal sandbox (baseline)
   - network client
   - Downloads read-write
   - user-selected executable (Quarantine Lab calibration)
   - bookmarks app-scope (calibrates the ScopedBookmarksAgent IPC boundary used by security-scoped bookmarks)
+  - debuggable (`get-task-allow`)
+  - plugin host relaxed (`disable-library-validation`)
+  - DYLD env enabled (`allow-dyld-environment-variables`)
+  - fully injectable at launch (disable-library-validation + allow-dyld-environment-variables)
+  - JIT MAP_JIT (`allow-jit`)
+  - JIT legacy RWX (`allow-unsigned-executable-memory`)
 - **Experiment harness**: `experiments/bin/ej-harness` runs tri-runs and writes an `atlas.json`
 - **Probe substrate**: `experiments/bin/witness-substrate` runs the same probes outside XPC (baseline/policy witnesses)
 
@@ -67,10 +73,22 @@ Build/sign the `.app`:
 IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' make build
 ```
 
+Inspection-friendly Swift build (no optimization):
+
+```sh
+SWIFT_OPT_LEVEL=-Onone IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' make build
+```
+
 Run the default tri-run plan (writes `experiments/out/.../atlas.json` and prints the path):
 
 ```sh
 ./experiments/bin/ej-harness run
+```
+
+Run the debug/JIT lattice plan:
+
+```sh
+./experiments/bin/ej-harness run --nodes experiments/nodes/entitlement-lattice-debug-jit.json --plan experiments/plans/tri-run-debug-jit.json
 ```
 
 ## Research posture

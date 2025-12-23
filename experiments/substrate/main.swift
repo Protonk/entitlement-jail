@@ -20,6 +20,9 @@ private func printUsage() {
                                [--target <base|harness_dir|run_dir|specimen_file>] [--name <file-name>] [--to <path>] [--to-name <file-name>]
                                [--max-entries <n>] [--allow-unsafe-path]
           net_op                --op <getaddrinfo|tcp_connect|udp_send> --host <host> [--port <1..65535>] [--numeric]
+          dlopen_external       --path <abs> (or set EJ_DLOPEN_PATH)
+          jit_map_jit           [--size <bytes>]
+          jit_rwx_legacy        [--size <bytes>]
           bookmark_op           --bookmark-b64 <base64> | --bookmark-path <path>
                                [--relative <rel>] [--op <fs_op-op>] [--allow-unsafe-path]
           bookmark_make         --path <abs> [--no-security-scope] [--read-only] [--allow-missing]
