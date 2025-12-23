@@ -115,7 +115,7 @@ Probe services:
 - `com.yourteam.entitlement-jail.ProbeService_downloads_rw` — adds `com.apple.security.files.downloads.read-write`
 - `com.yourteam.entitlement-jail.ProbeService_bookmarks_app_scope` — adds `com.apple.security.files.bookmarks.app-scope` (enables ScopedBookmarksAgent IPC used by security-scoped bookmarks)
 - `com.yourteam.entitlement-jail.ProbeService_user_selected_executable` — adds `com.apple.security.files.user-selected.executable` (used primarily for Quarantine Lab calibration)
-- `com.yourteam.entitlement-jail.ProbeService_debuggable` — adds `com.apple.security.get-task-allow`
+- `com.yourteam.entitlement-jail.ProbeService_debuggable` — adds `com.apple.security.get-task-allow` + `com.apple.security.cs.disable-library-validation` (notarization compatibility)
 - `com.yourteam.entitlement-jail.ProbeService_plugin_host_relaxed` — adds `com.apple.security.cs.disable-library-validation`
 - `com.yourteam.entitlement-jail.ProbeService_dyld_env_enabled` — adds `com.apple.security.cs.allow-dyld-environment-variables`
 - `com.yourteam.entitlement-jail.ProbeService_fully_injectable` — adds `com.apple.security.cs.disable-library-validation` + `com.apple.security.cs.allow-dyld-environment-variables`

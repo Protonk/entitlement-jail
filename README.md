@@ -40,7 +40,7 @@ Instead, entitlements become a first-class independent variable only via **XPC s
   - Downloads read-write
   - user-selected executable (Quarantine Lab calibration)
   - bookmarks app-scope (calibrates the ScopedBookmarksAgent IPC boundary used by security-scoped bookmarks)
-  - debuggable (`get-task-allow`)
+  - debuggable (`get-task-allow` + `disable-library-validation` for notarization compatibility)
   - plugin host relaxed (`disable-library-validation`)
   - DYLD env enabled (`allow-dyld-environment-variables`)
   - fully injectable at launch (disable-library-validation + allow-dyld-environment-variables)
