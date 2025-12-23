@@ -12,7 +12,7 @@ fn print_usage() {
 usage:
   entitlement-jail run-system <absolute-platform-binary> [args...]
   entitlement-jail run-embedded <tool-name> [args...]
-  entitlement-jail run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] <xpc-service-bundle-id> <probe-id> [probe-args...]
+  entitlement-jail run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]
   entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
 
 notes:
@@ -235,7 +235,8 @@ fn main() {
                     | Some("--plan-id")
                     | Some("--row-id")
                     | Some("--correlation-id")
-                    | Some("--expected-outcome") => {
+                    | Some("--expected-outcome")
+                    | Some("--hold-open") => {
                         if idx + 1 >= args.len() {
                             eprintln!("missing value for {}", args[idx].to_string_lossy());
                             print_usage();

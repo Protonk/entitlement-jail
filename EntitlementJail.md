@@ -67,7 +67,7 @@ If your bundle does not contain any helpers under `Contents/Helpers/`, this comm
 This is the core “entitlements as the variable” mode.
 
 ```sh
-$EJ run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] <xpc-service-bundle-id> <probe-id> [probe-args...]
+$EJ run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]
 ```
 
 The probe executes **in-process inside the XPC service** (no child-process exec), and returns a JSON result on stdout; the CLI exits with the returned `rc`.
@@ -118,7 +118,7 @@ Probe services:
 - `com.yourteam.entitlement-jail.ProbeService_debuggable` — adds `com.apple.security.get-task-allow` + `com.apple.security.cs.disable-library-validation` (notarization compatibility)
 - `com.yourteam.entitlement-jail.ProbeService_plugin_host_relaxed` — adds `com.apple.security.cs.disable-library-validation`
 - `com.yourteam.entitlement-jail.ProbeService_dyld_env_enabled` — adds `com.apple.security.cs.allow-dyld-environment-variables`
-- `com.yourteam.entitlement-jail.ProbeService_fully_injectable` — adds `com.apple.security.cs.disable-library-validation` + `com.apple.security.cs.allow-dyld-environment-variables`
+- `com.yourteam.entitlement-jail.ProbeService_fully_injectable` — adds `com.apple.security.get-task-allow` + `com.apple.security.cs.disable-library-validation` + `com.apple.security.cs.allow-dyld-environment-variables` + `com.apple.security.cs.allow-jit` + `com.apple.security.cs.allow-unsigned-executable-memory`
 - `com.yourteam.entitlement-jail.ProbeService_jit_map_jit` — adds `com.apple.security.cs.allow-jit`
 - `com.yourteam.entitlement-jail.ProbeService_jit_rwx_legacy` — adds `com.apple.security.cs.allow-unsigned-executable-memory`
 

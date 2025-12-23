@@ -67,7 +67,7 @@ Current services:
 - `ProbeService_debuggable`: identical code to `ProbeService_minimal`, but with `com.apple.security.get-task-allow`.
 - `ProbeService_plugin_host_relaxed`: identical code to `ProbeService_minimal`, but with `com.apple.security.cs.disable-library-validation`.
 - `ProbeService_dyld_env_enabled`: identical code to `ProbeService_minimal`, but with `com.apple.security.cs.allow-dyld-environment-variables`.
-- `ProbeService_fully_injectable`: identical code to `ProbeService_minimal`, but with `com.apple.security.cs.disable-library-validation` + `com.apple.security.cs.allow-dyld-environment-variables`.
+- `ProbeService_fully_injectable`: identical code to `ProbeService_minimal`, but with `com.apple.security.get-task-allow` + `com.apple.security.cs.disable-library-validation` + `com.apple.security.cs.allow-dyld-environment-variables` + `com.apple.security.cs.allow-jit` + `com.apple.security.cs.allow-unsigned-executable-memory`.
 - `ProbeService_jit_map_jit`: identical code to `ProbeService_minimal`, but with `com.apple.security.cs.allow-jit`.
 - `ProbeService_jit_rwx_legacy`: identical code to `ProbeService_minimal`, but with `com.apple.security.cs.allow-unsigned-executable-memory`.
 - `QuarantineLab_default`: writes/opens/copies artifacts and reports `com.apple.quarantine` deltas.

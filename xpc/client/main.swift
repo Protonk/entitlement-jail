@@ -3,7 +3,7 @@ import Darwin
 
 private func printUsage() {
     let exe = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "xpc-probe-client"
-    fputs("usage: \(exe) [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] <xpc-service-bundle-id> <probe-id> [probe-args...]\n", stderr)
+    fputs("usage: \(exe) [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]\n", stderr)
 }
 
 if ProcessInfo.processInfo.environment["EJ_XPC_CLIENT_DEBUG"] == "1" {
@@ -136,6 +136,7 @@ var planId: String?
 var rowId: String?
 var correlationId: String?
 var expectedOutcome: String?
+var holdOpenSeconds: TimeInterval?
 
 var idx = 1
 parseLoop: while idx < args.count {
@@ -191,6 +192,20 @@ parseLoop: while idx < args.count {
             exit(2)
         }
         expectedOutcome = args[idx + 1]
+        idx += 2
+    case "--hold-open":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --hold-open\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        let raw = args[idx + 1]
+        guard let secs = Double(raw), secs >= 0 else {
+            fputs("invalid value for --hold-open (expected seconds >= 0)\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        holdOpenSeconds = secs
         idx += 2
     default:
         break parseLoop
@@ -273,6 +288,9 @@ proxy.runProbe(requestData) { responseData in
 
     if let spec = logSpec {
         captureSandboxLog(spec: spec, response: decodedResponse, serviceName: serviceName, started: started, ended: ended)
+    }
+    if let hold = holdOpenSeconds, hold > 0 {
+        Thread.sleep(forTimeInterval: hold)
     }
     semaphore.signal()
 }

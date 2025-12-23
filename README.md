@@ -43,7 +43,7 @@ Instead, entitlements become a first-class independent variable only via **XPC s
   - debuggable (`get-task-allow` + `disable-library-validation` for notarization compatibility)
   - plugin host relaxed (`disable-library-validation`)
   - DYLD env enabled (`allow-dyld-environment-variables`)
-  - fully injectable at launch (disable-library-validation + allow-dyld-environment-variables)
+  - fully injectable at launch (get-task-allow + disable-library-validation + allow-dyld-environment-variables + allow-jit + allow-unsigned-executable-memory)
   - JIT MAP_JIT (`allow-jit`)
   - JIT legacy RWX (`allow-unsigned-executable-memory`)
 - **Experiment harness**: `experiments/bin/ej-harness` runs tri-runs and writes an `atlas.json`
