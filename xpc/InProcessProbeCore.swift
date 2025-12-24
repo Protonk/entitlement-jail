@@ -1219,11 +1219,11 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	        return response
 	    }
 
-	    private static func waitForFifo(path: String, timeoutMs: Int?) -> WaitResult {
-	        let lock = NSLock()
-	        var openedFd: Int32 = -1
-	        var openErrno: Int32?
-	        let sema = DispatchSemaphore(value: 0)
+		    private static func waitForFifo(path: String, timeoutMs: Int?) -> WaitResult {
+		        let lock = NSLock()
+		        var openedFd: Int32 = -1
+		        var openErrno: Int32?
+		        let sema = DispatchSemaphore(value: 0)
 
 	        DispatchQueue.global(qos: .userInitiated).async {
 	            let fd = path.withCString { ptr in
@@ -1263,15 +1263,39 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	        let fd = openedFd
 	        lock.unlock()
 
-	        if let err {
-	            return WaitResult(normalizedOutcome: "wait_failed", errno: err, error: String(cString: strerror(err)))
-	        }
-	        if fd >= 0 {
-	            close(fd)
-	            return WaitResult(normalizedOutcome: "ok", errno: nil, error: nil)
-	        }
-	        return WaitResult(normalizedOutcome: "wait_failed", errno: nil, error: "wait failed")
-	    }
+		        if let err {
+		            return WaitResult(normalizedOutcome: "wait_failed", errno: err, error: String(cString: strerror(err)))
+		        }
+		        if fd >= 0 {
+		            let maxWaitMs = min(200, timeoutMs ?? 200)
+		            let currentFlags = fcntl(fd, F_GETFL)
+		            if currentFlags >= 0, fcntl(fd, F_SETFL, currentFlags | O_NONBLOCK) >= 0 {
+		                var b: UInt8 = 0
+		                var attempts = 0
+		                while attempts < maxWaitMs {
+		                    let n = Darwin.read(fd, &b, 1)
+		                    if n > 0 || n == 0 {
+		                        break
+		                    }
+		                    let e = errno
+		                    if e == EINTR {
+		                        continue
+		                    }
+		                    if e == EAGAIN || e == EWOULDBLOCK {
+		                        usleep(1000)
+		                        attempts += 1
+		                        continue
+		                    }
+		                    break
+		                }
+		            } else {
+		                usleep(useconds_t(maxWaitMs * 1000))
+		            }
+		            close(fd)
+		            return WaitResult(normalizedOutcome: "ok", errno: nil, error: nil)
+		        }
+		        return WaitResult(normalizedOutcome: "wait_failed", errno: nil, error: "wait failed")
+		    }
 
 	    private static func waitForPathExists(path: String, timeoutMs: Int?, intervalMs: Int) -> WaitResult {
 	        if FileManager.default.fileExists(atPath: path) {

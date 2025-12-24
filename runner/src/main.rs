@@ -17,7 +17,7 @@ fn print_usage() {
 usage:
   entitlement-jail run-system <absolute-platform-binary> [args...]
   entitlement-jail run-embedded <tool-name> [args...]
-  entitlement-jail run-xpc [--profile <id>] [--ack-risk <id|bundle-id>] [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]
+  entitlement-jail run-xpc [--ack-risk <id|bundle-id>] [--log-sandbox <path>|--log-stream <path>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] (--profile <id> | <xpc-service-bundle-id>) <probe-id> [probe-args...]
   entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
   entitlement-jail verify-evidence
   entitlement-jail inspect-macho <service-id|main|path>
@@ -416,12 +416,22 @@ fn ensure_clean_dir(path: &Path) -> Result<(), String> {
             ));
         }
         if meta.is_dir() {
-            std::fs::remove_dir_all(path)
-                .map_err(|e| format!("failed to remove {}: {e}", path.display()))?;
+            std::fs::remove_dir_all(path).map_err(|e| {
+                let mut msg = format!("failed to remove {}: {e}", path.display());
+                if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    msg.push_str(" (permission denied; if sandboxed, choose a path under your container home)");
+                }
+                msg
+            })?;
         }
     }
-    std::fs::create_dir_all(path)
-        .map_err(|e| format!("failed to create {}: {e}", path.display()))
+    std::fs::create_dir_all(path).map_err(|e| {
+        let mut msg = format!("failed to create {}: {e}", path.display());
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            msg.push_str(" (permission denied; if sandboxed, choose a path under your container home)");
+        }
+        msg
+    })
 }
 
 fn copy_evidence_file(src_dir: &Path, dst_dir: &Path, name: &str) -> Result<(), String> {
@@ -764,7 +774,9 @@ fn run_and_wait(cmd_path: PathBuf, cmd_args: Vec<OsString>) -> ! {
 }
 
 fn main() {
-    debug_entitlements_probe::try_dlopen_external_library();
+    if env::var("EJ_DEBUG_DLOPEN").ok().as_deref() == Some("1") {
+        debug_entitlements_probe::try_dlopen_external_library();
+    }
 
     let args: Vec<OsString> = env::args_os().skip(1).collect();
     if args.is_empty() {
@@ -1636,6 +1648,8 @@ fn main() {
                     }
                     Some("--log-sandbox")
                     | Some("--log-stream")
+                    | Some("--log-path-class")
+                    | Some("--log-name")
                     | Some("--log-predicate")
                     | Some("--plan-id")
                     | Some("--row-id")
@@ -1668,15 +1682,18 @@ fn main() {
                     print_usage();
                     std::process::exit(2);
                 }
-                if positional > 1 {
-                    eprintln!("--profile cannot be combined with an explicit service id");
-                    print_usage();
-                    std::process::exit(2);
-                }
             } else if positional < 2 {
                 print_usage();
                 std::process::exit(2);
             }
+            let profile_selected = profile_arg.is_some();
+            let first_positional = if profile_selected {
+                args.get(idx)
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            };
             let cmd_path = match resolve_contents_macos_tool("xpc-probe-client") {
                 Ok(p) => p,
                 Err(err) => {
@@ -1714,6 +1731,8 @@ fn main() {
                     match forward_args.get(insert_idx).and_then(|s| s.to_str()) {
                         Some("--log-sandbox")
                         | Some("--log-stream")
+                        | Some("--log-path-class")
+                        | Some("--log-name")
                         | Some("--log-predicate")
                         | Some("--plan-id")
                         | Some("--row-id")
@@ -1742,6 +1761,8 @@ fn main() {
                     match forward_args.get(insert_idx).and_then(|s| s.to_str()) {
                         Some("--log-sandbox")
                         | Some("--log-stream")
+                        | Some("--log-path-class")
+                        | Some("--log-name")
                         | Some("--log-predicate")
                         | Some("--plan-id")
                         | Some("--row-id")
@@ -1775,6 +1796,17 @@ fn main() {
                 Ok(_) => Some(load_profiles_manifest(&app_root).0),
                 Err(_) => None,
             };
+            if profile_selected {
+                if let (Some(manifest), Some(positional)) =
+                    (profiles_manifest.as_ref(), first_positional.as_ref())
+                {
+                    if resolve_profile_by_bundle_id(manifest, positional).is_some() {
+                        eprintln!("--profile cannot be combined with an explicit service id");
+                        print_usage();
+                        std::process::exit(2);
+                    }
+                }
+            }
 
             let service_id = {
                 let mut insert_idx = 0usize;
@@ -1782,6 +1814,8 @@ fn main() {
                     match forward_args.get(insert_idx).and_then(|s| s.to_str()) {
                         Some("--log-sandbox")
                         | Some("--log-stream")
+                        | Some("--log-path-class")
+                        | Some("--log-name")
                         | Some("--log-predicate")
                         | Some("--plan-id")
                         | Some("--row-id")

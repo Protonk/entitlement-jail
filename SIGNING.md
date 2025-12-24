@@ -4,12 +4,13 @@ This document is the canonical reference for identities, entitlements, signing o
 
 ## Entitlements + targets
 
-- Main app entitlements live in `EntitlementJail.entitlements` and should enable the App Sandbox (`com.apple.security.app-sandbox`) but must **not** set `com.apple.security.inherit` (see [Apple Developer: Enabling App Sandbox](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html?utm_source=chatgpt.com)).
-- Sandboxed child-process inheritance helpers must be signed with **exactly** `com.apple.security.app-sandbox` + `com.apple.security.inherit` (and no other entitlements). This repo provides `EntitlementJail.inherit.entitlements` for that purpose (see [Apple Developer: Enabling App Sandbox](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html?utm_source=chatgpt.com)).
+- Main app entitlements live in `EntitlementJail.entitlements` and should enable the App Sandbox (`com.apple.security.app-sandbox`) but must **not** set `com.apple.security.inherit` (see [Apple Developer: Enabling App Sandbox](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html)).
+- Sandboxed child-process inheritance helpers must be signed with **exactly** `com.apple.security.app-sandbox` + `com.apple.security.inherit` (and no other entitlements). This repo provides `EntitlementJail.inherit.entitlements` for that purpose (see [Apple Developer: Enabling App Sandbox](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html)).
 - XPC services are separate signed targets with their own entitlement plists under `xpc/services/<ServiceName>/Entitlements.plist` (treat the service entitlements as the experimental variable).
-- Every Mach-O executable inside a sandboxed app bundle (helpers, XPC services, etc.) needs explicit signing/sandboxing attention; don’t assume the outer app signature “covers” nested executables (see [Apple Developer QA1773: Common app sandboxing issues](https://developer.apple.com/library/archive/qa/qa1773/_index.html?utm_source=chatgpt.com)).
+- Every Mach-O executable inside a sandboxed app bundle (helpers, XPC services, etc.) needs explicit signing/sandboxing attention; don’t assume the outer app signature “covers” nested executables (see [Apple Developer QA1773: Common app sandboxing issues](https://developer.apple.com/library/archive/qa/qa1773/_index.html)).
 - The XPC client helper tools (`xpc-probe-client`, `xpc-quarantine-client`) are embedded under `EntitlementJail.app/Contents/MacOS/` to preserve app bundle context for XPC lookup; they must be signed for sandbox inheritance like other embedded helpers.
 - Optional debugger-side tooling (for example `runner/target/release/ej-inspector`) should be signed separately with `Inspector.entitlements` (`com.apple.security.cs.debugger`) and must **not** be embedded in the app bundle.
+- Observer tools (`runner/target/release/quarantine-observer`, `runner/target/release/sandbox-log-observer`) are standalone CLIs, not embedded in the app bundle, and should be signed without entitlements if you distribute them.
 
 Team ID expectation:
 
@@ -17,7 +18,7 @@ Team ID expectation:
 
 ## Preferred path: Makefile
 
-`make build` wraps `build-macos.sh`, which assembles `EntitlementJail.app`, signs nested code first, then signs the outer `.app`, and produces `EntitlementJail.zip`.
+`make build` wraps `build-macos.sh`, which assembles `EntitlementJail.app`, signs nested code first, then signs the outer `.app`, produces `EntitlementJail.zip`, and builds/signs the standalone observer tools.
 
 - `IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' make build`
 
@@ -56,16 +57,20 @@ codesign --verify --deep --strict --verbose=4 "$APP"
 
 # Optional: sign the inspector CLI (debugger-side only)
 codesign -f --options runtime --timestamp --entitlements "Inspector.entitlements" -s "$ID" "runner/target/release/ej-inspector"
+
+# Optional: sign observer CLIs (standalone; no entitlements)
+codesign -f --options runtime --timestamp -s "$ID" "runner/target/release/quarantine-observer"
+codesign -f --options runtime --timestamp -s "$ID" "runner/target/release/sandbox-log-observer"
 ```
 
 Notes:
 
-- Do not add `com.apple.security.inherit` to the main app; only inheritance helpers should carry it (see [Apple Developer: Enabling App Sandbox](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html?utm_source=chatgpt.com)).
+- Do not add `com.apple.security.inherit` to the main app; only inheritance helpers should carry it (see [Apple Developer: Enabling App Sandbox](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html)).
 - Avoid `codesign --deep` for signing: sign known nested executables explicitly, then sign the outer app. (Using `--deep` for verification is fine.)
 
 ## Packaging (`ditto`)
 
-If you create a `.zip` for notarization/distribution, use `ditto`. The archive itself is not signed; the signed content is the `.app` inside (see [Apple Developer Forums: Packaging Mac Software for Distrib…](https://developer.apple.com/forums/thread/701581?utm_source=chatgpt.com)).
+If you create a `.zip` for notarization/distribution, use `ditto`. The archive itself is not signed; the signed content is the `.app` inside (see [Apple Developer Forums: Packaging Mac Software for Distrib…](https://developer.apple.com/forums/thread/701581)).
 
 ```sh
 APP="EntitlementJail.app"
@@ -76,14 +81,14 @@ ditto -c -k --sequesterRsrc --keepParent "$APP" EntitlementJail.zip
 
 This is optional for research use. If you choose to notarize:
 
-1. Zip the `.app` with `ditto` (see [Apple Developer Forums: Packaging Mac Software for Distrib…](https://developer.apple.com/forums/thread/701581?utm_source=chatgpt.com)).
+1. Zip the `.app` with `ditto` (see [Apple Developer Forums: Packaging Mac Software for Distrib…](https://developer.apple.com/forums/thread/701581)).
 2. Submit and wait:
 
 ```sh
 xcrun notarytool submit EntitlementJail.zip --keychain-profile 'AC_PROFILE' --wait
 ```
 
-3. Staple and validate. Stapling attaches a notarization ticket to the **app bundle**, not to the ZIP (see [Apple Help: Upload a macOS app to be notarized](https://help.apple.com/xcode/mac/current/en.lproj/dev88332a81e.html?utm_source=chatgpt.com)).
+3. Staple and validate. Stapling attaches a notarization ticket to the **app bundle**, not to the ZIP (see [Apple Help: Upload a macOS app to be notarized](https://help.apple.com/xcode/mac/current/en.lproj/dev88332a81e.html)).
 
 ```sh
 APP="EntitlementJail.app"
@@ -91,7 +96,7 @@ xcrun stapler staple "$APP"
 xcrun stapler validate "$APP"
 ```
 
-If you distribute a ZIP, staple the `.app` first and then re-zip it (stapling changes the bundle contents) (see [Apple Help: Upload a macOS app to be notarized](https://help.apple.com/xcode/mac/current/en.lproj/dev88332a81e.html?utm_source=chatgpt.com)).
+If you distribute a ZIP, staple the `.app` first and then re-zip it (stapling changes the bundle contents) (see [Apple Help: Upload a macOS app to be notarized](https://help.apple.com/xcode/mac/current/en.lproj/dev88332a81e.html)).
 
 ## Troubleshooting
 

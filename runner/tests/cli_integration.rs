@@ -187,6 +187,120 @@ fn extract_pid(response: &serde_json::Value) -> Option<i32> {
 }
 
 #[test]
+fn cli_wait_fifo_trigger_is_write_safe() {
+    if !integration_enabled() {
+        return;
+    }
+
+    let bin = require_ej_bin();
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let wait_name = format!("ej-test-wait-{seed}.fifo");
+
+    let mut child = Command::new(&bin)
+        .args([
+            "run-xpc",
+            "--profile",
+            "minimal",
+            "--wait-path-class",
+            "tmp",
+            "--wait-name",
+            &wait_name,
+            "--wait-create",
+            "--wait-timeout-ms",
+            "5000",
+            "--hold-open",
+            "0",
+            "fs_op",
+            "--op",
+            "stat",
+            "--path-class",
+            "tmp",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|err| panic!("failed to spawn {}: {err}", bin.display()));
+
+    let stderr = child.stderr.take().expect("missing stderr");
+    let mut stderr_reader = BufReader::new(stderr);
+    let mut wait_path: Option<String> = None;
+    let mut stderr_buf = String::new();
+    while wait_path.is_none() {
+        let mut line = String::new();
+        let n = stderr_reader
+            .read_line(&mut line)
+            .unwrap_or_else(|err| panic!("failed to read stderr: {err}"));
+        if n == 0 {
+            break;
+        }
+        stderr_buf.push_str(&line);
+        if let Some(idx) = line.find("wait_path=") {
+            wait_path = Some(line[idx + "wait_path=".len()..].trim().to_string());
+        }
+    }
+
+    let wait_path = wait_path.unwrap_or_else(|| panic!("missing wait_path in stderr:\n{stderr_buf}"));
+    let wait_path_fs = Path::new(&wait_path);
+
+    for _ in 0..200 {
+        if wait_path_fs.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        wait_path_fs.exists(),
+        "wait fifo was not created at {wait_path}\n\nstderr:\n{stderr_buf}"
+    );
+
+    let mut fifo = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&wait_path)
+        .unwrap_or_else(|err| panic!("failed to open wait fifo {wait_path}: {err}"));
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    use std::io::Write;
+    fifo.write_all(b"go")
+        .unwrap_or_else(|err| panic!("failed to write to wait fifo {wait_path}: {err}"));
+    drop(fifo);
+
+    let status = child
+        .wait()
+        .unwrap_or_else(|err| panic!("failed to wait for child: {err}"));
+    let mut stdout_buf = String::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        stdout
+            .read_to_string(&mut stdout_buf)
+            .unwrap_or_else(|err| panic!("failed to read stdout: {err}"));
+    }
+    let mut stderr_rest = String::new();
+    stderr_reader
+        .read_to_string(&mut stderr_rest)
+        .unwrap_or_else(|err| panic!("failed to read stderr: {err}"));
+    stderr_buf.push_str(&stderr_rest);
+
+    assert!(
+        status.success(),
+        "run-xpc wait fifo failed: status={status}\n\nstdout:\n{stdout_buf}\n\nstderr:\n{stderr_buf}"
+    );
+
+    let json = serde_json::from_str::<serde_json::Value>(&stdout_buf).unwrap_or_else(|err| {
+        panic!("failed to parse JSON output: {err}\nstdout:\n{stdout_buf}\n\nstderr:\n{stderr_buf}")
+    });
+    assert_eq!(
+        json.get("result")
+            .and_then(|v| v.get("ok"))
+            .and_then(|v| v.as_bool()),
+        Some(true),
+        "expected ok=true in JSON\n\nstdout:\n{stdout_buf}\n\nstderr:\n{stderr_buf}"
+    );
+}
+
+#[test]
 fn cli_profiles_and_risk_gate() {
     if !integration_enabled() {
         return;
@@ -379,6 +493,25 @@ fn cli_profiles_and_risk_gate() {
         }
     }
     assert!(found, "trace_symbols missing fs_op -> ej_probe_fs_op");
+
+    let fs_out = run_ej(
+        &bin,
+        &[
+            "run-xpc",
+            "--profile",
+            "minimal",
+            "fs_op",
+            "--op",
+            "stat",
+            "--path-class",
+            "tmp",
+        ],
+    );
+    assert!(
+        fs_out.status.success(),
+        "run-xpc minimal fs_op failed: {}",
+        String::from_utf8_lossy(&fs_out.stderr)
+    );
 
     let health_out = run_ej(&bin, &["health-check", "--profile", "minimal"]);
     assert!(

@@ -1,78 +1,46 @@
 # entitlement-jail
 
-`entitlement-jail` is a macOS research/teaching repo for exploring **App Sandbox + entitlement behavior** while keeping “what happened” and “which subsystem caused it” separate.
+`entitlement-jail` is a macOS research/teaching repo for exploring **App Sandbox + entitlement behavior** without turning every “couldn’t do X” into “the sandbox denied X”.
 
-## Contents
+Most macOS “sandbox demos” collapse a bunch of failure modes into one bucket. A `posix_spawn` failure might be a missing file, a bad signature, a quarantine/Gatekeeper prompt, a path policy, or a Seatbelt denial — and those are different conversations. This repo tries to keep those conversations separate by default, and to make it easy to attach evidence to claims (for example, capturing `Sandbox:` deny lines when requested, and shipping signed “static evidence” inside the bundle).
 
-### 1) A process zoo (`EntitlementJail.app`)
+It also tries to keep “entitlements as an experimental variable” structurally clean. Rather than staging binaries into writable locations and trying to exec them by path (a pattern that is commonly blocked and easy to misattribute), EntitlementJail runs probes **in-process** inside launchd-managed XPC services. Each `.xpc` is its own signed target with its own entitlements, so you can run the same probe code path under different entitlement profiles.
 
-The app embeds a **sandboxed CLI** and a set of embedded XPC services:
+## What’s in the box
 
-- The CLI is `EntitlementJail.app/Contents/MacOS/entitlement-jail` (Rust; see `runner/`).
-- Each XPC service is its own signed executable with its own entitlement profile (Swift; see `xpc/`).
-- Probes run **in-process** inside the selected XPC service (no arbitrary exec-by-path required).
+The shipped app bundle (`EntitlementJail.app`) contains a sandboxed CLI launcher and a “process zoo” of embedded XPC services:
 
-This gives a clean experimental matrix:
+`EntitlementJail.app/Contents/MacOS/entitlement-jail` (Rust; see `runner/`) is the main entrypoint. `EntitlementJail.app/Contents/XPCServices/*.xpc` (Swift; see `xpc/`) are the research targets: the same probes, signed over and over with different entitlements.
 
-> same probe code path, different entitlements
+For “compare across witnesses” work, `experiments/` contains a tri-run harness that can execute the same probe three ways: a baseline run (unsandboxed substrate), a policy run (`sandbox-exec -f …`; hypothesis only, and `sandbox-exec` is deprecated), and an entitlement run (via `EntitlementJail.app … run-xpc …`, with the probe executed inside an XPC service). The result is an `atlas.json` mismatch map with explicit attribution rules; see `experiments/README.md`.
 
+For reproducibility and downstream inspection, the app bundle also ships signed evidence files under `Contents/Resources/Evidence/` (hashes, entitlements, profile definitions, and stable `ej_*` marker symbols). The user-facing inspection commands live in `EntitlementJail.md`; the developer-facing behavior reference lives in `runner/README.md`.
 
-### 2) A tri-run harness (mismatch atlas)
+## Doc map
 
-Under `experiments/` there is an experiment harness that can run the same probe as three “witnesses”:
+- If you’re trying to *use the tool*, start with `EntitlementJail.md`.
+- If you’re trying to understand *what the CLI claims/measures*, read `runner/README.md`.
+- If you want to add or modify XPC targets (entitlements as the variable), read `xpc/README.md`.
+- If you’re building/signing/notarizing, `SIGNING.md` is the canonical reference.
+- If you’re extending or reporting on results, read `AGENTS.md`.
 
-1. **baseline witness** (unsandboxed substrate)
-2. **policy witness** (`sandbox-exec -f profile.sb …`; hypothesis only, `sandbox-exec` is deprecated)
-3. **entitlement witness** (`EntitlementJail.app … run-xpc …`; probes in-process inside an XPC service)
-
-The output is an `atlas.json` mismatch map with explicit attribution rules. See `experiments/README.md`.
-
-### 3) Signed evidence artifacts (“BOM”)
-
-The app bundle contains evidence files under `Contents/Resources/Evidence/`:
-
-- `manifest.json`: hashes + entitlements for embedded Mach-Os (signed as part of the app bundle)
-- `profiles.json`: the process zoo profile list (risk tiers, tags, entitlements)
-- `symbols.json`: stable `ej_*` marker symbol names for external tooling correlation
-
-See `runner/README.md` and `EntitlementJail.md` for the user-facing commands (`verify-evidence`, `inspect-macho`, `bundle-evidence`).
-
-## Repo layout
+A quick repo layout:
 
 - `runner/` — Rust CLI (builds `EntitlementJail.app/Contents/MacOS/entitlement-jail`)
-  - `runner/README.md` — authoritative CLI/behavior manual (dev-facing)
 - `xpc/` — Swift XPC substrate + in-process probes + XPC clients
-  - `xpc/README.md` — architecture notes and extension guidance
 - `experiments/` — tri-run harness + unsandboxed substrate + policy profiles
 - `tests/` — smoke harness + preflight gate + fixtures
-  - `tests/preflight.sh` — codesign/entitlement preflight for integration tests (no execution)
-  - `tests/ej-smoke.sh` — smoke tri-run plan (writes `experiments/out/test`)
-  - `tests/fixtures/` — small signed fixtures used by optional tests
 - `build-macos.sh` — builds/signs the `.app`, generates evidence, produces `EntitlementJail.zip`
-- `SIGNING.md` — signing/notarization policy and troubleshooting (procedure lives here)
-- `EntitlementJail.md` — distribution user guide (self-contained; do not require repo context)
+- `SIGNING.md` — signing/notarization policy, procedure, and troubleshooting
+- `EntitlementJail.md` — self-contained user guide for distribution
 
-## Build (development)
+## Use
 
-Build the experiment harness + substrate:
+The intended distribution artifact is the notarized `.app` zip in GitHub releases. For downstream use you should only need `EntitlementJail.app` and `EntitlementJail.md`.
 
-```sh
-make build-experiments
-```
+## Build
 
-Build/sign the `.app` (requires a Developer ID Application identity):
-
-```sh
-IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' make build
-```
-
-Inspection-friendly builds are the default (symbols + frame pointers + reduced Swift optimization). To build an optimized release:
-
-```sh
-EJ_INSPECTION=0 IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' make build
-```
-
-Notarization/stapling guidance lives in `SIGNING.md`.
+All build, signing, packaging, and notarization steps are intentionally centralized in [SIGNING.md](SIGNING.md). This README does not repeat commands or signing order; if you need to build or re-sign anything, follow that doc rather than improvising.
 
 ## Test
 
@@ -82,31 +50,6 @@ Run everything:
 make test
 ```
 
-What `make test` does:
+`make test` starts with a read-only preflight (`tests/preflight.sh`) that verifies signatures and extracts entitlements into `tests/out/preflight.json`, so higher-level tests can skip cleanly when signing is stale or missing. It then runs runner unit tests and CLI integration tests (`EJ_INTEGRATION=1`), followed by the smoke harness (`tests/ej-smoke.sh`), which writes artifacts under `experiments/out/test` (overwritten each run).
 
-- Runs `tests/preflight.sh` and writes `tests/out/preflight.json`.
-  - This is a **read-only** inspection step (codesign verification + entitlement extraction).
-  - Integration tests use this to skip attach/entitlement tests when signatures are stale or missing.
-- Runs runner unit tests + CLI integration tests (`EJ_INTEGRATION=1`).
-- Runs the smoke harness (`tests/ej-smoke.sh`), writing artifacts under `experiments/out/test` (overwritten each run).
-
-Optional:
-
-- Set `EJ_DLOPEN_TESTS=1` to enable the `dlopen_external` integration test (it executes the signed test dylib initializer).
-
-## JSON outputs (uniform envelope)
-
-All JSON emitters in this repo (CLI commands, XPC clients, helper tools) share a uniform envelope:
-
-- Contract + examples: `runner/README.md`
-- Code: `runner/src/json_contract.rs`
-
-Key rule for consumers: look at `result` for the outcome (`rc` or `exit_code`), and `data` for command-specific payload.
-
-## Extension rules (high level)
-
-This repo treats entitlements as the experimental variable. To add experiments safely:
-
-- Prefer adding a **new XPC service target** (new directory under `xpc/services/<ServiceName>/`) with its own `Entitlements.plist`.
-- Avoid “stage Mach‑O into writable/container location then exec-by-path” patterns; App Sandbox commonly denies `process-exec*` there.
-- Any time you add a new executable to the bundle (helpers or XPC services), signing order matters; update `SIGNING.md` (policy/procedure lives there).
+If you set `EJ_DLOPEN_TESTS=1`, the `dlopen_external` integration test is enabled and will execute a signed test dylib initializer; treat that as intentional code execution.

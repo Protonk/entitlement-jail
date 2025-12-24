@@ -18,6 +18,7 @@ ZIP_NAME="${APP_NAME}.zip"
 RUNNER_MANIFEST="runner/Cargo.toml"
 ENTITLEMENTS_PLIST="EntitlementJail.entitlements"
 INHERIT_ENTITLEMENTS_PLIST="EntitlementJail.inherit.entitlements"
+INSPECTOR_ENTITLEMENTS_PLIST="Inspector.entitlements"
 INFO_PLIST_TEMPLATE="Info.plist"
 
 # Optional: embed extra payloads if present
@@ -46,7 +47,7 @@ if [[ "${EJ_INSPECTION}" == "1" ]]; then
     SWIFT_DEBUG_FLAGS="-g"
   fi
   if [[ -z "${RUSTFLAGS:-}" ]]; then
-    export RUSTFLAGS="-C debuginfo=2 -C force-frame-pointers=yes"
+    export RUSTFLAGS="-C debuginfo=2 -C force-frame-pointers=yes -C opt-level=1"
   fi
 fi
 
@@ -83,13 +84,32 @@ EOF
   exit 2
 fi
 
-echo "==> Building Rust runner"
-cargo build --manifest-path "${RUNNER_MANIFEST}" --release
+echo "==> Building Rust runner + tools"
+cargo build --manifest-path "${RUNNER_MANIFEST}" --release \
+  --bin runner \
+  --bin quarantine-observer \
+  --bin sandbox-log-observer \
+  --bin ej-inspector
 
 # Find the built binary. (Assumes standard Cargo layout.)
 RUNNER_BIN="runner/target/release/runner"
 if [[ ! -x "${RUNNER_BIN}" ]]; then
   echo "ERROR: expected runner binary at ${RUNNER_BIN}" 1>&2
+  exit 2
+fi
+QUARANTINE_OBSERVER_BIN="runner/target/release/quarantine-observer"
+if [[ ! -x "${QUARANTINE_OBSERVER_BIN}" ]]; then
+  echo "ERROR: expected quarantine-observer binary at ${QUARANTINE_OBSERVER_BIN}" 1>&2
+  exit 2
+fi
+SANDBOX_LOG_OBSERVER_BIN="runner/target/release/sandbox-log-observer"
+if [[ ! -x "${SANDBOX_LOG_OBSERVER_BIN}" ]]; then
+  echo "ERROR: expected sandbox-log-observer binary at ${SANDBOX_LOG_OBSERVER_BIN}" 1>&2
+  exit 2
+fi
+EJ_INSPECTOR_BIN="runner/target/release/ej-inspector"
+if [[ ! -x "${EJ_INSPECTOR_BIN}" ]]; then
+  echo "ERROR: expected ej-inspector binary at ${EJ_INSPECTOR_BIN}" 1>&2
   exit 2
 fi
 
@@ -192,6 +212,10 @@ if [[ ! -f "${INHERIT_ENTITLEMENTS_PLIST}" ]]; then
   echo "ERROR: missing inherit entitlements plist: ${INHERIT_ENTITLEMENTS_PLIST}" 1>&2
   exit 2
 fi
+if [[ ! -f "${INSPECTOR_ENTITLEMENTS_PLIST}" ]]; then
+  echo "ERROR: missing inspector entitlements plist: ${INSPECTOR_ENTITLEMENTS_PLIST}" 1>&2
+  exit 2
+fi
 
 sign_macho_inherit() {
   local target="$1"
@@ -204,6 +228,38 @@ sign_macho_inherit() {
       --options runtime \
       --timestamp \
       --entitlements "${INHERIT_ENTITLEMENTS_PLIST}" \
+      -s "${IDENTITY}" \
+      "${target}"
+  fi
+}
+
+sign_macho_plain() {
+  local target="$1"
+  if [[ ! -e "${target}" ]]; then
+    return 0
+  fi
+  if /usr/bin/file -b "${target}" | /usr/bin/grep -q "Mach-O"; then
+    codesign \
+      --force \
+      --options runtime \
+      --timestamp \
+      -s "${IDENTITY}" \
+      "${target}"
+  fi
+}
+
+sign_macho_entitlements() {
+  local target="$1"
+  local entitlements="$2"
+  if [[ ! -e "${target}" ]]; then
+    return 0
+  fi
+  if /usr/bin/file -b "${target}" | /usr/bin/grep -q "Mach-O"; then
+    codesign \
+      --force \
+      --options runtime \
+      --timestamp \
+      --entitlements "${entitlements}" \
       -s "${IDENTITY}" \
       "${target}"
   fi
@@ -266,6 +322,11 @@ echo "==> Verifying signature + entitlements"
 codesign --verify --deep --strict --verbose=2 "${APP_BUNDLE}"
 codesign --display --entitlements - "${APP_BUNDLE}" >/dev/null
 
+echo "==> Codesigning observer tools (not embedded)"
+sign_macho_plain "${QUARANTINE_OBSERVER_BIN}"
+sign_macho_plain "${SANDBOX_LOG_OBSERVER_BIN}"
+sign_macho_entitlements "${EJ_INSPECTOR_BIN}" "${INSPECTOR_ENTITLEMENTS_PLIST}"
+
 echo "==> Creating zip (for notarization): ${ZIP_NAME}"
 rm -f "${ZIP_NAME}"
 /usr/bin/ditto -c -k --keepParent "${APP_BUNDLE}" "${ZIP_NAME}"
@@ -274,6 +335,9 @@ echo
 echo "DONE:"
 echo "  - ${APP_BUNDLE}"
 echo "  - ${ZIP_NAME}"
+echo "  - ${QUARANTINE_OBSERVER_BIN}"
+echo "  - ${SANDBOX_LOG_OBSERVER_BIN}"
+echo "  - ${EJ_INSPECTOR_BIN}"
 echo
 echo "Next (notarize with your saved profile):"
 cat <<EOF

@@ -3,7 +3,7 @@ import Darwin
 
 private func printUsage() {
     let exe = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "xpc-probe-client"
-    fputs("usage: \(exe) [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]\n", stderr)
+    fputs("usage: \(exe) [--log-sandbox <path>|--log-stream <path>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]\n", stderr)
 }
 
 if ProcessInfo.processInfo.environment["EJ_XPC_CLIENT_DEBUG"] == "1" {
@@ -232,6 +232,8 @@ let args = CommandLine.arguments
 
 var logPath: String?
 var logPredicate: String?
+var logPathClass: String?
+var logName: String?
 var planId: String?
 var rowId: String?
 var correlationId: String?
@@ -260,6 +262,22 @@ parseLoop: while idx < args.count {
             exit(2)
         }
         logPath = args[idx + 1]
+        idx += 2
+    case "--log-path-class":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --log-path-class\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        logPathClass = args[idx + 1]
+        idx += 2
+    case "--log-name":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --log-name\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        logName = args[idx + 1]
         idx += 2
     case "--log-predicate":
         guard idx + 1 < args.count else {
@@ -407,8 +425,34 @@ parseLoop: while idx < args.count {
     }
 }
 
-if logPredicate != nil && logPath == nil {
-    fputs("missing value for --log-sandbox/--log-stream (required when --log-predicate is set)\n", stderr)
+if logPredicate != nil && logPath == nil && logPathClass == nil {
+    fputs("missing value for --log-sandbox/--log-stream or --log-path-class/--log-name (required when --log-predicate is set)\n", stderr)
+    printUsage()
+    exit(2)
+}
+
+if logPath != nil && logPathClass != nil {
+    fputs("--log-path-class/--log-name cannot be combined with an explicit log path\n", stderr)
+    printUsage()
+    exit(2)
+}
+
+if (logPathClass != nil && logName == nil) || (logPathClass == nil && logName != nil) {
+    fputs("--log-path-class and --log-name must be provided together\n", stderr)
+    printUsage()
+    exit(2)
+}
+
+if let logPathClass {
+    guard isKnownPathClass(logPathClass) else {
+        fputs("invalid --log-path-class (expected home|tmp|downloads|desktop|documents|app_support|caches)\n", stderr)
+        printUsage()
+        exit(2)
+    }
+}
+
+if let logName, !isSinglePathComponent(logName) {
+    fputs("invalid --log-name (must be a single path component)\n", stderr)
     printUsage()
     exit(2)
 }
@@ -422,7 +466,22 @@ let serviceName = args[idx]
 let probeId = args[idx + 1]
 let probeArgs = Array(args.dropFirst(idx + 2))
 
-let logSpec = logPath.map { LogCaptureSpec(path: $0, predicate: logPredicate) }
+let resolvedLogPath: String? = {
+    if let logPath {
+        return logPath
+    }
+    if let logPathClass, let logName {
+        return resolveContainerPath(bundleId: serviceName, pathClass: logPathClass, name: logName)
+    }
+    return nil
+}()
+
+if logPathClass != nil && resolvedLogPath == nil {
+    fputs("failed to resolve --log-path-class/--log-name for service container\n", stderr)
+    exit(2)
+}
+
+let logSpec = resolvedLogPath.map { LogCaptureSpec(path: $0, predicate: logPredicate) }
 
 if correlationId == nil {
     correlationId = UUID().uuidString
@@ -447,6 +506,14 @@ if let attachSeconds {
         waitName = isSinglePathComponent(candidate) ? candidate : "ej-attach-\(UUID().uuidString).fifo"
     }
     if waitCreate == nil && (waitMode == nil || waitMode == "fifo") {
+        waitCreate = true
+    }
+}
+
+if waitMode == nil && waitPath == nil && waitPathClass != nil {
+    // `--wait-path-class/--wait-name` is the ergonomic container-safe wait; default to FIFO.
+    waitMode = "fifo"
+    if waitCreate == nil {
         waitCreate = true
     }
 }
@@ -520,6 +587,18 @@ if let waitMode {
         fputs("[client] wait-ready mode=\(waitMode) wait_path=\(waitPathForPrint)\n", stderr)
     } else if let waitPathClass, let waitName {
         fputs("[client] wait-ready mode=\(waitMode) wait_path_class=\(waitPathClass) wait_name=\(waitName)\n", stderr)
+    }
+} else if probeId == "fs_op_wait" {
+    var i = 0
+    while i + 1 < probeArgs.count {
+        let flag = probeArgs[i]
+        if flag == "--wait-fifo" || flag == "--wait-exists" {
+            let mode = (flag == "--wait-fifo") ? "fifo" : "exists"
+            let path = probeArgs[i + 1]
+            fputs("[client] wait-ready mode=\(mode) wait_path=\(path)\n", stderr)
+            break
+        }
+        i += 1
     }
 }
 

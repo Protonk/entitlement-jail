@@ -24,7 +24,7 @@ Usage:
 ```sh
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-system <absolute-platform-binary> [args...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-embedded <tool-name> [args...]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc [--profile <id>] [--ack-risk <id|bundle-id>] [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc [--profile <id>] [--ack-risk <id|bundle-id>] [--log-sandbox <path>|--log-stream <path>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail verify-evidence
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail inspect-macho <service-id|main|path>
@@ -81,6 +81,7 @@ Kinds:
 - `run_matrix_report`
 - `inspector_report`
 - `quarantine_observer_report`
+- `sandbox_log_observer_report`
 
 ## `run-system`: in-place platform binaries
 
@@ -116,10 +117,7 @@ Resolution rules:
   - `EntitlementJail.app/Contents/Helpers/<tool-name>`
   - `EntitlementJail.app/Contents/Helpers/Probes/<tool-name>`
 
-Signing rules:
-
-- Embedded helpers are expected to be signed correctly for sandbox inheritance (see [SIGNING.md](../SIGNING.md)).
-- If the helper is not signed as required, inheritance may fail or behave as a different “identity” than you expected.
+Signing note: `run-embedded` depends on correct sandbox-inheritance signing. Do not guess or “fix it until it works”; follow [SIGNING.md](../SIGNING.md).
 
 Behavior:
 
@@ -139,7 +137,7 @@ Helper location (important):
 
 Invocation:
 
-- `run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]`
+- `run-xpc [--log-sandbox <path>|--log-stream <path>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]`
 - Example service bundle id: `com.yourteam.entitlement-jail.ProbeService_minimal`
 
 Built-in probe ids (in-process):
@@ -171,12 +169,13 @@ Notes:
 - `probe_catalog` includes `trace_symbols`, mapping probe ids to stable `ej_*` marker symbols for external tooling.
 - Filesystem probes are safe-by-default: destructive direct-path operations are refused unless you target a harness path (for `fs_op`/`fs_coordinated_op` via `--path-class`/`--target`, or for `fs_xattr` via an explicit path under `*/entitlement-jail-harness/*`) or pass `--allow-unsafe-path` (or `--allow-write` for `fs_xattr`).
 - `dlopen_external` loads and executes dylib initializers by design; use a signed test dylib.
-- `--log-sandbox`/`--log-stream` writes a best-effort unified log excerpt filtered to `Sandbox:` lines for the probe PID (uses `log show`; absence of deny lines is not a denial claim).
+- `--log-sandbox`/`--log-stream`/`--log-path-class` writes a best-effort unified log excerpt filtered to `Sandbox:` lines for the probe PID (uses `log show`; absence of deny lines is not a denial claim).
+- `--log-path-class`/`--log-name` resolves the capture path under the service’s container (useful when repo paths are blocked).
 - Responses include `log_capture_status`; when no log capture is requested, `deny_evidence` is set to `not_captured`.
 - All JSON responses use the envelope described above (including top-level `schema_version`).
-- When `run-xpc` runs inside `EntitlementJail.app`, `/usr/bin/log` may be blocked by the app sandbox; log capture will report an error instead of a denial signal.
+- When `run-xpc` runs inside `EntitlementJail.app`, `/usr/bin/log` may be blocked by the app sandbox; log capture will report an error instead of a denial signal. Use `sandbox-log-observer` outside the sandbox for deny evidence.
 - `--hold-open` keeps the XPC connection open after the response to make debugger/trace attachment easier.
-- `--log-sandbox`/`--log-predicate` must appear before `<xpc-service-bundle-id>`.
+- `--log-sandbox`/`--log-stream`/`--log-path-class`/`--log-name`/`--log-predicate` must appear before `<xpc-service-bundle-id>`.
 - `--log-predicate` overrides the default `log show` predicate (pass a full predicate string).
 - `--attach <seconds>` is a convenience for attach workflows: it sets a pre-run wait using a FIFO under the service’s container `tmp` plus a matching `--hold-open` (unless you set `--hold-open` explicitly).
 - `--wait-fifo`/`--wait-exists` block **before** probe execution; the wait outcome is recorded in `data.details` (`wait_*` keys).
@@ -212,7 +211,6 @@ Why XPC:
 Example (dlopen_external):
 
 ```sh
-IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' tests/fixtures/TestDylib/build.sh
 EJ_DLOPEN_PATH="$PWD/tests/fixtures/TestDylib/out/testdylib.dylib" \
   ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc com.yourteam.entitlement-jail.ProbeService_plugin_host_relaxed dlopen_external
 ```
@@ -281,6 +279,9 @@ Output (default, overwritten each run):
 ~/Library/Application Support/entitlement-jail/matrix/latest
 ```
 
+When running inside the sandboxed app, `HOME` resolves to the container home, so the default path lives under `~/Library/Containers/<bundle-id>/Data/...`.
+If you pass `--out`, choose a container-writable path; repo paths are typically blocked from inside the sandbox.
+
 Files:
 
 - `run-matrix.json`
@@ -347,10 +348,30 @@ runner/target/release/quarantine-observer <path> --assess
 Behavior:
 
 - Reads the `com.apple.quarantine` xattr (if present).
-- Always captures `spctl --status`.
-- Optionally runs `spctl --assess --type execute` (assessment only; does not execute the file).
+- Records Gatekeeper status and (optionally) an assessment signal (observer-only; does not execute the file).
 
 Do not run the observer from inside `EntitlementJail.app` (or any sandboxed parent), or you lose the “outside the sandbox” boundary and mix attribution.
+
+## Unsandboxed observer: `sandbox-log-observer`
+
+`sandbox-log-observer` runs `log show` outside the App Sandbox and emits a JSON envelope with the `Sandbox:` excerpt. Use it when `run-xpc --log-sandbox` is blocked by the app sandbox.
+
+Build:
+
+```sh
+cargo build --manifest-path runner/Cargo.toml --release --bin sandbox-log-observer
+```
+
+Run:
+
+```sh
+runner/target/release/sandbox-log-observer --pid <pid> --process-name <name> --last 5s
+```
+
+Notes:
+
+- `--predicate` overrides the default `Sandbox: <name>(<pid>)` predicate.
+- Use it outside the sandbox boundary; do not run it from inside `EntitlementJail.app`.
 
 ## Evidence manifest (signed BOM)
 
@@ -397,6 +418,8 @@ Default output path (overwritten on each run):
 ~/Library/Application Support/entitlement-jail/evidence/latest
 ```
 
+When running inside the sandboxed app, `HOME` resolves to the container home, so the default path lives under `~/Library/Containers/<bundle-id>/Data/...`.
+
 Outputs:
 
 - `Evidence/manifest.json`
@@ -418,7 +441,7 @@ Example:
 
 ## Optional debugger-side tool: `ej-inspector`
 
-`ej-inspector` is a standalone CLI that checks a target’s codesign identity (Team ID + bundle id/prefix) before attempting `task_for_pid`. If allowed, it immediately deallocates the task port and exits; it does not attach or manipulate state.
+`ej-inspector` is a standalone CLI that checks a target’s signature identity (Team ID + bundle id/prefix) before attempting `task_for_pid`. If allowed, it immediately deallocates the task port and exits; it does not attach or manipulate state.
 
 Build:
 
@@ -426,11 +449,7 @@ Build:
 cargo build --manifest-path runner/Cargo.toml --release --bin ej-inspector
 ```
 
-Sign (optional but required for `task_for_pid` in most cases):
-
-```sh
-codesign --force --options runtime --timestamp --entitlements Inspector.entitlements -s "$ID" runner/target/release/ej-inspector
-```
+Signing and entitlement requirements for debugger-side tooling are documented in `SIGNING.md`.
 
 Usage:
 
@@ -444,6 +463,10 @@ Notes:
 - If you omit `--bundle-id-prefix`/`--bundle-id`, the tool defaults to `com.yourteam.entitlement-jail.`.
 - Use this tool outside the sandbox boundary; do not run it from inside `EntitlementJail.app`.
 
+## Debug-only startup probe
+
+If you set `EJ_DEBUG_DLOPEN=1` and `TEST_DYLIB_PATH=<abs>`, the main `entitlement-jail` binary will attempt a `dlopen` at startup and print the result to stderr. This is for debugging entitlements and is disabled by default to keep help/inspection commands side-effect free.
+
 ## Layer attribution model
 
 This repo treats “what happened” and “why it happened” as separate questions.
@@ -453,9 +476,9 @@ This repo treats “what happened” and “why it happened” as separate quest
   - `quarantine-lab` reports `seatbelt: process_exec_not_attempted` because it does not execute specimens.
 - Quarantine/Gatekeeper layer:
   - `quarantine-lab` measures `com.apple.quarantine` before/after writing/opening/copying.
-  - `quarantine-observer` can record `spctl` status and optional assessment results for the written specimen.
+  - `quarantine-observer` can record Gatekeeper status and optional assessment signals for the written specimen.
 - “Other”:
-  - Code signing validity, missing timestamps, path validation, file permissions, missing files, and launchd/XPC issues are not Seatbelt signals and must be reported distinctly.
+  - Signature validity issues, missing secure timestamps, path validation, file permissions, missing files, and launchd/XPC issues are not Seatbelt signals and must be reported distinctly.
 
 ## JSON outputs (high level)
 

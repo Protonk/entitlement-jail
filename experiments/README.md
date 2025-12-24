@@ -106,9 +106,7 @@ SWIFT_OPT_LEVEL=-Onone make build-experiments
 
 Build/sign the `.app` with embedded XPC services (preferred: Makefile; see `SIGNING.md` for identities/entitlements order):
 
-```sh
-IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' make build
-```
+Signing, packaging, and distribution procedures are centralized in [SIGNING.md](../SIGNING.md). This README intentionally does not repeat signing commands or identity guidance; follow the signing doc to produce a runnable `EntitlementJail.app` for entitlement witness runs.
 
 Run a tri-run plan:
 
@@ -149,3 +147,4 @@ Artifacts land under `experiments/out/…/atlas.json` (the harness prints the ab
 - Policy witness profiles in `experiments/policy/*.sb` use `HOME` as a profile parameter; the harness passes it automatically via `sandbox-exec -D HOME=<path> ...`.
 - Sandbox log capture is best-effort and PID-scoped: for probe runs the harness keys log searches on `ProcessName(pid)` from the JSON `details.probe_pid`/`details.service_pid` fields (falls back to `details.pid`), to avoid cross-run contamination.
 - Entitlement witness tightening: when a probe returns a permission-shaped error and no deny op is observed, the harness automatically retries sandbox log capture with a wider window and a stricter predicate (see `sandbox-log-retry.txt` when present).
+- When invoking `EntitlementJail.app` commands from a sandboxed context, write outputs under the container home (the JSON `output_dir` is authoritative). Do not assume repo paths are writable from inside the sandbox; copy artifacts out as needed.

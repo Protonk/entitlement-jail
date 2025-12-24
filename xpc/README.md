@@ -133,10 +133,10 @@ This is deliberate: it prevents path traversal and avoids reintroducing “stage
 
 This repo supports both inheritance helpers (`run-embedded`) and XPC services (`run-xpc`), but they have different constraints.
 
-- XPC services are the Apple-preferred structure for helper-like functionality, and are the recommended way to make entitlements a first-class experimental variable (see [Apple Developer: Enabling App Sandbox](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html?utm_source=chatgpt.com)).
-- Sandbox inheritance for child processes has strict entitlement requirements: inheritance helpers must be signed with exactly `com.apple.security.app-sandbox` + `com.apple.security.inherit`, and the main app should not set `com.apple.security.inherit` (see [Apple Developer: Enabling App Sandbox](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html?utm_source=chatgpt.com)).
+- XPC services are the Apple-preferred structure for helper-like functionality, and are the recommended way to make entitlements a first-class experimental variable (see [Apple Developer: Enabling App Sandbox](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html)).
+- Inheritance helpers exist for narrower demonstrations, but their signing and entitlement constraints are easy to get wrong; treat `SIGNING.md` as the single source of truth if you touch that surface.
 
-Signing details live in [SIGNING.md](../SIGNING.md).
+Signing and distribution procedures live in [SIGNING.md](../SIGNING.md).
 
 ## Adding a new XPC service (research target)
 
@@ -146,9 +146,9 @@ Signing details live in [SIGNING.md](../SIGNING.md).
    - `Entitlements.plist` (start with `com.apple.security.app-sandbox = true`, then add the entitlement(s) you want to study)
    - `main.swift` (implement an exported NSXPC protocol, usually one from `ProbeAPI.swift`)
 3. Ensure your service does not accept arbitrary paths for execution. Follow the safe probe resolution policy above.
-4. Build/embed/sign the app (see [SIGNING.md](../SIGNING.md)).
+4. Build and embed the app following `SIGNING.md`.
 
-The build script discovers services by enumerating `xpc/services/*` and will embed/sign each service bundle it finds.
+The build script discovers services by enumerating `xpc/services/*` and will embed each service bundle it finds.
 
 ## Quarantine Lab matrix (what varies)
 
