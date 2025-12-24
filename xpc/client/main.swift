@@ -59,7 +59,8 @@ private func sandboxPredicate(processName: String, pid: String) -> String {
 }
 
 private func containerBaseURL(for bundleId: String) -> URL {
-    let home = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+    let homePath = hostHomeDirectory() ?? NSHomeDirectory()
+    let home = URL(fileURLWithPath: homePath, isDirectory: true)
     return home
         .appendingPathComponent("Library", isDirectory: true)
         .appendingPathComponent("Containers", isDirectory: true)
@@ -103,6 +104,14 @@ private func isKnownPathClass(_ cls: String) -> Bool {
 private func isSinglePathComponent(_ s: String) -> Bool {
     if s.isEmpty || s == "." || s == ".." { return false }
     return !s.contains("/") && !s.contains("\\")
+}
+
+private func hostHomeDirectory() -> String? {
+    let uid = getuid()
+    guard let pwd = getpwuid(uid), let dir = pwd.pointee.pw_dir else {
+        return nil
+    }
+    return String(cString: dir)
 }
 
 private func fetchSandboxLog(start: Date, end: Date, predicate: String) -> String {
