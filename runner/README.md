@@ -24,9 +24,63 @@ Usage:
 ```sh
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-system <absolute-platform-binary> [args...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-embedded <tool-name> [args...]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc [--profile <id>] [--ack-risk <id|bundle-id>] [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail verify-evidence
+./EntitlementJail.app/Contents/MacOS/entitlement-jail inspect-macho <service-id|main|path>
+./EntitlementJail.app/Contents/MacOS/entitlement-jail list-profiles
+./EntitlementJail.app/Contents/MacOS/entitlement-jail list-services
+./EntitlementJail.app/Contents/MacOS/entitlement-jail show-profile <id>
+./EntitlementJail.app/Contents/MacOS/entitlement-jail describe-service <id>
+./EntitlementJail.app/Contents/MacOS/entitlement-jail health-check [--profile <id>]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail bundle-evidence [--out <dir>] [--include-health-check] [--ack-risk <id|bundle-id>]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail run-matrix --group <name> [--out <dir>] [--ack-risk <id|bundle-id>] <probe-id> [probe-args...]
 ```
+
+## JSON output contract
+
+All JSON emitters in this repo (CLI outputs, XPC client outputs, and helper tools) share a uniform envelope:
+
+```json
+{
+  "schema_version": 1,
+  "kind": "probe_response",
+  "generated_at_unix_ms": 1700000000000,
+  "result": {
+    "ok": true,
+    "rc": 0,
+    "exit_code": null,
+    "normalized_outcome": "ok",
+    "errno": null,
+    "error": null,
+    "stderr": "",
+    "stdout": ""
+  },
+  "data": {}
+}
+```
+
+Rules:
+
+- Keys are lexicographically sorted for stability.
+- `result.rc` is used by probes/quarantine; `result.exit_code` is used by CLI/tools. Unused fields are `null`.
+- All command-specific fields live under `data` (no extra top‑level keys).
+
+Kinds:
+
+- `probe_response`
+- `quarantine_response`
+- `verify_evidence_report`
+- `inspect_macho_report`
+- `profiles_report`
+- `services_report`
+- `profile_report`
+- `describe_service_report`
+- `health_check_report`
+- `bundle_evidence_report`
+- `run_matrix_report`
+- `inspector_report`
+- `quarantine_observer_report`
 
 ## `run-system`: in-place platform binaries
 
@@ -110,18 +164,38 @@ Built-in probe ids (in-process):
 
 Notes:
 
-- `probe_catalog` outputs JSON in `stdout`; use `<probe-id> --help` for per-probe usage (help text is returned in JSON `stdout`).
+- `--profile <id>` lets you select a service by profile id (see `list-profiles`), instead of passing the full bundle id.
+- When you use `--profile`, omit the explicit service bundle id.
+- Tier 2 profiles require `--ack-risk <id|bundle-id>` to run; Tier 1 prints a warning; Tier 0 runs silently.
+- `probe_catalog` outputs JSON in `result.stdout`; use `<probe-id> --help` for per-probe usage (help text is returned in `result.stdout`).
+- `probe_catalog` includes `trace_symbols`, mapping probe ids to stable `ej_*` marker symbols for external tooling.
 - Filesystem probes are safe-by-default: destructive direct-path operations are refused unless you target a harness path (for `fs_op`/`fs_coordinated_op` via `--path-class`/`--target`, or for `fs_xattr` via an explicit path under `*/entitlement-jail-harness/*`) or pass `--allow-unsafe-path` (or `--allow-write` for `fs_xattr`).
 - `dlopen_external` loads and executes dylib initializers by design; use a signed test dylib.
 - `--log-sandbox`/`--log-stream` writes a best-effort unified log excerpt filtered to `Sandbox:` lines for the probe PID (uses `log show`; absence of deny lines is not a denial claim).
+- Responses include `log_capture_status`; when no log capture is requested, `deny_evidence` is set to `not_captured`.
+- All JSON responses use the envelope described above (including top-level `schema_version`).
 - When `run-xpc` runs inside `EntitlementJail.app`, `/usr/bin/log` may be blocked by the app sandbox; log capture will report an error instead of a denial signal.
 - `--hold-open` keeps the XPC connection open after the response to make debugger/trace attachment easier.
 - `--log-sandbox`/`--log-predicate` must appear before `<xpc-service-bundle-id>`.
 - `--log-predicate` overrides the default `log show` predicate (pass a full predicate string).
 - `--attach <seconds>` is a convenience for attach workflows: it sets a pre-run wait using a FIFO under the service’s container `tmp` plus a matching `--hold-open` (unless you set `--hold-open` explicitly).
-- `--wait-fifo`/`--wait-exists` block **before** probe execution; the wait outcome is recorded in the JSON details (`wait_*` keys).
+- `--wait-fifo`/`--wait-exists` block **before** probe execution; the wait outcome is recorded in `data.details` (`wait_*` keys).
 - `--wait-create` tells the service to create the FIFO path before waiting (only valid with `--wait-fifo`).
 - When a wait is configured, the client prints a `wait-ready` line to stderr with the resolved wait path (use that FIFO or file path to trigger).
+
+### Attach cheat-sheet
+
+```sh
+./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc --attach 60 --profile fully_injectable fs_op --op stat --path-class tmp
+```
+
+Copy the FIFO path from stderr, then trigger:
+
+```sh
+printf go > /path/from/wait-ready.fifo
+```
+
+If you want the process to stay alive longer after the probe runs, add `--hold-open <seconds>`.
 
 High-level flow:
 
@@ -138,10 +212,81 @@ Why XPC:
 Example (dlopen_external):
 
 ```sh
-IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' Tests/TestDylib/build.sh
-EJ_DLOPEN_PATH="$PWD/Tests/TestDylib/out/testdylib.dylib" \
+IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' tests/fixtures/TestDylib/build.sh
+EJ_DLOPEN_PATH="$PWD/tests/fixtures/TestDylib/out/testdylib.dylib" \
   ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc com.yourteam.entitlement-jail.ProbeService_plugin_host_relaxed dlopen_external
 ```
+
+## Profiles and health checks
+
+Profiles are short ids that map to XPC services in the process zoo.
+
+List and inspect:
+
+```sh
+./EntitlementJail.app/Contents/MacOS/entitlement-jail list-profiles
+./EntitlementJail.app/Contents/MacOS/entitlement-jail list-services
+./EntitlementJail.app/Contents/MacOS/entitlement-jail show-profile minimal
+./EntitlementJail.app/Contents/MacOS/entitlement-jail describe-service minimal
+```
+
+Use a profile id with `run-xpc`:
+
+```sh
+./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc --profile minimal capabilities_snapshot
+```
+
+Tier model:
+
+- Tier 0: baseline/access entitlements only (not gated)
+- Tier 1: `get-task-allow` and/or `disable-library-validation` (warn-only)
+- Tier 2: `allow-dyld-environment-variables`, `allow-jit`, or `allow-unsigned-executable-memory` (requires `--ack-risk`)
+
+Example (tier 2 ack):
+
+```sh
+./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc --profile fully_injectable --ack-risk fully_injectable probe_catalog
+```
+
+Health check (safe probes only):
+
+```sh
+./EntitlementJail.app/Contents/MacOS/entitlement-jail health-check --profile minimal
+```
+
+This runs `capabilities_snapshot`, `world_shape`, and `fs_op --op stat --path-class tmp`.
+
+`describe-service` is a **static** view derived from entitlements and container path conventions; it does not run any probes.
+
+## `run-matrix`: compare a probe across a service group
+
+Run the same probe across a predefined group and emit a compare table plus JSON bundle.
+
+Groups:
+
+- `baseline`: `minimal`
+- `debug`: `minimal`, `debuggable`
+- `inject`: `minimal`, `plugin_host_relaxed`, `dyld_env_enabled`, `fully_injectable`
+- `jit`: `minimal`, `jit_map_jit`, `jit_rwx_legacy`
+
+Example:
+
+```sh
+./EntitlementJail.app/Contents/MacOS/entitlement-jail run-matrix --group inject fs_op --op stat --path-class tmp
+```
+
+Output (default, overwritten each run):
+
+```
+~/Library/Application Support/entitlement-jail/matrix/latest
+```
+
+Files:
+
+- `run-matrix.json`
+- `run-matrix.table.txt`
+
+Tier 2 profiles in the group are skipped unless you pass `--ack-risk <id|bundle-id>`.
 
 ## `quarantine-lab`: write/open artifacts and report `com.apple.quarantine`
 
@@ -207,6 +352,70 @@ Behavior:
 
 Do not run the observer from inside `EntitlementJail.app` (or any sandboxed parent), or you lose the “outside the sandbox” boundary and mix attribution.
 
+## Evidence manifest (signed BOM)
+
+The app embeds a small evidence manifest at:
+
+- `EntitlementJail.app/Contents/Resources/Evidence/manifest.json`
+
+It records hashes, LC_UUIDs, and entitlements for embedded helpers and XPC services. The manifest is signed as part of the app bundle (it deliberately omits the main binary hash to avoid self‑referencing).
+
+The Evidence directory also includes:
+
+- `EntitlementJail.app/Contents/Resources/Evidence/symbols.json`
+
+This lists exported `ej_*` probe markers per binary (useful for `otool`, `dtrace`, `frida`, or Ghidra correlation).
+
+- `EntitlementJail.app/Contents/Resources/Evidence/profiles.json`
+
+This lists profile ids, service bundle ids, tags, and entitlements for the process zoo.
+
+Each profile includes `risk_tier` and `risk_reasons` fields used by the CLI risk gate.
+
+Commands:
+
+```sh
+./EntitlementJail.app/Contents/MacOS/entitlement-jail verify-evidence
+./EntitlementJail.app/Contents/MacOS/entitlement-jail inspect-macho com.yourteam.entitlement-jail.ProbeService_minimal
+./EntitlementJail.app/Contents/MacOS/entitlement-jail inspect-macho main
+./EntitlementJail.app/Contents/MacOS/entitlement-jail inspect-macho evidence.symbols
+./EntitlementJail.app/Contents/MacOS/entitlement-jail inspect-macho evidence.profiles
+./EntitlementJail.app/Contents/MacOS/entitlement-jail inspect-macho Contents/XPCServices/ProbeService_minimal.xpc/Contents/MacOS/ProbeService_minimal
+```
+
+`verify-evidence` checks the on‑disk binaries against the manifest. `inspect-macho` prints the manifest entry (and absolute path) for a service id, `main`, or a bundle‑relative path.
+
+`verify-evidence` returns a JSON envelope. Use `result.ok` for the overall outcome and `data` for `checked`, `mismatches`, `manifest_path`, `schema_version` (manifest schema), and optional `notes`.
+
+## `bundle-evidence`: one-shot evidence bundle
+
+`bundle-evidence` collects the Evidence files and JSON reports into a single output directory for archiving or sharing.
+
+Default output path (overwritten on each run):
+
+```
+~/Library/Application Support/entitlement-jail/evidence/latest
+```
+
+Outputs:
+
+- `Evidence/manifest.json`
+- `Evidence/symbols.json`
+- `Evidence/profiles.json`
+- `verify-evidence.json`
+- `list-profiles.json`
+- `profiles/<profile-id>.json`
+- `bundle_meta.json`
+- `health-check.json` (only with `--include-health-check`)
+
+By default, Tier 2 profiles are **skipped** in `profiles/` unless you pass `--ack-risk <id|bundle-id>`. This does not execute probes unless you request the optional health check.
+
+Example:
+
+```sh
+./EntitlementJail.app/Contents/MacOS/entitlement-jail bundle-evidence --out /tmp/ej-evidence
+```
+
 ## Optional debugger-side tool: `ej-inspector`
 
 `ej-inspector` is a standalone CLI that checks a target’s codesign identity (Team ID + bundle id/prefix) before attempting `task_for_pid`. If allowed, it immediately deallocates the task port and exits; it does not attach or manipulate state.
@@ -252,7 +461,7 @@ This repo treats “what happened” and “why it happened” as separate quest
 
 XPC-backed commands print JSON to stdout (the sandboxed Rust launcher does not reformat it):
 
-- `run-xpc` prints a `RunProbeResponse`-shaped JSON object and exits with `rc`.
-- `quarantine-lab` prints a `QuarantineWriteResponse`-shaped JSON object and exits with `rc`.
+- `run-xpc` prints a `kind: probe_response` envelope and exits with `result.rc`.
+- `quarantine-lab` prints a `kind: quarantine_response` envelope and exits with `result.rc`.
 
-For wire-format details and exact fields, see [xpc/README.md](../xpc/README.md).
+For wire-format details and exact fields, see the JSON output contract above and [xpc/README.md](../xpc/README.md).

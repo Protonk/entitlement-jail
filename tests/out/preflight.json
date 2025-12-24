@@ -1,0 +1,98 @@
+{
+  "app": {
+    "exists": true,
+    "path": "/Users/achyland/Desktop/entitlement-jail/EntitlementJail.app",
+    "sign_error": null,
+    "signed": true
+  },
+  "inspector": {
+    "cs_debugger": false,
+    "entitlements_error": "Executable=/Users/achyland/Desktop/entitlement-jail/runner/target/debug/ej-inspector\nwarning: Specifying ':' in the path is deprecated and will not work in a future release",
+    "exists": true,
+    "path": "/Users/achyland/Desktop/entitlement-jail/runner/target/debug/ej-inspector",
+    "sign_error": null,
+    "signed": true
+  },
+  "schema_version": 1,
+  "services": {
+    "debuggable": {
+      "entitlements": {
+        "disable_library_validation": true,
+        "get_task_allow": true
+      },
+      "entitlements_error": null,
+      "exists": true,
+      "path": "/Users/achyland/Desktop/entitlement-jail/EntitlementJail.app/Contents/XPCServices/ProbeService_debuggable.xpc/Contents/MacOS/ProbeService_debuggable",
+      "sign_error": null,
+      "signed": true
+    },
+    "fully_injectable": {
+      "entitlements": {
+        "allow_dyld_environment_variables": true,
+        "allow_jit": true,
+        "allow_unsigned_executable_memory": true,
+        "disable_library_validation": true,
+        "get_task_allow": true
+      },
+      "entitlements_error": null,
+      "exists": true,
+      "path": "/Users/achyland/Desktop/entitlement-jail/EntitlementJail.app/Contents/XPCServices/ProbeService_fully_injectable.xpc/Contents/MacOS/ProbeService_fully_injectable",
+      "sign_error": null,
+      "signed": true
+    },
+    "jit_map_jit": {
+      "entitlements": {
+        "allow_jit": true
+      },
+      "entitlements_error": null,
+      "exists": true,
+      "path": "/Users/achyland/Desktop/entitlement-jail/EntitlementJail.app/Contents/XPCServices/ProbeService_jit_map_jit.xpc/Contents/MacOS/ProbeService_jit_map_jit",
+      "sign_error": null,
+      "signed": true
+    },
+    "jit_rwx_legacy": {
+      "entitlements": {
+        "allow_unsigned_executable_memory": true
+      },
+      "entitlements_error": null,
+      "exists": true,
+      "path": "/Users/achyland/Desktop/entitlement-jail/EntitlementJail.app/Contents/XPCServices/ProbeService_jit_rwx_legacy.xpc/Contents/MacOS/ProbeService_jit_rwx_legacy",
+      "sign_error": null,
+      "signed": true
+    },
+    "minimal": {
+      "entitlements": {},
+      "entitlements_error": null,
+      "exists": true,
+      "path": "/Users/achyland/Desktop/entitlement-jail/EntitlementJail.app/Contents/XPCServices/ProbeService_minimal.xpc/Contents/MacOS/ProbeService_minimal",
+      "sign_error": null,
+      "signed": true
+    },
+    "net_client": {
+      "entitlements": {
+        "network_client": true
+      },
+      "entitlements_error": null,
+      "exists": true,
+      "path": "/Users/achyland/Desktop/entitlement-jail/EntitlementJail.app/Contents/XPCServices/ProbeService_net_client.xpc/Contents/MacOS/ProbeService_net_client",
+      "sign_error": null,
+      "signed": true
+    },
+    "plugin_host_relaxed": {
+      "entitlements": {
+        "disable_library_validation": true
+      },
+      "entitlements_error": null,
+      "exists": true,
+      "path": "/Users/achyland/Desktop/entitlement-jail/EntitlementJail.app/Contents/XPCServices/ProbeService_plugin_host_relaxed.xpc/Contents/MacOS/ProbeService_plugin_host_relaxed",
+      "sign_error": null,
+      "signed": true
+    }
+  },
+  "test_dylib": {
+    "exists": true,
+    "path": "/Users/achyland/Desktop/entitlement-jail/tests/fixtures/TestDylib/out/testdylib.dylib",
+    "sign_error": null,
+    "signed": true
+  }
+}

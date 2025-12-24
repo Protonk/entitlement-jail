@@ -1,3 +1,8 @@
+#[path = "../json_contract.rs"]
+#[allow(dead_code)]
+mod json_contract;
+
+use serde::Serialize;
 use std::ffi::{CStr, OsString};
 use std::os::raw::{c_char, c_int, c_void};
 use std::process::Command;
@@ -29,24 +34,6 @@ notes:
     );
 }
 
-fn json_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0C}' => out.push_str("\\f"),
-            c if c < '\u{20}' => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
-}
-
 fn pid_path(pid: i32) -> Result<String, String> {
     let mut buf = vec![0u8; PATH_MAX];
     let rc = unsafe { proc_pidpath(pid as c_int, buf.as_mut_ptr() as *mut c_void, buf.len() as u32) };
@@ -64,6 +51,26 @@ struct CodeSignInfo {
     rc: Option<i32>,
     stderr: String,
     error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct InspectorData {
+    pid: i32,
+    path: Option<String>,
+    identifier: Option<String>,
+    team_id: Option<String>,
+    expected_team_id: String,
+    expected_bundle_id: Option<String>,
+    expected_bundle_id_prefix: Option<String>,
+    id_ok: bool,
+    team_ok: bool,
+    allowed: bool,
+    codesign_rc: Option<i32>,
+    codesign_error: Option<String>,
+    attach_attempted: bool,
+    attach_result: String,
+    attach_rc: Option<i32>,
+    attach_error: Option<String>,
 }
 
 fn codesign_info(path: &str) -> CodeSignInfo {
@@ -197,12 +204,39 @@ fn main() {
     let path = match pid_path(pid) {
         Ok(path) => path,
         Err(err) => {
-            let json = format!(
-                "{{\"pid\":{},\"path\":null,\"error\":\"{}\"}}",
+            let data = InspectorData {
                 pid,
-                json_escape(&err)
-            );
-            println!("{json}");
+                path: None,
+                identifier: None,
+                team_id: None,
+                expected_team_id: team_id.clone(),
+                expected_bundle_id: bundle_id.clone(),
+                expected_bundle_id_prefix: bundle_prefix.clone(),
+                id_ok: false,
+                team_ok: false,
+                allowed: false,
+                codesign_rc: None,
+                codesign_error: None,
+                attach_attempted: false,
+                attach_result: "skipped".to_string(),
+                attach_rc: None,
+                attach_error: None,
+            };
+            let result = json_contract::JsonResult {
+                ok: false,
+                rc: None,
+                exit_code: Some(1),
+                normalized_outcome: None,
+                errno: None,
+                error: Some(err),
+                stderr: None,
+                stdout: None,
+            };
+            if let Err(err) =
+                json_contract::print_envelope("inspector_report", result, &data)
+            {
+                eprintln!("{err}");
+            }
             std::process::exit(1);
         }
     };
@@ -247,71 +281,57 @@ fn main() {
         }
     }
 
-    let json = format!(
-        "{{\
-\"pid\":{},\
-\"path\":\"{}\",\
-\"identifier\":{},\
-\"team_id\":{},\
-\"expected_team_id\":\"{}\",\
-\"expected_bundle_id\":{},\
-\"expected_bundle_id_prefix\":{},\
-\"id_ok\":{},\
-\"team_ok\":{},\
-\"allowed\":{},\
-\"codesign_rc\":{},\
-\"codesign_error\":{},\
-\"attach_attempted\":{},\
-\"attach_result\":\"{}\",\
-\"attach_rc\":{},\
-\"attach_error\":{}\
-}}",
+    let data = InspectorData {
         pid,
-        json_escape(&path),
-        cs.identifier
-            .as_ref()
-            .map(|s| format!("\"{}\"", json_escape(s)))
-            .unwrap_or("null".to_string()),
-        cs.team_id
-            .as_ref()
-            .map(|s| format!("\"{}\"", json_escape(s)))
-            .unwrap_or("null".to_string()),
-        json_escape(&team_id),
-        bundle_id
-            .as_ref()
-            .map(|s| format!("\"{}\"", json_escape(s)))
-            .unwrap_or("null".to_string()),
-        bundle_prefix
-            .as_ref()
-            .map(|s| format!("\"{}\"", json_escape(s)))
-            .unwrap_or("null".to_string()),
-        if id_ok { "true" } else { "false" },
-        if team_ok { "true" } else { "false" },
-        if allowed { "true" } else { "false" },
-        cs.rc
-            .map(|rc| rc.to_string())
-            .unwrap_or("null".to_string()),
-        cs.error
-            .as_ref()
-            .map(|s| format!("\"{}\"", json_escape(s)))
-            .unwrap_or("null".to_string()),
-        if attach_attempted { "true" } else { "false" },
-        attach_result,
-        attach_rc
-            .map(|rc| rc.to_string())
-            .unwrap_or("null".to_string()),
-        attach_error
-            .as_ref()
-            .map(|s| format!("\"{}\"", json_escape(s)))
-            .unwrap_or("null".to_string())
-    );
+        path: Some(path),
+        identifier: cs.identifier.clone(),
+        team_id: cs.team_id.clone(),
+        expected_team_id: team_id.clone(),
+        expected_bundle_id: bundle_id.clone(),
+        expected_bundle_id_prefix: bundle_prefix.clone(),
+        id_ok,
+        team_ok,
+        allowed,
+        codesign_rc: cs.rc,
+        codesign_error: cs.error.clone(),
+        attach_attempted,
+        attach_result: attach_result.clone(),
+        attach_rc,
+        attach_error: attach_error.clone(),
+    };
 
-    println!("{json}");
+    let exit_code = if !allowed {
+        3
+    } else if attach_attempted && attach_rc != Some(0) {
+        4
+    } else {
+        0
+    };
 
-    if !allowed {
-        std::process::exit(3);
+    let error = if !allowed {
+        Some("identity_not_allowed".to_string())
+    } else if attach_attempted && attach_rc != Some(0) {
+        attach_error.clone().or_else(|| Some("attach_failed".to_string()))
+    } else {
+        None
+    };
+
+    let result = json_contract::JsonResult {
+        ok: exit_code == 0,
+        rc: None,
+        exit_code: Some(exit_code),
+        normalized_outcome: None,
+        errno: None,
+        error,
+        stderr: None,
+        stdout: None,
+    };
+
+    if let Err(err) = json_contract::print_envelope("inspector_report", result, &data) {
+        eprintln!("{err}");
     }
-    if attach_attempted && attach_rc != Some(0) {
-        std::process::exit(4);
+
+    if exit_code != 0 {
+        std::process::exit(exit_code);
     }
 }

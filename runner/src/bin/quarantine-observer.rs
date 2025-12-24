@@ -1,3 +1,8 @@
+#[path = "../json_contract.rs"]
+#[allow(dead_code)]
+mod json_contract;
+
+use serde::Serialize;
 use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -13,24 +18,6 @@ notes:
   - reads com.apple.quarantine xattr (if present)
   - optional: runs `spctl --assess --type execute` (does not execute the file)"
     );
-}
-
-fn json_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0C}' => out.push_str("\\f"),
-            c if c < '\u{20}' => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 fn cmd_output_to_string(bytes: &[u8]) -> String {
@@ -80,6 +67,36 @@ struct SpctlResult {
     stdout: String,
     stderr: String,
     error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ObserverLayerAttribution {
+    seatbelt: String,
+    quarantine: String,
+    gatekeeper: String,
+}
+
+#[derive(Serialize)]
+struct ObserverData {
+    path: String,
+    exists: bool,
+    is_executable: Option<bool>,
+    mode_octal: Option<String>,
+    spctl_status_ran: bool,
+    spctl_status_rc: Option<i32>,
+    spctl_status_stdout: String,
+    spctl_status_stderr: String,
+    spctl_status_error: Option<String>,
+    spctl_assessments_enabled: Option<bool>,
+    quarantine_xattr_present: Option<bool>,
+    quarantine_xattr_raw: Option<String>,
+    quarantine_xattr_error: Option<String>,
+    spctl_assess_ran: bool,
+    spctl_rc: Option<i32>,
+    spctl_stdout: String,
+    spctl_stderr: String,
+    spctl_error: Option<String>,
+    layer_attribution: ObserverLayerAttribution,
 }
 
 fn run_spctl_status() -> SpctlResult {
@@ -163,12 +180,48 @@ fn main() {
     let meta = match std::fs::metadata(&path) {
         Ok(m) => m,
         Err(err) => {
-            let json = format!(
-                "{{\"path\":\"{}\",\"exists\":false,\"error\":\"{}\",\"layer_attribution\":{{\"seatbelt\":\"not_sandboxed\",\"quarantine\":\"unknown\",\"gatekeeper\":\"not_tested\"}}}}",
-                json_escape(&path.display().to_string()),
-                json_escape(&format!("{err}"))
-            );
-            println!("{json}");
+            let data = ObserverData {
+                path: path.display().to_string(),
+                exists: false,
+                is_executable: None,
+                mode_octal: None,
+                spctl_status_ran: spctl_status.ran,
+                spctl_status_rc: spctl_status.rc,
+                spctl_status_stdout: spctl_status.stdout.clone(),
+                spctl_status_stderr: spctl_status.stderr.clone(),
+                spctl_status_error: spctl_status.error.clone(),
+                spctl_assessments_enabled,
+                quarantine_xattr_present: None,
+                quarantine_xattr_raw: None,
+                quarantine_xattr_error: None,
+                spctl_assess_ran: false,
+                spctl_rc: None,
+                spctl_stdout: String::new(),
+                spctl_stderr: String::new(),
+                spctl_error: None,
+                layer_attribution: ObserverLayerAttribution {
+                    seatbelt: "not_sandboxed".to_string(),
+                    quarantine: "unknown".to_string(),
+                    gatekeeper: "not_tested".to_string(),
+                },
+            };
+            let result = json_contract::JsonResult {
+                ok: false,
+                rc: None,
+                exit_code: Some(1),
+                normalized_outcome: None,
+                errno: None,
+                error: Some(format!("metadata_failed: {err}")),
+                stderr: None,
+                stdout: None,
+            };
+            if let Err(err) = json_contract::print_envelope(
+                "quarantine_observer_report",
+                result,
+                &data,
+            ) {
+                eprintln!("{err}");
+            }
             std::process::exit(1);
         }
     };
@@ -219,70 +272,35 @@ fn main() {
         "not_tested"
     };
 
-    let json = format!(
-        "{{\
-\"path\":\"{}\",\
-\"exists\":true,\
-\"is_executable\":{},\
-\"mode_octal\":\"{}\",\
-\"spctl_status_ran\":{},\
-\"spctl_status_rc\":{},\
-\"spctl_status_stdout\":\"{}\",\
-\"spctl_status_stderr\":\"{}\",\
-\"spctl_status_error\":{},\
-\"spctl_assessments_enabled\":{},\
-\"quarantine_xattr_present\":{},\
-\"quarantine_xattr_raw\":{},\
-\"quarantine_xattr_error\":{},\
-\"spctl_assess_ran\":{},\
-\"spctl_rc\":{},\
-\"spctl_stdout\":\"{}\",\
-\"spctl_stderr\":\"{}\",\
-\"spctl_error\":{},\
-\"layer_attribution\":{{\"seatbelt\":\"not_sandboxed\",\"quarantine\":\"{}\",\"gatekeeper\":\"{}\"}}\
-}}",
-        json_escape(&path.display().to_string()),
-        if is_executable { "true" } else { "false" },
-        json_escape(&mode_octal),
-        if spctl_status.ran { "true" } else { "false" },
-        match spctl_status.rc {
-            Some(rc) => rc.to_string(),
-            None => "null".to_string(),
+    let data = ObserverData {
+        path: path.display().to_string(),
+        exists: true,
+        is_executable: Some(is_executable),
+        mode_octal: Some(mode_octal),
+        spctl_status_ran: spctl_status.ran,
+        spctl_status_rc: spctl_status.rc,
+        spctl_status_stdout: spctl_status.stdout,
+        spctl_status_stderr: spctl_status.stderr,
+        spctl_status_error: spctl_status.error,
+        spctl_assessments_enabled,
+        quarantine_xattr_present: Some(quarantine_present),
+        quarantine_xattr_raw: quarantine_raw,
+        quarantine_xattr_error: quarantine_err,
+        spctl_assess_ran: spctl.ran,
+        spctl_rc: spctl.rc,
+        spctl_stdout: spctl.stdout,
+        spctl_stderr: spctl.stderr,
+        spctl_error: spctl.error,
+        layer_attribution: ObserverLayerAttribution {
+            seatbelt: "not_sandboxed".to_string(),
+            quarantine: quarantine_attribution.to_string(),
+            gatekeeper: gatekeeper_attribution.to_string(),
         },
-        json_escape(&spctl_status.stdout),
-        json_escape(&spctl_status.stderr),
-        match spctl_status.error.as_ref() {
-            Some(v) => format!("\"{}\"", json_escape(v)),
-            None => "null".to_string(),
-        },
-        match spctl_assessments_enabled {
-            Some(true) => "true".to_string(),
-            Some(false) => "false".to_string(),
-            None => "null".to_string(),
-        },
-        if quarantine_present { "true" } else { "false" },
-        match quarantine_raw.as_ref() {
-            Some(v) => format!("\"{}\"", json_escape(v)),
-            None => "null".to_string(),
-        },
-        match quarantine_err.as_ref() {
-            Some(v) => format!("\"{}\"", json_escape(v)),
-            None => "null".to_string(),
-        },
-        if spctl.ran { "true" } else { "false" },
-        match spctl.rc {
-            Some(rc) => rc.to_string(),
-            None => "null".to_string(),
-        },
-        json_escape(&spctl.stdout),
-        json_escape(&spctl.stderr),
-        match spctl.error.as_ref() {
-            Some(v) => format!("\"{}\"", json_escape(v)),
-            None => "null".to_string(),
-        },
-        quarantine_attribution,
-        gatekeeper_attribution
-    );
+    };
 
-    println!("{json}");
+    let result = json_contract::JsonResult::from_ok(true);
+    if let Err(err) = json_contract::print_envelope("quarantine_observer_report", result, &data)
+    {
+        eprintln!("{err}");
+    }
 }

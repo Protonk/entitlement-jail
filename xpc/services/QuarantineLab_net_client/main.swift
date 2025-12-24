@@ -56,7 +56,7 @@ final class QuarantineLabService: NSObject, QuarantineLabProtocol {
         do {
             reply(try encodeJSON(response))
         } catch {
-            let fallback = #"{"rc":2,"normalized_outcome":"encode_failed"}"#
+            let fallback = #"{"schema_version":1,"rc":2,"normalized_outcome":"encode_failed"}"#
             reply(Data(fallback.utf8))
         }
     }

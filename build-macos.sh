@@ -4,6 +4,7 @@ set -euo pipefail
 # Usage:
 #   ./build-macos.sh
 #   IDENTITY='Developer ID Application: ...' ./build-macos.sh
+#   EJ_INSPECTION=0 IDENTITY='Developer ID Application: ...' ./build-macos.sh
 #
 # Produces:
 #   EntitlementJail.app
@@ -33,7 +34,25 @@ XPC_QUARANTINE_CLIENT_MAIN="${XPC_ROOT}/quarantine-client/main.swift"
 XPC_SERVICES_DIR="${XPC_ROOT}/services"
 # Swift/Clang module cache must be writable; the harness sandbox often blocks the default path under ~/.cache.
 SWIFT_MODULE_CACHE="${SWIFT_MODULE_CACHE:-.tmp/swift-module-cache}"
-SWIFT_OPT_LEVEL="${SWIFT_OPT_LEVEL:--O}"
+SWIFT_OPT_LEVEL="${SWIFT_OPT_LEVEL:-}"
+SWIFT_DEBUG_FLAGS="${SWIFT_DEBUG_FLAGS:-}"
+EJ_INSPECTION="${EJ_INSPECTION:-1}"
+
+if [[ "${EJ_INSPECTION}" == "1" ]]; then
+  if [[ -z "${SWIFT_OPT_LEVEL}" ]]; then
+    SWIFT_OPT_LEVEL="-Onone"
+  fi
+  if [[ -z "${SWIFT_DEBUG_FLAGS}" ]]; then
+    SWIFT_DEBUG_FLAGS="-g"
+  fi
+  if [[ -z "${RUSTFLAGS:-}" ]]; then
+    export RUSTFLAGS="-C debuginfo=2 -C force-frame-pointers=yes"
+  fi
+fi
+
+if [[ -z "${SWIFT_OPT_LEVEL}" ]]; then
+  SWIFT_OPT_LEVEL="-O"
+fi
 
 # Signing identity. Prefer env override; otherwise require user to set it.
 IDENTITY="${IDENTITY:-}"
@@ -128,12 +147,16 @@ if [[ "${BUILD_XPC}" == "1" ]]; then
 
   echo "==> Building embedded XPC client (must live under Contents/MacOS so Bundle.main resolves to the app)"
   mkdir -p "${SWIFT_MODULE_CACHE}"
-  "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_OPT_LEVEL}" -o "${APP_BUNDLE}/Contents/MacOS/xpc-probe-client" "${XPC_API_FILE}" "${XPC_CLIENT_MAIN}"
+  SWIFT_FLAGS=("${SWIFT_OPT_LEVEL}")
+  if [[ -n "${SWIFT_DEBUG_FLAGS}" ]]; then
+    SWIFT_FLAGS+=("${SWIFT_DEBUG_FLAGS}")
+  fi
+  "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${APP_BUNDLE}/Contents/MacOS/xpc-probe-client" "${XPC_API_FILE}" "${XPC_CLIENT_MAIN}"
   chmod +x "${APP_BUNDLE}/Contents/MacOS/xpc-probe-client"
 
   if [[ -f "${XPC_QUARANTINE_CLIENT_MAIN}" ]]; then
     echo "==> Building embedded XPC quarantine client"
-    "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_OPT_LEVEL}" -o "${APP_BUNDLE}/Contents/MacOS/xpc-quarantine-client" "${XPC_API_FILE}" "${XPC_QUARANTINE_CLIENT_MAIN}"
+    "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${APP_BUNDLE}/Contents/MacOS/xpc-quarantine-client" "${XPC_API_FILE}" "${XPC_QUARANTINE_CLIENT_MAIN}"
     chmod +x "${APP_BUNDLE}/Contents/MacOS/xpc-quarantine-client"
   fi
 
@@ -154,7 +177,7 @@ if [[ "${BUILD_XPC}" == "1" ]]; then
 
       mkdir -p "${svc_bundle}/Contents/MacOS"
       cp "${svc_info}" "${svc_bundle}/Contents/Info.plist"
-      "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_OPT_LEVEL}" -o "${svc_bundle}/Contents/MacOS/${svc_name}" "${XPC_API_FILE}" "${XPC_PROBE_CORE_FILE}" "${svc_main}"
+      "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${svc_bundle}/Contents/MacOS/${svc_name}" "${XPC_API_FILE}" "${XPC_PROBE_CORE_FILE}" "${svc_main}"
       chmod +x "${svc_bundle}/Contents/MacOS/${svc_name}"
     done
   fi
@@ -223,6 +246,11 @@ if [[ "${BUILD_XPC}" == "1" ]] && [[ -d "${XPC_SERVICES_DIR}" ]]; then
       "${svc_bundle}"
   done
 fi
+
+echo "==> Writing evidence manifest (signed BOM)"
+/usr/bin/python3 "tests/build-evidence.py" \
+  --app-bundle "${APP_BUNDLE}" \
+  --app-entitlements "${ENTITLEMENTS_PLIST}"
 
 echo "==> Codesigning (Developer ID + hardened runtime + entitlements)"
 # Sign nested code first if you embed anything executable beyond the main binary.

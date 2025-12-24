@@ -23,7 +23,7 @@ final class ProbeService: NSObject, ProbeServiceProtocol {
         do {
             reply(try encodeJSON(response))
         } catch {
-            let fallback = #"{"rc":2,"stdout":"","stderr":"failed to encode response"}"#
+            let fallback = #"{"schema_version":1,"rc":2,"stdout":"","stderr":"failed to encode response","normalized_outcome":"encode_failed"}"#
             reply(Data(fallback.utf8))
         }
     }

@@ -27,7 +27,7 @@ XPC gives you:
 
 Both requests and responses are serialized as JSON bytes (`Data`) rather than passing rich Objective‑C objects over XPC. This keeps the interface inspectable and stable, and makes it easy for callers to treat the service output as a structured research record.
 
-`RunProbeResponse` now includes correlation metadata (for example `correlation_id`, `probe_id`, `argv`), service identity/build fields, and timing/thread hints (`started_at_iso8601`, `ended_at_iso8601`, `thread_id`) when available.
+`RunProbeResponse` carries correlation metadata (for example `correlation_id`, `probe_id`, `argv`), service identity/build fields, and timing/thread hints (`started_at_iso8601`, `ended_at_iso8601`, `thread_id`) when available. The XPC client wraps responses in the uniform JSON envelope described in `runner/README.md` and may annotate `log_capture_status` when `--log-sandbox` is used.
 
 `RunProbeRequest` supports an optional `wait_spec` block to block **before** probe execution (used by `run-xpc --wait-*` / `--attach`).
 
@@ -100,11 +100,22 @@ Built-in probe ids (in-process):
 
 Notes:
 
-- `probe_catalog` outputs a JSON catalog in `stdout`; use `<probe-id> --help` for per-probe usage (help text is returned in JSON `stdout`).
+- `probe_catalog` outputs a JSON catalog in `result.stdout`; use `<probe-id> --help` for per-probe usage (help text is returned in JSON `result.stdout`).
+- `probe_catalog` includes `trace_symbols`, mapping probe ids to stable `ej_*` marker symbols for external tooling.
 - `dlopen_external` executes dylib initializers; treat it as code execution.
-- `run-xpc` supports pre-run waits for attach workflows (`--wait-fifo`/`--wait-exists` or `--attach <seconds>`); wait metadata is recorded in `details` (`wait_*` keys).
+- `run-xpc` supports pre-run waits for attach workflows (`--wait-fifo`/`--wait-exists` or `--attach <seconds>`); wait metadata is recorded in `data.details` (`wait_*` keys).
 - When a wait is configured, the client emits a `wait-ready` line to stderr with the resolved wait path.
 - `--wait-create` tells the service to create the FIFO path before waiting (only valid with `--wait-fifo`).
+
+## Trace markers (`ej_*`)
+
+Key probes call stable, C-callable marker functions such as `ej_probe_fs_op` and `ej_probe_dlopen_external`. These symbols are present in the XPC service Mach‑O and are invoked at the start of probe execution, making them easy targets for `dtrace`, `frida`, and `otool`.
+
+Use `probe_catalog` to discover the symbol name for a given probe id (`trace_symbols`).
+
+## Inspection-friendly builds
+
+Inspection-friendly builds are the default (symbols + frame pointers + reduced Swift optimization). Set `EJ_INSPECTION=0` to build an optimized release. This does not change entitlements or runtime behavior, only build flags.
 
 ## Safe probe resolution (no traversal, no container staging)
 

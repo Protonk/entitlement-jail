@@ -1,67 +1,146 @@
-# EntitlementJail.app
+# EntitlementJail.app (User Guide)
 
-EntitlementJail is a macOS research and teaching tool that lets you observe how App Sandbox and entitlements shape runtime behavior. It is designed to produce *witness records* (what happened, where, and with which entitlement profile) rather than make blanket security claims.
+EntitlementJail is a macOS research/teaching tool for exploring **App Sandbox + entitlements** without collapsing “couldn’t do X” into “the sandbox denied X”.
 
-You interact with it through a sandboxed CLI bundled inside the app. This document is a self‑contained reference for end users.
+It is built around a **process zoo**: many embedded XPC services, each signed with a different entitlement profile. You run the *same probe* inside different services and compare the witness records.
+
+This document assumes you have **only**:
+
+- `EntitlementJail.app`
+- this file (`EntitlementJail.md`)
+
+No development workflows are required.
 
 ## Quick start
 
-Define a convenience variable for the CLI:
+Set a convenience variable:
 
 ```sh
 EJ="$PWD/EntitlementJail.app/Contents/MacOS/entitlement-jail"
 ```
 
-List available probes:
+Discover what’s inside:
 
 ```sh
-$EJ run-xpc com.yourteam.entitlement-jail.ProbeService_minimal probe_catalog
+$EJ list-profiles
+$EJ list-services
+$EJ describe-service minimal
 ```
 
-See entitlements + environment for a specific service:
+Run an “observer” probe in the baseline service:
 
 ```sh
-$EJ run-xpc com.yourteam.entitlement-jail.ProbeService_minimal capabilities_snapshot
+$EJ run-xpc --profile minimal capabilities_snapshot
 ```
 
-Run the same probe across different services to compare entitlement effects:
+Compare the same probe across a curated group:
 
 ```sh
-$EJ run-xpc com.yourteam.entitlement-jail.ProbeService_minimal net_op --op tcp_connect --host 1.1.1.1 --port 443
-$EJ run-xpc com.yourteam.entitlement-jail.ProbeService_net_client net_op --op tcp_connect --host 1.1.1.1 --port 443
+$EJ run-matrix --group debug capabilities_snapshot
 ```
 
-## The "process zoo" mental model
-
-EntitlementJail uses a **process zoo**: a set of XPC services where each service is a separate signed executable with a different entitlement profile.
-
-Key points:
-
-- Each XPC service is its own process with its own entitlements.
-- The *code path* is the same across services; the *entitlement profile* changes.
-- Use the **same probe** on different services to isolate the effect of entitlements.
-- The JSON output includes the service bundle id and PID so you can attach external tools to the correct process.
-
-This design lets you answer questions like:
-
-- "Does `get-task-allow` change attachability for this process?"
-- "Does `allow-jit` change `MAP_JIT` behavior?"
-- "Does `disable-library-validation` change `dlopen` outcomes?"
-
-## CLI reference
-
-The CLI lives at:
-
-```
-EntitlementJail.app/Contents/MacOS/entitlement-jail
-```
-
-### `run-xpc` (primary workflow)
-
-Run a probe inside a specific XPC service (the core "entitlements as the variable" mode).
+Make a service easier to attach to (lldb / dtrace / Frida) by holding it open:
 
 ```sh
-$EJ run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>]
+$EJ run-xpc --attach 60 --profile debuggable probe_catalog
+```
+
+## The mental model (what you’re measuring)
+
+### Process zoo
+
+- A **profile** is a short id (like `minimal` or `fully_injectable`) that maps to one XPC service bundle id.
+- Each XPC service is a separate **signed Mach‑O** with its own entitlements.
+- Probes run **in-process** inside the service. This avoids the common “child exec from writable path” failure mode that dominates sandbox demos.
+
+### Witness records (and attribution)
+
+EntitlementJail records *what happened* (return codes, errno, paths, timing) and attaches “best-effort attribution hints”, but it avoids overclaiming:
+
+- A permission-shaped failure (often `EPERM`/`EACCES`) is **not automatically** a sandbox denial.
+- “Seatbelt/App Sandbox denial” is only attributed when there is **deny evidence** (for example, a matching `Sandbox:` unified log line for the service PID).
+- Quarantine/Gatekeeper behavior is measured separately (Quarantine Lab does not execute anything).
+
+## CLI overview
+
+The CLI is a sandboxed executable embedded in the app:
+
+- `EntitlementJail.app/Contents/MacOS/entitlement-jail`
+
+Top-level commands:
+
+- `list-profiles` / `show-profile <id>`: profile discovery (including risk tier + entitlements)
+- `list-services` / `describe-service <id>`: service discovery (static capabilities; no live probe)
+- `run-xpc`: run a probe in a selected XPC service (primary workflow)
+- `run-matrix`: run the same probe across a named group and emit a table + JSON bundle
+- `health-check`: quick “does the process zoo respond” check
+- `verify-evidence` / `inspect-macho` / `bundle-evidence`: evidence and inspection artifacts
+- `quarantine-lab`: write/open/copy payloads and report quarantine deltas (no execution)
+- `run-system` / `run-embedded`: legacy/demo surfaces (see safety notes)
+
+Run `--help` on any command to see the exact argument syntax.
+
+## Profiles (what services exist)
+
+Profiles are the ergonomic interface for the process zoo.
+
+List them:
+
+```sh
+$EJ list-profiles
+```
+
+Inspect a profile (entitlements, risk tier, tags):
+
+```sh
+$EJ show-profile fully_injectable
+```
+
+Inspect a service “statically” (what the profile says it should have):
+
+```sh
+$EJ describe-service fully_injectable
+```
+
+### Risk tiers
+
+Profiles are grouped into three risk tiers:
+
+- Tier 0: runs silently
+- Tier 1: runs with a warning
+- Tier 2: requires explicit acknowledgement: `--ack-risk <profile-id|bundle-id>`
+
+This is about **guardrails**, not morality: Tier 2 profiles intentionally carry entitlements that widen instrumentation/injection surface.
+
+### Shipped probe profiles (current build)
+
+Use `list-profiles` as the source of truth. For convenience, the current build includes:
+
+| Profile id | Focus | Tier |
+| --- | --- | --- |
+| `minimal` | baseline sandbox | 0 |
+| `net_client` | network client | 0 |
+| `downloads_rw` | Downloads read/write | 0 |
+| `user_selected_executable` | user-selected executable | 0 |
+| `bookmarks_app_scope` | bookmarks app-scope | 0 |
+| `debuggable` | debug attach surface | 1 |
+| `plugin_host_relaxed` | relaxed library validation | 1 |
+| `dyld_env_enabled` | DYLD env variables allowed | 2 |
+| `jit_map_jit` | `MAP_JIT` | 2 |
+| `jit_rwx_legacy` | RWX executable memory | 2 |
+| `fully_injectable` | “max” attach/inject | 2 |
+
+There are also Quarantine Lab profiles (kind `quarantine`) such as `quarantine_default`, `quarantine_net_client`, and `quarantine_downloads_rw`.
+
+## `run-xpc` (run probes in a service)
+
+This is the primary workflow: pick a profile/service, run a probe, and get a JSON witness record.
+
+Usage:
+
+```sh
+$EJ run-xpc [--profile <id>] [--ack-risk <id|bundle-id>]
+            [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>]
             [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>]
             [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>]
             [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create]
@@ -69,146 +148,221 @@ $EJ run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predica
             <xpc-service-bundle-id> <probe-id> [probe-args...]
 ```
 
+Notes:
+
+- Prefer `--profile <id>` and omit the explicit bundle id.
+- Tier 2 profiles require `--ack-risk` (you can pass either the profile id or the full bundle id).
+- `--log-sandbox` / `--log-stream` are best-effort unified log capture for `Sandbox:` lines. Absence of deny lines is not a denial claim.
+- `--hold-open` keeps the service process alive after printing the JSON response.
+
+Common probes (discoverable via `probe_catalog`):
+
+```sh
+$EJ run-xpc --profile minimal probe_catalog
+$EJ run-xpc --profile minimal capabilities_snapshot
+$EJ run-xpc --profile minimal fs_op --op stat --path-class tmp
+$EJ run-xpc --profile net_client net_op --op tcp_connect --host 127.0.0.1 --port 9
+```
+
+### Attach-friendly waits (`--attach`, `--wait-*`)
+
+Many XPC services start and exit quickly. For external tooling (lldb/dtrace/Frida), you usually want:
+
+1. a deterministic “wait here” point before the interesting operation, and
+2. a post-run hold so the process stays alive while you inspect it.
+
+`--attach <seconds>` is the ergonomic path:
+
+```sh
+$EJ run-xpc --attach 60 --profile debuggable probe_catalog
+```
+
+The client prints a line like:
+
+```
+[client] wait-ready mode=fifo wait_path=/.../wait-ready.fifo
+```
+
+Trigger the probe by writing to the FIFO:
+
+```sh
+printf go > /path/from/wait-ready.fifo
+```
+
+If you prefer controlling the wait path explicitly:
+
+- `--wait-fifo <path>` blocks until a writer connects
+- `--wait-exists <path>` polls until a file exists
+- `--wait-path-class`/`--wait-name` let the service choose a path under its own container directories
+
+Wait metadata is recorded in `data.details` (`wait_*` fields).
+
+### Sandbox log capture (deny evidence)
+
+Some probes return a permission-shaped failure (often `EPERM`/`EACCES`). That is *compatible with* a sandbox denial, but it is not proof of one.
+
+If you want deny evidence for a specific run, request log capture:
+
+```sh
+$EJ run-xpc --log-sandbox /tmp/ej-sandbox.log --profile minimal fs_op --op stat --path-class tmp
+```
+
+Interpretation rules:
+
+- If log capture was requested, check `data.log_capture_status` and `data.log_capture_error`.
+- If log capture was not requested, `data.deny_evidence` is set to `not_captured`.
+- Log capture may fail from inside the sandbox boundary (for example, if `/usr/bin/log` is blocked); treat that as “no deny evidence captured”, not as a Seatbelt signal.
+
+## `run-matrix` (compare a probe across a group)
+
+`run-matrix` runs one probe across a named group of profiles and writes:
+
+- a compare table (`run-matrix.table.txt`)
+- a full JSON report (`run-matrix.json`)
+
+Usage:
+
+```sh
+$EJ run-matrix --group <baseline|debug|inject|jit> [--out <dir>] [--ack-risk <id|bundle-id>] <probe-id> [probe-args...]
+```
+
 Examples:
 
 ```sh
-# Basic probe
-$EJ run-xpc com.yourteam.entitlement-jail.ProbeService_minimal capabilities_snapshot
-
-# Filesystem probe (safe by default)
-$EJ run-xpc com.yourteam.entitlement-jail.ProbeService_minimal fs_op --op stat --path-class tmp
-
-# Capture a best-effort Sandbox log excerpt for the probe PID
-$EJ run-xpc --log-sandbox /tmp/ej-sandbox.log \
-  com.yourteam.entitlement-jail.ProbeService_minimal fs_op --op stat --path-class downloads
+$EJ run-matrix --group baseline capabilities_snapshot
+$EJ run-matrix --group debug capabilities_snapshot
 ```
 
-Notes:
+Tier 2 profiles are skipped unless you pass `--ack-risk`.
 
-- `--log-sandbox` uses `/usr/bin/log show` and is best-effort. Absence of a deny line is not proof that no denial occurred.
-- `--log-predicate` overrides the default log predicate. It must appear *before* the service bundle id.
-- `fs_op` is safe-by-default: destructive direct-path operations are refused unless you use a harness path (`--path-class`) or set `--allow-unsafe-path`.
+Default output directory (overwritten each run):
 
-### Attach-friendly waits
+```
+~/Library/Application Support/entitlement-jail/matrix/latest
+```
 
-You can pause **before** a probe runs so external tools (Frida, DTrace, lldb) can attach to the service.
+## Evidence and inspection
 
-Convenience:
+EntitlementJail ships “static evidence” inside the app bundle:
+
+- `Contents/Resources/Evidence/manifest.json` (hashes + entitlements for key Mach‑Os)
+- `Contents/Resources/Evidence/symbols.json` (stable `ej_*` marker symbols for tooling)
+- `Contents/Resources/Evidence/profiles.json` (the process zoo profiles and entitlements)
+
+Commands:
 
 ```sh
-$EJ run-xpc --attach 60 com.yourteam.entitlement-jail.ProbeService_fully_injectable fs_op --op stat --path-class tmp
-# Copy the wait_path from stderr and trigger:
-echo go > /path/from/wait-ready.fifo
+$EJ verify-evidence
+$EJ inspect-macho main
+$EJ inspect-macho evidence.symbols
+$EJ inspect-macho evidence.profiles
+$EJ bundle-evidence
 ```
 
-Details:
-
-- `--attach <seconds>` sets a pre-run FIFO wait under the service container `tmp` and also sets `--hold-open` to the same duration (unless you explicitly set `--hold-open`).
-- `--wait-fifo` / `--wait-exists` block **before** probe execution; wait metadata is recorded in the JSON `details` (`wait_*` keys).
-- When a wait is configured, the client prints a `wait-ready` line to stderr with the resolved wait path.
-- `--wait-path-class` is resolved by the *service* using its own standard directories (so it maps to that service's container).
-- `--wait-create` tells the service to create the FIFO path before waiting (only valid with `--wait-fifo`).
-
-### `run-system` (platform binaries only)
-
-Run a platform binary in place. This refuses paths outside the system allowlist.
+Tip: to inspect a specific service binary by bundle id:
 
 ```sh
-$EJ run-system /usr/bin/id
+$EJ show-profile minimal
+$EJ inspect-macho <bundle_id_from_show_profile_output>
 ```
 
-### `run-embedded` (bundle helpers)
+`bundle-evidence` collects these files plus JSON reports into one directory (overwritten each run):
 
-Run a helper shipped inside the app bundle.
+```
+~/Library/Application Support/entitlement-jail/evidence/latest
+```
+
+### Verifying sandboxing and signatures (optional)
+
+The “ground truth” for sandbox/entitlements is the signature metadata on each Mach‑O:
+
+- Main CLI: `EntitlementJail.app/Contents/MacOS/entitlement-jail`
+- XPC services: `EntitlementJail.app/Contents/XPCServices/*.xpc/Contents/MacOS/*`
+
+Useful commands:
 
 ```sh
-$EJ run-embedded <tool-name> [args...]
+codesign -d --entitlements :- EntitlementJail.app
+codesign -d --entitlements :- EntitlementJail.app/Contents/XPCServices/ProbeService_debuggable.xpc/Contents/MacOS/ProbeService_debuggable
+codesign --verify --deep --strict --verbose=2 EntitlementJail.app
+spctl -a -vv EntitlementJail.app
 ```
 
-### `quarantine-lab` (quarantine metadata only)
+You can also inspect entitlements via the CLI profiles:
 
-Write/open/copy artifacts and report `com.apple.quarantine` metadata changes. This does **not** execute artifacts.
+```sh
+$EJ show-profile debuggable
+$EJ describe-service debuggable
+```
+
+## Quarantine Lab (`quarantine-lab`)
+
+Quarantine Lab writes/opens/copies payloads and reports `com.apple.quarantine` deltas.
+
+Hard rule: it does **not** execute payloads.
+
+Usage:
 
 ```sh
 $EJ quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
 ```
 
-Example:
+Payload classes:
+
+- `shell_script` | `command_file` | `text` | `webarchive_like`
+
+Selected options:
+
+- `--operation <create_new|open_only|open_existing_save>`
+- `--existing-path <path>`
+- `--dir <tmp|app_support>`
+- `--name <file-name>`
+- `--exec | --no-exec` (sets/unsets the executable bit on the written file)
+
+For the full option list, run:
 
 ```sh
-$EJ quarantine-lab com.yourteam.entitlement-jail.QuarantineLab_default \
-  shell_script --dir tmp --operation create_new --name demo
+EntitlementJail.app/Contents/MacOS/xpc-quarantine-client --help
 ```
 
-## Process zoo: XPC service map
+## Output format (uniform JSON envelope)
 
-Each service is identical code with a different entitlement profile.
+All commands that emit JSON use the same envelope:
 
-Probe services:
+```json
+{
+  "schema_version": 1,
+  "kind": "probe_response",
+  "generated_at_unix_ms": 1700000000000,
+  "result": {
+    "ok": true,
+    "rc": 0,
+    "exit_code": null,
+    "normalized_outcome": "ok",
+    "errno": null,
+    "error": null,
+    "stderr": "",
+    "stdout": ""
+  },
+  "data": {}
+}
+```
 
-| Service bundle id | Focus | Key entitlements |
-| --- | --- | --- |
-| `com.yourteam.entitlement-jail.ProbeService_minimal` | Baseline | App Sandbox only |
-| `com.yourteam.entitlement-jail.ProbeService_net_client` | Network client | `com.apple.security.network.client` |
-| `com.yourteam.entitlement-jail.ProbeService_downloads_rw` | Downloads access | `com.apple.security.files.downloads.read-write` |
-| `com.yourteam.entitlement-jail.ProbeService_user_selected_executable` | User-selected executable | `com.apple.security.files.user-selected.executable` |
-| `com.yourteam.entitlement-jail.ProbeService_bookmarks_app_scope` | Security-scoped bookmarks | `com.apple.security.files.bookmarks.app-scope` |
-| `com.yourteam.entitlement-jail.ProbeService_debuggable` | Debug attach | `com.apple.security.get-task-allow`, `com.apple.security.cs.disable-library-validation` |
-| `com.yourteam.entitlement-jail.ProbeService_plugin_host_relaxed` | Plugin host | `com.apple.security.cs.disable-library-validation` |
-| `com.yourteam.entitlement-jail.ProbeService_dyld_env_enabled` | DYLD env | `com.apple.security.cs.allow-dyld-environment-variables` |
-| `com.yourteam.entitlement-jail.ProbeService_fully_injectable` | Max attach/inject | `get-task-allow`, `disable-library-validation`, `allow-dyld-environment-variables`, `allow-jit`, `allow-unsigned-executable-memory` |
-| `com.yourteam.entitlement-jail.ProbeService_jit_map_jit` | MAP_JIT | `com.apple.security.cs.allow-jit` |
-| `com.yourteam.entitlement-jail.ProbeService_jit_rwx_legacy` | RWX legacy | `com.apple.security.cs.allow-unsigned-executable-memory` |
+Rules:
 
-Quarantine Lab services:
+- Keys are lexicographically sorted for stability.
+- `run-xpc` and `quarantine-lab` use `result.rc`; other commands use `result.exit_code`.
+- Command-specific fields live under `data` (no extra top-level keys).
 
-| Service bundle id | Focus | Key entitlements |
-| --- | --- | --- |
-| `com.yourteam.entitlement-jail.QuarantineLab_default` | Baseline | App Sandbox only |
-| `com.yourteam.entitlement-jail.QuarantineLab_net_client` | Network client | `com.apple.security.network.client` |
-| `com.yourteam.entitlement-jail.QuarantineLab_downloads_rw` | Downloads access | `com.apple.security.files.downloads.read-write` |
-| `com.yourteam.entitlement-jail.QuarantineLab_bookmarks_app_scope` | Bookmarks | `com.apple.security.files.bookmarks.app-scope` |
-| `com.yourteam.entitlement-jail.QuarantineLab_user_selected_executable` | User-selected executable | `com.apple.security.files.user-selected.executable` |
+For `run-xpc`, the most useful attachment keys are:
 
-## Built-in probes (run-xpc)
+- `data.service_bundle_id`
+- `data.service_name`
+- `data.details.service_pid` (or `data.details.probe_pid`)
 
-Probe ids are stable identifiers (not paths). Use `probe_catalog` and `<probe-id> --help` for exact usage.
+## Safety notes
 
-Common probes:
-
-- `probe_catalog` - list probes and usage
-- `capabilities_snapshot` - entitlements + resolved standard directories
-- `world_shape` - environment shape (containerized paths, etc.)
-- `fs_op` - parameterized filesystem operations (safe-by-default)
-- `fs_op_wait` - `fs_op` with an explicit wait trigger (legacy; prefer `--attach` or `--wait-*`)
-- `net_op` - parameterized networking (`getaddrinfo`, `tcp_connect`, `udp_send`)
-- `dlopen_external` - dlopen a signed dylib by absolute path (executes initializers)
-- `jit_map_jit` - attempt `mmap` with `MAP_JIT`
-- `jit_rwx_legacy` - attempt RWX `mmap`
-- `downloads_rw` - read/write/remove under Downloads harness
-- `bookmark_make` / `bookmark_op` / `bookmark_roundtrip` - security-scoped bookmark flows
-- `userdefaults_op` - UserDefaults read/write/remove/sync
-- `fs_xattr` - get/list/set/remove xattrs
-- `fs_coordinated_op` - NSFileCoordinator mediated read/write
-
-## Output format (what to trust)
-
-Each probe returns JSON with fields like:
-
-- `rc` and `normalized_outcome` (primary result)
-- `errno` and `error` (low-level failure details)
-- `details` (metadata like `service_bundle_id`, `pid`, `probe_id`, `wait_*` keys)
-
-Use `details.pid` (or `details.service_pid`) to attach external tools to the correct process.
-
-Do **not** assume a permission error equals a sandbox denial. It could be:
-
-- a Seatbelt/App Sandbox denial (look for a `Sandbox:` log line for that PID),
-- a service/API refusal (no sandbox log),
-- or "world shape" differences (containerized paths).
-
-## Safety and scope
-
-- `run-xpc` executes probes in-process and does not spawn arbitrary binaries. `dlopen_external` is the explicit exception and *does* execute dylib initializers.
-- `quarantine-lab` records quarantine metadata and does **not** execute artifacts.
-- `run-system` and `run-embedded` run executable code by design; use them intentionally.
+- `run-system` runs **platform binaries only** (allowlisted to standard system prefixes). It exists for specific demonstrations; most work should use `run-xpc`.
+- `run-embedded` runs signed helper tools embedded in the app bundle (sandbox inheritance demonstrations). It does not run arbitrary on-disk tools by path.
+- `dlopen_external` executes dylib initializers by design. Treat it as code execution and use it intentionally.
+- If you did not capture deny evidence, do not claim “sandbox denied”; keep attribution explicit.

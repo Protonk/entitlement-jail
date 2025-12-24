@@ -2,6 +2,37 @@ import Foundation
 import Darwin
 import Security
 
+// Stable, C-callable trace markers for external instrumentation tools.
+@_cdecl("ej_probe_fs_op")
+@inline(never)
+@_optimize(none)
+public func ej_probe_fs_op_marker() {}
+
+@_cdecl("ej_probe_fs_op_wait")
+@inline(never)
+@_optimize(none)
+public func ej_probe_fs_op_wait_marker() {}
+
+@_cdecl("ej_probe_net_op")
+@inline(never)
+@_optimize(none)
+public func ej_probe_net_op_marker() {}
+
+@_cdecl("ej_probe_dlopen_external")
+@inline(never)
+@_optimize(none)
+public func ej_probe_dlopen_external_marker() {}
+
+@_cdecl("ej_probe_jit_map_jit")
+@inline(never)
+@_optimize(none)
+public func ej_probe_jit_map_jit_marker() {}
+
+@_cdecl("ej_probe_jit_rwx_legacy")
+@inline(never)
+@_optimize(none)
+public func ej_probe_jit_rwx_legacy_marker() {}
+
 public enum InProcessProbeCore {
     public static func run(_ req: RunProbeRequest) -> RunProbeResponse {
         let started = Date()
@@ -123,6 +154,7 @@ public enum InProcessProbeCore {
         response.started_at_iso8601 = iso8601(started)
         response.ended_at_iso8601 = iso8601(ended)
         response.thread_id = threadIdString()
+        response.schema_version = 1
 
         var details = response.details ?? [:]
         details["correlation_id"] = correlationId
@@ -173,9 +205,16 @@ public enum InProcessProbeCore {
         var notes: [String]
     }
 
+    private struct TraceSymbolSpec: Codable {
+        var probe_id: String
+        var symbols: [String]
+    }
+
     private struct ProbeCatalog: Codable {
+        var schema_version: Int
         var generated_at_iso8601: String
         var probes: [ProbeSpec]
+        var trace_symbols: [TraceSymbolSpec]
     }
 
     private static let probeSpecs: [ProbeSpec] = [
@@ -341,7 +380,7 @@ fs_op_wait --op <stat|open_read|open_write|create|truncate|rename|unlink|mkdir|r
             ],
             notes: [
                 "Executes dylib initializers; this is not a passive probe.",
-                "Use a signed dylib (see Tests/TestDylib)."
+                "Use a signed dylib (see tests/fixtures/TestDylib)."
             ]
         ),
         ProbeSpec(
@@ -539,14 +578,25 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
         )
     ]
 
+    private static let traceSymbols: [TraceSymbolSpec] = [
+        TraceSymbolSpec(probe_id: "fs_op", symbols: ["ej_probe_fs_op"]),
+        TraceSymbolSpec(probe_id: "fs_op_wait", symbols: ["ej_probe_fs_op_wait"]),
+        TraceSymbolSpec(probe_id: "net_op", symbols: ["ej_probe_net_op"]),
+        TraceSymbolSpec(probe_id: "dlopen_external", symbols: ["ej_probe_dlopen_external"]),
+        TraceSymbolSpec(probe_id: "jit_map_jit", symbols: ["ej_probe_jit_map_jit"]),
+        TraceSymbolSpec(probe_id: "jit_rwx_legacy", symbols: ["ej_probe_jit_rwx_legacy"]),
+    ]
+
     private static func probeSpec(for probeId: String) -> ProbeSpec? {
         probeSpecs.first { $0.probe_id == probeId }
     }
 
     private static func probeCatalog() -> RunProbeResponse {
         let catalog = ProbeCatalog(
+            schema_version: 1,
             generated_at_iso8601: ISO8601DateFormatter().string(from: Date()),
-            probes: probeSpecs
+            probes: probeSpecs,
+            trace_symbols: traceSymbols
         )
         do {
             let data = try encodeJSON(catalog)
@@ -1080,6 +1130,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	    // MARK: - fs_op_wait (delayed fs_op for attach)
 
 	    private static func probeFsOpWait(argv: [String]) -> RunProbeResponse {
+	        ej_probe_fs_op_wait_marker()
 	        let args = Argv(argv)
 	        let expectedOps = FsOp.allCases.map(\.rawValue).joined(separator: "|")
 	        guard let opStr = args.value("--op"), FsOp(rawValue: opStr) != nil else {
@@ -1252,6 +1303,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	    }
 
 	    private static func probeFsOp(argv: [String]) -> RunProbeResponse {
+	        ej_probe_fs_op_marker()
 	        let args = Argv(argv)
 	        let expectedOps = FsOp.allCases.map(\.rawValue).joined(separator: "|")
 	        guard let opStr = args.value("--op"), let op = FsOp(rawValue: opStr) else {
@@ -1670,6 +1722,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	    }
 
 	    private static func probeNetOp(argv: [String]) -> RunProbeResponse {
+	        ej_probe_net_op_marker()
 	        let args = Argv(argv)
 	        let expectedOps = NetOp.allCases.map(\.rawValue).joined(separator: "|")
 	        guard let opStr = args.value("--op"), let op = NetOp(rawValue: opStr) else {
@@ -1850,6 +1903,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	    // MARK: - dlopen_external (library validation / injection surface)
 
 	    private static func probeDlopenExternal(argv: [String]) -> RunProbeResponse {
+	        ej_probe_dlopen_external_marker()
 	        let args = Argv(argv)
 	        let path = args.value("--path") ?? ProcessInfo.processInfo.environment["EJ_DLOPEN_PATH"]
 	        guard let path, path.hasPrefix("/") else {
@@ -1916,6 +1970,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	    // MARK: - jit_map_jit (MAP_JIT probe)
 
 	    private static func probeJitMapJit(argv: [String]) -> RunProbeResponse {
+	        ej_probe_jit_map_jit_marker()
 	        let args = Argv(argv)
 	        let size = args.intValue("--size") ?? 16384
 	        guard size > 0 else {
@@ -1977,6 +2032,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	    // MARK: - jit_rwx_legacy (RWX mmap probe)
 
 	    private static func probeJitRwxLegacy(argv: [String]) -> RunProbeResponse {
+	        ej_probe_jit_rwx_legacy_marker()
 	        let args = Argv(argv)
 	        let size = args.intValue("--size") ?? 16384
 	        guard size > 0 else {

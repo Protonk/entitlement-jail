@@ -20,6 +20,34 @@ struct LogCaptureSpec {
     var predicate: String?
 }
 
+private struct ProbeData: Encodable {
+    var plan_id: String?
+    var row_id: String?
+    var correlation_id: String?
+    var probe_id: String?
+    var argv: [String]?
+    var expected_outcome: String?
+    var service_bundle_id: String?
+    var service_name: String?
+    var service_version: String?
+    var service_build: String?
+    var started_at_iso8601: String?
+    var ended_at_iso8601: String?
+    var thread_id: String?
+    var details: [String: String]?
+    var layer_attribution: LayerAttribution?
+    var sandbox_log_excerpt_ref: String?
+    var log_capture_status: String?
+    var log_capture_path: String?
+    var log_capture_error: String?
+    var deny_evidence: String?
+}
+
+private struct DecodeFailureData: Encodable {
+    var raw_response: String?
+    var decode_error: String
+}
+
 private struct ProcessRun {
     var rc: Int32
     var stdout: Data
@@ -114,7 +142,7 @@ private func hostHomeDirectory() -> String? {
     return String(cString: dir)
 }
 
-private func fetchSandboxLog(start: Date, end: Date, predicate: String) -> String {
+private func fetchSandboxLog(start: Date, end: Date, predicate: String) -> (String, String?) {
     let df = DateFormatter()
     df.dateFormat = "yyyy-MM-dd HH:mm:ss"
     df.timeZone = TimeZone.current
@@ -138,15 +166,27 @@ private func fetchSandboxLog(start: Date, end: Date, predicate: String) -> Strin
     let run = runProcess(cmd)
     var out = String(data: run.stdout, encoding: .utf8) ?? ""
     let err = String(data: run.stderr, encoding: .utf8) ?? ""
-    if out.isEmpty, !err.isEmpty {
-        out = "log show error: \(err)"
-    } else if !err.isEmpty {
-        out += "\nlog show error: \(err)"
+    if run.rc != 0 {
+        let msg = err.isEmpty ? "log show rc=\(run.rc)" : err
+        if out.isEmpty {
+            out = "log show error: \(msg)"
+        } else {
+            out += "\nlog show error: \(msg)"
+        }
+        return (out, msg)
     }
-    return out
+    if !err.isEmpty {
+        if out.isEmpty {
+            out = "log show error: \(err)"
+        } else {
+            out += "\nlog show error: \(err)"
+        }
+        return (out, err)
+    }
+    return (out, nil)
 }
 
-private func writeLogCapture(path: String, contents: String) {
+private func writeLogCapture(path: String, contents: String) -> String? {
     let url = URL(fileURLWithPath: path)
     let parent = url.deletingLastPathComponent()
     if !parent.path.isEmpty && parent.path != "." {
@@ -154,34 +194,38 @@ private func writeLogCapture(path: String, contents: String) {
     }
     do {
         try contents.write(to: url, atomically: true, encoding: .utf8)
+        return nil
     } catch {
         fputs("failed to write log capture: \(error)\n", stderr)
         let home = NSHomeDirectory()
         let tmp = NSTemporaryDirectory()
         fputs("hint: choose a path under \(home) or \(tmp)\n", stderr)
+        return "write_failed: \(error)"
     }
 }
 
-private func captureSandboxLog(spec: LogCaptureSpec, response: RunProbeResponse?, serviceName: String, started: Date, ended: Date) {
-    guard let response else {
-        writeLogCapture(path: spec.path, contents: "log capture skipped: failed to decode response JSON\n")
-        return
-    }
+private func captureSandboxLog(spec: LogCaptureSpec, response: RunProbeResponse, serviceName: String, started: Date, ended: Date) -> (String, String?) {
     let details = response.details ?? [:]
     let probePid = details["probe_pid"]
     let servicePid = details["service_pid"]
     let fallbackPid = details["pid"]
     let pid = (probePid?.isEmpty == false ? probePid : (servicePid?.isEmpty == false ? servicePid : fallbackPid)) ?? ""
     guard !pid.isEmpty else {
-        writeLogCapture(path: spec.path, contents: "log capture skipped: missing pid in response details\n")
-        return
+        let writeErr = writeLogCapture(path: spec.path, contents: "log capture skipped: missing pid in response details\n")
+        return ("requested_failed", writeErr ?? "missing pid in response details")
     }
     let processName = details["process_name"] ?? serviceName
     let predicate = spec.predicate ?? sandboxPredicate(processName: processName, pid: pid)
     let start = started.addingTimeInterval(-1)
     let end = ended.addingTimeInterval(1)
-    let excerpt = fetchSandboxLog(start: start, end: end, predicate: predicate)
-    writeLogCapture(path: spec.path, contents: excerpt)
+    let (excerpt, logErr) = fetchSandboxLog(start: start, end: end, predicate: predicate)
+    if let writeErr = writeLogCapture(path: spec.path, contents: excerpt) {
+        return ("requested_failed", writeErr)
+    }
+    if let logErr {
+        return ("requested_failed", logErr)
+    }
+    return ("requested_written", nil)
 }
 
 let args = CommandLine.arguments
@@ -517,24 +561,103 @@ else {
 let started = Date()
 proxy.runProbe(requestData) { responseData in
     let ended = Date()
-    if let json = String(data: responseData, encoding: .utf8) {
-        print(json)
-    } else {
-        fputs("service returned non-utf8 response\n", stderr)
-    }
-
-    var decodedResponse: RunProbeResponse?
+    let rawJson = String(data: responseData, encoding: .utf8)
     do {
-        let response = try decodeJSON(RunProbeResponse.self, from: responseData)
-        decodedResponse = response
+        var response = try decodeJSON(RunProbeResponse.self, from: responseData)
         exitCode = Int32(clamping: response.rc)
-    } catch {
-        fputs("failed to decode response JSON: \(error)\n", stderr)
-        exitCode = 1
-    }
 
-    if let spec = logSpec {
-        captureSandboxLog(spec: spec, response: decodedResponse, serviceName: serviceName, started: started, ended: ended)
+        if let spec = logSpec {
+            let (status, error) = captureSandboxLog(spec: spec, response: response, serviceName: serviceName, started: started, ended: ended)
+            response.log_capture_status = status
+            response.log_capture_path = spec.path
+            response.log_capture_error = error
+        } else {
+            response.log_capture_status = "not_requested"
+            response.deny_evidence = "not_captured"
+        }
+
+        let data = ProbeData(
+            plan_id: response.plan_id,
+            row_id: response.row_id,
+            correlation_id: response.correlation_id,
+            probe_id: response.probe_id,
+            argv: response.argv,
+            expected_outcome: response.expected_outcome,
+            service_bundle_id: response.service_bundle_id,
+            service_name: response.service_name,
+            service_version: response.service_version,
+            service_build: response.service_build,
+            started_at_iso8601: response.started_at_iso8601,
+            ended_at_iso8601: response.ended_at_iso8601,
+            thread_id: response.thread_id,
+            details: response.details,
+            layer_attribution: response.layer_attribution,
+            sandbox_log_excerpt_ref: response.sandbox_log_excerpt_ref,
+            log_capture_status: response.log_capture_status,
+            log_capture_path: response.log_capture_path,
+            log_capture_error: response.log_capture_error,
+            deny_evidence: response.deny_evidence
+        )
+
+        let result = JsonResult(
+            ok: response.rc == 0,
+            rc: response.rc,
+            exit_code: nil,
+            normalized_outcome: response.normalized_outcome,
+            errno: response.errno,
+            error: response.error,
+            stderr: response.stderr,
+            stdout: response.stdout
+        )
+
+        let envelope = JsonEnvelope(
+            kind: "probe_response",
+            generated_at_unix_ms: UInt64(Date().timeIntervalSince1970 * 1000.0),
+            result: result,
+            data: data
+        )
+
+        do {
+            let data = try encodeJSON(envelope)
+            if let json = String(data: data, encoding: .utf8) {
+                print(json)
+            } else {
+                fputs("failed to encode response JSON\n", stderr)
+            }
+        } catch {
+            fputs("failed to encode response JSON: \(error)\n", stderr)
+            if let rawJson {
+                print(rawJson)
+            }
+        }
+    } catch {
+        let data = DecodeFailureData(raw_response: rawJson, decode_error: "\(error)")
+        let result = JsonResult(
+            ok: false,
+            rc: nil,
+            exit_code: 1,
+            normalized_outcome: nil,
+            errno: nil,
+            error: "decode_failed",
+            stderr: nil,
+            stdout: nil
+        )
+        let envelope = JsonEnvelope(
+            kind: "probe_response",
+            generated_at_unix_ms: UInt64(Date().timeIntervalSince1970 * 1000.0),
+            result: result,
+            data: data
+        )
+        if let encoded = try? encodeJSON(envelope),
+           let json = String(data: encoded, encoding: .utf8) {
+            print(json)
+        } else {
+            fputs("failed to encode response JSON: \(error)\n", stderr)
+            if let rawJson {
+                print(rawJson)
+            }
+        }
+        exitCode = 1
     }
     if let hold = holdOpenSeconds, hold > 0 {
         Thread.sleep(forTimeInterval: hold)
