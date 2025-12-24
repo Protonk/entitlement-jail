@@ -29,6 +29,8 @@ Both requests and responses are serialized as JSON bytes (`Data`) rather than pa
 
 `RunProbeResponse` now includes correlation metadata (for example `correlation_id`, `probe_id`, `argv`), service identity/build fields, and timing/thread hints (`started_at_iso8601`, `ended_at_iso8601`, `thread_id`) when available.
 
+`RunProbeRequest` supports an optional `wait_spec` block to block **before** probe execution (used by `run-xpc --wait-*` / `--attach`).
+
 ### Client helpers (why the main binary delegates)
 
 The sandboxed Rust launcher does not speak NSXPC directly. Instead it runs embedded Swift helper executables:
@@ -83,6 +85,7 @@ Built-in probe ids (in-process):
 - `network_tcp_connect` (`--host <ipv4> --port <1..65535>`)
 - `downloads_rw` (`[--name <file-name>]`)
 - `fs_op` (parameterized filesystem op; see `--op` help in `experiments/bin/witness-substrate`)
+- `fs_op_wait` (fs_op with a wait trigger; see `--wait-fifo`/`--wait-exists` help in `experiments/bin/witness-substrate`)
 - `net_op` (parameterized network op; see `--op` help in `experiments/bin/witness-substrate`)
 - `dlopen_external` (`--path <abs>` or `EJ_DLOPEN_PATH`)
 - `jit_map_jit` (`[--size <bytes>]`)
@@ -99,6 +102,9 @@ Notes:
 
 - `probe_catalog` outputs a JSON catalog in `stdout`; use `<probe-id> --help` for per-probe usage (help text is returned in JSON `stdout`).
 - `dlopen_external` executes dylib initializers; treat it as code execution.
+- `run-xpc` supports pre-run waits for attach workflows (`--wait-fifo`/`--wait-exists` or `--attach <seconds>`); wait metadata is recorded in `details` (`wait_*` keys).
+- When a wait is configured, the client emits a `wait-ready` line to stderr with the resolved wait path.
+- `--wait-create` tells the service to create the FIFO path before waiting (only valid with `--wait-fifo`).
 
 ## Safe probe resolution (no traversal, no container staging)
 

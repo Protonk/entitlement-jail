@@ -5,7 +5,7 @@ import Security
 public enum InProcessProbeCore {
     public static func run(_ req: RunProbeRequest) -> RunProbeResponse {
         let started = Date()
-        let response: RunProbeResponse
+        var response: RunProbeResponse
         guard validateProbeId(req.probe_id) else {
             response = RunProbeResponse(
                 rc: 2,
@@ -32,6 +32,29 @@ public enum InProcessProbeCore {
             return decorate(response, req: req, started: started, ended: ended)
         }
 
+        var waitDetails: [String: String] = [:]
+        if let waitSpec = req.wait_spec {
+            let waitOutcome = performWaitFromSpec(waitSpec)
+            waitDetails = waitOutcome.details
+            if waitOutcome.result.normalizedOutcome != "ok" {
+                let response = RunProbeResponse(
+                    rc: waitOutcome.rc,
+                    stdout: "",
+                    stderr: waitOutcome.stderr,
+                    normalized_outcome: waitOutcome.result.normalizedOutcome,
+                    errno: waitOutcome.result.errno.map { Int($0) },
+                    error: waitOutcome.result.error,
+                    details: baseDetails(waitDetails.merging([
+                        "probe_family": "wait",
+                    ], uniquingKeysWith: { cur, _ in cur })),
+                    layer_attribution: nil,
+                    sandbox_log_excerpt_ref: nil
+                )
+                let ended = Date()
+                return decorate(response, req: req, started: started, ended: ended)
+            }
+        }
+
         switch req.probe_id {
         case "probe_catalog":
             response = probeCatalog()
@@ -43,6 +66,8 @@ public enum InProcessProbeCore {
             response = probeDownloadsReadWrite(argv: req.argv)
         case "fs_op":
             response = probeFsOp(argv: req.argv)
+        case "fs_op_wait":
+            response = probeFsOpWait(argv: req.argv)
         case "net_op":
             response = probeNetOp(argv: req.argv)
         case "dlopen_external":
@@ -67,6 +92,13 @@ public enum InProcessProbeCore {
             response = probeFsCoordinatedOp(argv: req.argv)
         default:
             response = unknownProbeResponse(req.probe_id)
+        }
+        if !waitDetails.isEmpty {
+            var details = response.details ?? [:]
+            for (k, v) in waitDetails {
+                details[k] = v
+            }
+            response.details = details
         }
         let ended = Date()
         return decorate(response, req: req, started: started, ended: ended)
@@ -235,6 +267,40 @@ fs_op --op <stat|open_read|open_write|create|truncate|rename|unlink|mkdir|rmdir|
             entitlement_hints: ["path-dependent (file access entitlements)"],
             notes: [
                 "Destructive direct-path ops are refused unless you use --path-class/--target (or a path under */entitlement-jail-harness/*) or set --allow-unsafe-path."
+            ]
+        ),
+        ProbeSpec(
+            probe_id: "fs_op_wait",
+            summary: "wait for a trigger, then run fs_op",
+            usage: """
+fs_op_wait --op <stat|open_read|open_write|create|truncate|rename|unlink|mkdir|rmdir|listdir|readlink|realpath>
+          (--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches>)
+          [--target <base|harness_dir|run_dir|specimen_file>] [--name <file-name>]
+          [--to <path>|--to-path <path>|--to-name <file-name>] [--max-entries <n>] [--allow-unsafe-path]
+          (--wait-fifo <path> | --wait-exists <path>) [--wait-timeout-ms <n>] [--wait-interval-ms <n>]
+""",
+            required_args: [
+                "--op <stat|open_read|open_write|create|truncate|rename|unlink|mkdir|rmdir|listdir|readlink|realpath>",
+                "--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches>",
+                "--wait-fifo <path> | --wait-exists <path>"
+            ],
+            optional_args: [
+                "--target <base|harness_dir|run_dir|specimen_file>",
+                "--name <file-name>",
+                "--to <path> | --to-path <path> | --to-name <file-name>",
+                "--max-entries <n>",
+                "--allow-unsafe-path",
+                "--wait-timeout-ms <n>",
+                "--wait-interval-ms <n>"
+            ],
+            examples: [
+                "fs_op_wait --op open_read --path-class tmp --wait-fifo /tmp/ej-wait.fifo",
+                "fs_op_wait --op stat --path /tmp/target --wait-exists /tmp/trigger --wait-timeout-ms 60000"
+            ],
+            entitlement_hints: ["path-dependent (file access entitlements)"],
+            notes: [
+                "Blocks until the wait trigger is satisfied, then runs fs_op.",
+                "--wait-interval-ms is only used with --wait-exists."
             ]
         ),
         ProbeSpec(
@@ -852,6 +918,337 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	        var harnessDir: String?
 	        var runDir: String?
 	        var cleanupRoots: [String]
+	    }
+
+        private struct WaitResult {
+            var normalizedOutcome: String
+            var errno: Int32?
+            var error: String?
+        }
+
+        private struct WaitOutcome {
+            var result: WaitResult
+            var details: [String: String]
+            var rc: Int
+            var stderr: String
+        }
+
+        private struct WaitConfig {
+            var mode: String
+            var path: String
+            var pathClass: String?
+            var name: String?
+            var timeoutMs: Int?
+            var intervalMs: Int
+            var create: Bool
+        }
+
+        private struct WaitSpecError: Error {
+            var message: String
+        }
+
+        private static func performWaitFromSpec(_ spec: WaitSpec) -> WaitOutcome {
+            let resolved = resolveWaitSpec(spec)
+            switch resolved {
+            case .failure(let err):
+                return WaitOutcome(
+                    result: WaitResult(normalizedOutcome: "bad_request", errno: nil, error: nil),
+                    details: ["wait_error": err.message],
+                    rc: 2,
+                    stderr: err.message
+                )
+            case .success(let config):
+                let (result, details) = performWait(config)
+                let rc = (result.normalizedOutcome == "ok") ? 0 : 1
+                return WaitOutcome(result: result, details: details, rc: rc, stderr: "")
+            }
+        }
+
+        private static func resolveWaitSpec(_ spec: WaitSpec) -> Result<WaitConfig, WaitSpecError> {
+            guard let mode = spec.mode, !mode.isEmpty else {
+                return .failure(WaitSpecError(message: "missing wait_spec.mode (expected fifo|exists)"))
+            }
+            if mode != "fifo" && mode != "exists" {
+                return .failure(WaitSpecError(message: "invalid wait_spec.mode (expected fifo|exists)"))
+            }
+            if let timeoutMs = spec.timeout_ms, timeoutMs < 0 {
+                return .failure(WaitSpecError(message: "wait_spec.timeout_ms must be >= 0"))
+            }
+            if let intervalMs = spec.interval_ms, intervalMs < 1 {
+                return .failure(WaitSpecError(message: "wait_spec.interval_ms must be >= 1"))
+            }
+            if spec.create == true && mode != "fifo" {
+                return .failure(WaitSpecError(message: "wait_spec.create is only valid with mode=fifo"))
+            }
+            if spec.path != nil && (spec.path_class != nil || spec.name != nil) {
+                return .failure(WaitSpecError(message: "wait_spec.path cannot be combined with wait_spec.path_class/name"))
+            }
+
+            var resolvedPath = spec.path
+            if resolvedPath == nil {
+                guard let pathClass = spec.path_class, let name = spec.name else {
+                    return .failure(WaitSpecError(message: "wait_spec.path or (wait_spec.path_class + wait_spec.name) is required"))
+                }
+                guard isSinglePathComponent(name) else {
+                    return .failure(WaitSpecError(message: "wait_spec.name must be a single path component"))
+                }
+                guard let base = resolveStandardDirectory(pathClass) else {
+                    return .failure(WaitSpecError(message: "invalid wait_spec.path_class: \(pathClass) (expected: home|tmp|downloads|desktop|documents|app_support|caches)"))
+                }
+                resolvedPath = base.appendingPathComponent(name, isDirectory: false).path
+            }
+
+            guard let resolvedPath, resolvedPath.hasPrefix("/") else {
+                return .failure(WaitSpecError(message: "wait path must be absolute"))
+            }
+
+            let intervalMs = spec.interval_ms ?? 200
+            let create = spec.create ?? false
+
+            return .success(WaitConfig(
+                mode: mode,
+                path: resolvedPath,
+                pathClass: spec.path_class,
+                name: spec.name,
+                timeoutMs: spec.timeout_ms,
+                intervalMs: intervalMs,
+                create: create
+            ))
+        }
+
+        private static func performWait(_ config: WaitConfig) -> (WaitResult, [String: String]) {
+            var details: [String: String] = [
+                "wait_mode": config.mode,
+                "wait_path": config.path,
+            ]
+            if let pathClass = config.pathClass { details["wait_path_class"] = pathClass }
+            if let name = config.name { details["wait_name"] = name }
+            if let timeoutMs = config.timeoutMs { details["wait_timeout_ms"] = "\(timeoutMs)" }
+            if config.mode == "exists" { details["wait_interval_ms"] = "\(config.intervalMs)" }
+            if config.create { details["wait_create"] = "true" }
+
+            let waitStartNs = DispatchTime.now().uptimeNanoseconds
+            details["wait_started_at_ns"] = "\(waitStartNs)"
+
+            let result: WaitResult
+            if config.mode == "fifo" {
+                if config.create, let err = ensureFifo(path: config.path) {
+                    let waitEndNs = DispatchTime.now().uptimeNanoseconds
+                    details["wait_ended_at_ns"] = "\(waitEndNs)"
+                    details["wait_duration_ms"] = "\(Int((waitEndNs - waitStartNs) / 1_000_000))"
+                    return (err, details)
+                }
+                result = waitForFifo(path: config.path, timeoutMs: config.timeoutMs)
+            } else {
+                result = waitForPathExists(path: config.path, timeoutMs: config.timeoutMs, intervalMs: config.intervalMs)
+            }
+
+            let waitEndNs = DispatchTime.now().uptimeNanoseconds
+            details["wait_ended_at_ns"] = "\(waitEndNs)"
+            details["wait_duration_ms"] = "\(Int((waitEndNs - waitStartNs) / 1_000_000))"
+            return (result, details)
+        }
+
+        private static func ensureFifo(path: String) -> WaitResult? {
+            var st = stat()
+            if lstat(path, &st) == 0 {
+                if (st.st_mode & S_IFMT) != S_IFIFO {
+                    return WaitResult(normalizedOutcome: "wait_failed", errno: nil, error: "wait path exists and is not a fifo")
+                }
+                return nil
+            }
+            let e = errno
+            if e != ENOENT {
+                return WaitResult(normalizedOutcome: "wait_failed", errno: e, error: String(cString: strerror(e)))
+            }
+            let rc = path.withCString { ptr in
+                mkfifo(ptr, 0o600)
+            }
+            if rc != 0 {
+                let e2 = errno
+                if e2 == EEXIST {
+                    if lstat(path, &st) == 0, (st.st_mode & S_IFMT) == S_IFIFO {
+                        return nil
+                    }
+                    return WaitResult(normalizedOutcome: "wait_failed", errno: nil, error: "wait path exists and is not a fifo")
+                }
+                return WaitResult(normalizedOutcome: "wait_failed", errno: e2, error: String(cString: strerror(e2)))
+            }
+            return nil
+        }
+
+	    // MARK: - fs_op_wait (delayed fs_op for attach)
+
+	    private static func probeFsOpWait(argv: [String]) -> RunProbeResponse {
+	        let args = Argv(argv)
+	        let expectedOps = FsOp.allCases.map(\.rawValue).joined(separator: "|")
+	        guard let opStr = args.value("--op"), FsOp(rawValue: opStr) != nil else {
+	            return badRequest("missing/invalid --op (expected: \(expectedOps))")
+	        }
+
+	        let directPath = args.value("--path")
+	        let pathClass = args.value("--path-class")
+	        if (directPath == nil) == (pathClass == nil) {
+	            return badRequest("provide exactly one of --path or --path-class")
+	        }
+
+	        let waitFifo = args.value("--wait-fifo")
+	        let waitExists = args.value("--wait-exists")
+	        if (waitFifo == nil) == (waitExists == nil) {
+	            return badRequest("provide exactly one of --wait-fifo or --wait-exists")
+	        }
+
+	        if let waitPath = waitFifo, !waitPath.hasPrefix("/") {
+	            return badRequest("--wait-fifo must be an absolute path")
+	        }
+	        if let waitPath = waitExists, !waitPath.hasPrefix("/") {
+	            return badRequest("--wait-exists must be an absolute path")
+	        }
+
+	        if waitFifo != nil, args.value("--wait-interval-ms") != nil {
+	            return badRequest("--wait-interval-ms is only valid with --wait-exists")
+	        }
+
+	        let timeoutMs = args.intValue("--wait-timeout-ms")
+	        if let timeoutMs, timeoutMs < 0 {
+	            return badRequest("--wait-timeout-ms must be >= 0")
+	        }
+
+	        let intervalMs = args.intValue("--wait-interval-ms") ?? 200
+	        if intervalMs < 1 {
+	            return badRequest("--wait-interval-ms must be >= 1")
+	        }
+
+	        let waitPath = waitFifo ?? waitExists ?? ""
+	        let waitMode = (waitFifo != nil) ? "fifo" : "exists"
+
+	        let pid = getpid()
+	        fputs("[probe] wait-ready pid=\(pid) wait_path=\(waitPath)\n", stderr)
+	        fflush(stderr)
+
+	        let config = WaitConfig(
+	            mode: waitMode,
+	            path: waitPath,
+	            pathClass: nil,
+	            name: nil,
+	            timeoutMs: timeoutMs,
+	            intervalMs: intervalMs,
+	            create: false
+	        )
+	        let (waitResult, waitDetailsBase) = performWait(config)
+	        var waitDetails = waitDetailsBase
+	        waitDetails["probe_family"] = "fs_op_wait"
+
+	        if waitResult.normalizedOutcome != "ok" {
+	            let details = baseDetails(waitDetails.merging([
+	                "op": opStr,
+	                "path_mode": directPath != nil ? "direct_path" : "path_class",
+	                "path_class": pathClass ?? "",
+	                "path": directPath ?? "",
+	            ], uniquingKeysWith: { cur, _ in cur }))
+	            return RunProbeResponse(
+	                rc: 1,
+	                stdout: "",
+	                stderr: "",
+	                normalized_outcome: waitResult.normalizedOutcome,
+	                errno: waitResult.errno.map { Int($0) },
+	                error: waitResult.error,
+	                details: details,
+	                layer_attribution: nil,
+	                sandbox_log_excerpt_ref: nil
+	            )
+	        }
+
+	        var response = probeFsOp(argv: argv)
+	        var details = response.details ?? [:]
+	        for (k, v) in waitDetails {
+	            details[k] = v
+	        }
+	        response.details = details
+	        return response
+	    }
+
+	    private static func waitForFifo(path: String, timeoutMs: Int?) -> WaitResult {
+	        let lock = NSLock()
+	        var openedFd: Int32 = -1
+	        var openErrno: Int32?
+	        let sema = DispatchSemaphore(value: 0)
+
+	        DispatchQueue.global(qos: .userInitiated).async {
+	            let fd = path.withCString { ptr in
+	                ej_open(ptr, O_RDONLY, 0)
+	            }
+	            lock.lock()
+	            if fd < 0 {
+	                openErrno = errno
+	            } else {
+	                openedFd = fd
+	            }
+	            lock.unlock()
+	            sema.signal()
+	        }
+
+	        let timedOut: Bool
+	        if let timeoutMs {
+	            timedOut = sema.wait(timeout: .now() + .milliseconds(timeoutMs)) == .timedOut
+	        } else {
+	            sema.wait()
+	            timedOut = false
+	        }
+
+	        if timedOut {
+	            let unblockFd = path.withCString { ptr in
+	                ej_open(ptr, O_WRONLY | O_NONBLOCK, 0)
+	            }
+	            if unblockFd >= 0 {
+	                close(unblockFd)
+	            }
+	            _ = sema.wait(timeout: .now() + .milliseconds(50))
+	            return WaitResult(normalizedOutcome: "timeout", errno: nil, error: "wait timeout")
+	        }
+
+	        lock.lock()
+	        let err = openErrno
+	        let fd = openedFd
+	        lock.unlock()
+
+	        if let err {
+	            return WaitResult(normalizedOutcome: "wait_failed", errno: err, error: String(cString: strerror(err)))
+	        }
+	        if fd >= 0 {
+	            close(fd)
+	            return WaitResult(normalizedOutcome: "ok", errno: nil, error: nil)
+	        }
+	        return WaitResult(normalizedOutcome: "wait_failed", errno: nil, error: "wait failed")
+	    }
+
+	    private static func waitForPathExists(path: String, timeoutMs: Int?, intervalMs: Int) -> WaitResult {
+	        if FileManager.default.fileExists(atPath: path) {
+	            return WaitResult(normalizedOutcome: "ok", errno: nil, error: nil)
+	        }
+	        if let timeoutMs, timeoutMs <= 0 {
+	            return WaitResult(normalizedOutcome: "timeout", errno: nil, error: "wait timeout")
+	        }
+
+	        let start = DispatchTime.now().uptimeNanoseconds
+	        while true {
+	            if let timeoutMs {
+	                let now = DispatchTime.now().uptimeNanoseconds
+	                let elapsedMs = (now - start) / 1_000_000
+	                if elapsedMs >= UInt64(timeoutMs) {
+	                    return WaitResult(normalizedOutcome: "timeout", errno: nil, error: "wait timeout")
+	                }
+	                let remainingMs = Int(UInt64(timeoutMs) - elapsedMs)
+	                let sleepMs = max(1, min(intervalMs, remainingMs))
+	                usleep(useconds_t(sleepMs * 1000))
+	            } else {
+	                usleep(useconds_t(intervalMs * 1000))
+	            }
+
+	            if FileManager.default.fileExists(atPath: path) {
+	                return WaitResult(normalizedOutcome: "ok", errno: nil, error: nil)
+	            }
+	        }
 	    }
 
 	    private static func probeFsOp(argv: [String]) -> RunProbeResponse {

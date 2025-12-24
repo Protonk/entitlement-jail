@@ -12,7 +12,7 @@ fn print_usage() {
 usage:
   entitlement-jail run-system <absolute-platform-binary> [args...]
   entitlement-jail run-embedded <tool-name> [args...]
-  entitlement-jail run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]
+  entitlement-jail run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]
   entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
 
 notes:
@@ -236,6 +236,13 @@ fn main() {
                     | Some("--row-id")
                     | Some("--correlation-id")
                     | Some("--expected-outcome")
+                    | Some("--wait-fifo")
+                    | Some("--wait-exists")
+                    | Some("--wait-path-class")
+                    | Some("--wait-name")
+                    | Some("--wait-timeout-ms")
+                    | Some("--wait-interval-ms")
+                    | Some("--attach")
                     | Some("--hold-open") => {
                         if idx + 1 >= args.len() {
                             eprintln!("missing value for {}", args[idx].to_string_lossy());
@@ -243,6 +250,9 @@ fn main() {
                             std::process::exit(2);
                         }
                         idx += 2;
+                    }
+                    Some("--wait-create") => {
+                        idx += 1;
                     }
                     _ => break,
                 }

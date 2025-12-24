@@ -85,7 +85,7 @@ Helper location (important):
 
 Invocation:
 
-- `run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]`
+- `run-xpc [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]`
 - Example service bundle id: `com.yourteam.entitlement-jail.ProbeService_minimal`
 
 Built-in probe ids (in-process):
@@ -95,6 +95,7 @@ Built-in probe ids (in-process):
 - `network_tcp_connect` (`--host <ipv4> --port <1..65535>`)
 - `downloads_rw` (`[--name <file-name>]`)
 - `fs_op` (`--op <...> (--path <abs> | --path-class <...>) [--allow-unsafe-path]`)
+- `fs_op_wait` (`fs_op` + `--wait-fifo <path>` or `--wait-exists <path>`; optional `--wait-timeout-ms`, `--wait-interval-ms`)
 - `net_op` (`--op <getaddrinfo|tcp_connect|udp_send> --host <host> [--port <1..65535>] [--numeric]`)
 - `dlopen_external` (`--path <abs>` or `EJ_DLOPEN_PATH`)
 - `jit_map_jit` (`[--size <bytes>]`)
@@ -117,6 +118,10 @@ Notes:
 - `--hold-open` keeps the XPC connection open after the response to make debugger/trace attachment easier.
 - `--log-sandbox`/`--log-predicate` must appear before `<xpc-service-bundle-id>`.
 - `--log-predicate` overrides the default `log show` predicate (pass a full predicate string).
+- `--attach <seconds>` is a convenience for attach workflows: it sets a pre-run wait using a FIFO under the service’s container `tmp` plus a matching `--hold-open` (unless you set `--hold-open` explicitly).
+- `--wait-fifo`/`--wait-exists` block **before** probe execution; the wait outcome is recorded in the JSON details (`wait_*` keys).
+- `--wait-create` tells the service to create the FIFO path before waiting (only valid with `--wait-fifo`).
+- When a wait is configured, the client prints a `wait-ready` line to stderr with the resolved wait path (use that FIFO or file path to trigger).
 
 High-level flow:
 

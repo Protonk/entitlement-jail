@@ -8,6 +8,34 @@ import Foundation
     func writeArtifact(_ request: Data, withReply reply: @escaping (Data) -> Void)
 }
 
+public struct WaitSpec: Codable {
+    public var mode: String?
+    public var path: String?
+    public var path_class: String?
+    public var name: String?
+    public var timeout_ms: Int?
+    public var interval_ms: Int?
+    public var create: Bool?
+
+    public init(
+        mode: String? = nil,
+        path: String? = nil,
+        path_class: String? = nil,
+        name: String? = nil,
+        timeout_ms: Int? = nil,
+        interval_ms: Int? = nil,
+        create: Bool? = nil
+    ) {
+        self.mode = mode
+        self.path = path
+        self.path_class = path_class
+        self.name = name
+        self.timeout_ms = timeout_ms
+        self.interval_ms = interval_ms
+        self.create = create
+    }
+}
+
 public struct RunProbeRequest: Codable {
     public var plan_id: String?
     public var row_id: String?
@@ -16,6 +44,7 @@ public struct RunProbeRequest: Codable {
     public var argv: [String]
     public var expected_outcome: String?
     public var env_overrides: [String: String]?
+    public var wait_spec: WaitSpec?
 
     public init(
         plan_id: String?,
@@ -24,7 +53,8 @@ public struct RunProbeRequest: Codable {
         probe_id: String,
         argv: [String],
         expected_outcome: String? = nil,
-        env_overrides: [String: String]?
+        env_overrides: [String: String]?,
+        wait_spec: WaitSpec? = nil
     ) {
         self.plan_id = plan_id
         self.row_id = row_id
@@ -33,6 +63,7 @@ public struct RunProbeRequest: Codable {
         self.argv = argv
         self.expected_outcome = expected_outcome
         self.env_overrides = env_overrides
+        self.wait_spec = wait_spec
     }
 }
 

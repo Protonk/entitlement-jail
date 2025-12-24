@@ -3,7 +3,7 @@ import Darwin
 
 private func printUsage() {
     let exe = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "xpc-probe-client"
-    fputs("usage: \(exe) [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]\n", stderr)
+    fputs("usage: \(exe) [--log-sandbox <path>|--log-stream <path>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]\n", stderr)
 }
 
 if ProcessInfo.processInfo.environment["EJ_XPC_CLIENT_DEBUG"] == "1" {
@@ -56,6 +56,53 @@ private func sandboxPredicate(processName: String, pid: String) -> String {
     let term = "Sandbox: \(processName)(\(pid))"
     let escaped = term.replacingOccurrences(of: "\"", with: "\\\"")
     return #"(eventMessage CONTAINS[c] "\#(escaped)")"#
+}
+
+private func containerBaseURL(for bundleId: String) -> URL {
+    let home = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+    return home
+        .appendingPathComponent("Library", isDirectory: true)
+        .appendingPathComponent("Containers", isDirectory: true)
+        .appendingPathComponent(bundleId, isDirectory: true)
+        .appendingPathComponent("Data", isDirectory: true)
+}
+
+private func resolveContainerPath(bundleId: String, pathClass: String, name: String) -> String? {
+    let base = containerBaseURL(for: bundleId)
+    let root: URL?
+    switch pathClass {
+    case "home":
+        root = base
+    case "tmp":
+        root = base.appendingPathComponent("tmp", isDirectory: true)
+    case "downloads":
+        root = base.appendingPathComponent("Downloads", isDirectory: true)
+    case "desktop":
+        root = base.appendingPathComponent("Desktop", isDirectory: true)
+    case "documents":
+        root = base.appendingPathComponent("Documents", isDirectory: true)
+    case "app_support":
+        root = base.appendingPathComponent("Library", isDirectory: true).appendingPathComponent("Application Support", isDirectory: true)
+    case "caches":
+        root = base.appendingPathComponent("Library", isDirectory: true).appendingPathComponent("Caches", isDirectory: true)
+    default:
+        root = nil
+    }
+    return root?.appendingPathComponent(name, isDirectory: false).path
+}
+
+private func isKnownPathClass(_ cls: String) -> Bool {
+    switch cls {
+    case "home", "tmp", "downloads", "desktop", "documents", "app_support", "caches":
+        return true
+    default:
+        return false
+    }
+}
+
+private func isSinglePathComponent(_ s: String) -> Bool {
+    if s.isEmpty || s == "." || s == ".." { return false }
+    return !s.contains("/") && !s.contains("\\")
 }
 
 private func fetchSandboxLog(start: Date, end: Date, predicate: String) -> String {
@@ -137,6 +184,14 @@ var rowId: String?
 var correlationId: String?
 var expectedOutcome: String?
 var holdOpenSeconds: TimeInterval?
+var waitMode: String?
+var waitPath: String?
+var waitPathClass: String?
+var waitName: String?
+var waitTimeoutMs: Int?
+var waitIntervalMs: Int?
+var waitCreate: Bool?
+var attachSeconds: TimeInterval?
 
 var idx = 1
 parseLoop: while idx < args.count {
@@ -207,6 +262,93 @@ parseLoop: while idx < args.count {
         }
         holdOpenSeconds = secs
         idx += 2
+    case "--wait-fifo":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --wait-fifo\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        if let waitMode, waitMode != "fifo" {
+            fputs("cannot combine --wait-fifo with --wait-exists\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        waitMode = "fifo"
+        waitPath = args[idx + 1]
+        idx += 2
+    case "--wait-exists":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --wait-exists\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        if let waitMode, waitMode != "exists" {
+            fputs("cannot combine --wait-exists with --wait-fifo\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        waitMode = "exists"
+        waitPath = args[idx + 1]
+        idx += 2
+    case "--wait-path-class":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --wait-path-class\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        waitPathClass = args[idx + 1]
+        idx += 2
+    case "--wait-name":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --wait-name\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        waitName = args[idx + 1]
+        idx += 2
+    case "--wait-timeout-ms":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --wait-timeout-ms\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        guard let v = Int(args[idx + 1]), v >= 0 else {
+            fputs("invalid value for --wait-timeout-ms (expected >= 0)\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        waitTimeoutMs = v
+        idx += 2
+    case "--wait-interval-ms":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --wait-interval-ms\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        guard let v = Int(args[idx + 1]), v >= 1 else {
+            fputs("invalid value for --wait-interval-ms (expected >= 1)\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        waitIntervalMs = v
+        idx += 2
+    case "--wait-create":
+        waitCreate = true
+        idx += 1
+    case "--attach":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --attach\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        let raw = args[idx + 1]
+        guard let secs = Double(raw), secs > 0 else {
+            fputs("invalid value for --attach (expected seconds > 0)\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        attachSeconds = secs
+        idx += 2
     default:
         break parseLoop
     }
@@ -233,6 +375,101 @@ if correlationId == nil {
     correlationId = UUID().uuidString
 }
 
+if let attachSeconds {
+    if holdOpenSeconds == nil {
+        holdOpenSeconds = attachSeconds
+    }
+    if waitMode == nil {
+        waitMode = "fifo"
+    }
+    if waitTimeoutMs == nil {
+        waitTimeoutMs = Int(attachSeconds * 1000.0)
+    }
+    if waitPath == nil && waitPathClass == nil {
+        waitPathClass = "tmp"
+    }
+    if waitName == nil && waitPath == nil {
+        let seed = correlationId ?? UUID().uuidString
+        let candidate = "ej-attach-\(seed).fifo"
+        waitName = isSinglePathComponent(candidate) ? candidate : "ej-attach-\(UUID().uuidString).fifo"
+    }
+    if waitCreate == nil && (waitMode == nil || waitMode == "fifo") {
+        waitCreate = true
+    }
+}
+
+if waitMode == nil {
+    if waitPath != nil || waitPathClass != nil || waitName != nil || waitTimeoutMs != nil || waitIntervalMs != nil || waitCreate != nil {
+        fputs("missing --wait-fifo/--wait-exists (required when wait options are provided)\n", stderr)
+        printUsage()
+        exit(2)
+    }
+} else {
+    guard waitMode == "fifo" || waitMode == "exists" else {
+        fputs("invalid wait mode (expected fifo or exists)\n", stderr)
+        printUsage()
+        exit(2)
+    }
+    if waitPath != nil && (waitPathClass != nil || waitName != nil) {
+        fputs("--wait-path-class/--wait-name cannot be combined with an explicit wait path\n", stderr)
+        printUsage()
+        exit(2)
+    }
+    if let waitPath, !waitPath.hasPrefix("/") {
+        fputs("wait path must be absolute\n", stderr)
+        printUsage()
+        exit(2)
+    }
+    if let waitPathClass {
+        guard isKnownPathClass(waitPathClass) else {
+            fputs("invalid --wait-path-class (expected home|tmp|downloads|desktop|documents|app_support|caches)\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        guard let waitName, isSinglePathComponent(waitName) else {
+            fputs("invalid --wait-name (must be a single path component)\n", stderr)
+            printUsage()
+            exit(2)
+        }
+    }
+    if waitPath == nil && waitPathClass == nil {
+        fputs("missing wait path (use --wait-fifo/--wait-exists <path> or --wait-path-class + --wait-name)\n", stderr)
+        printUsage()
+        exit(2)
+    }
+    if waitCreate == true && waitMode != "fifo" {
+        fputs("--wait-create is only valid with --wait-fifo\n", stderr)
+        printUsage()
+        exit(2)
+    }
+}
+
+let waitSpec: WaitSpec? = {
+    guard let waitMode else { return nil }
+    return WaitSpec(
+        mode: waitMode,
+        path: waitPath,
+        path_class: waitPathClass,
+        name: waitName,
+        timeout_ms: waitTimeoutMs,
+        interval_ms: waitIntervalMs,
+        create: waitCreate
+    )
+}()
+
+if let waitMode {
+    let waitPathForPrint = waitPath ?? (waitPathClass.flatMap { cls in
+        waitName.flatMap { name in
+            resolveContainerPath(bundleId: serviceName, pathClass: cls, name: name)
+        }
+    })
+    if let waitPathForPrint {
+        fputs("[client] wait-ready mode=\(waitMode) wait_path=\(waitPathForPrint)\n", stderr)
+    } else if let waitPathClass, let waitName {
+        fputs("[client] wait-ready mode=\(waitMode) wait_path_class=\(waitPathClass) wait_name=\(waitName)\n", stderr)
+    }
+}
+
 let request = RunProbeRequest(
     plan_id: planId,
     row_id: rowId,
@@ -240,7 +477,8 @@ let request = RunProbeRequest(
     probe_id: probeId,
     argv: probeArgs,
     expected_outcome: expectedOutcome,
-    env_overrides: nil
+    env_overrides: nil,
+    wait_spec: waitSpec
 )
 let requestData: Data
 do {

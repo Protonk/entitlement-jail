@@ -19,6 +19,11 @@ private func printUsage() {
                                (--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches>)
                                [--target <base|harness_dir|run_dir|specimen_file>] [--name <file-name>] [--to <path>] [--to-name <file-name>]
                                [--max-entries <n>] [--allow-unsafe-path]
+          fs_op_wait            --op <stat|open_read|open_write|create|truncate|rename|unlink|mkdir|rmdir|listdir|readlink|realpath>
+                               (--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches>)
+                               [--target <base|harness_dir|run_dir|specimen_file>] [--name <file-name>] [--to <path>] [--to-name <file-name>]
+                               [--max-entries <n>] [--allow-unsafe-path]
+                               (--wait-fifo <path> | --wait-exists <path>) [--wait-timeout-ms <n>] [--wait-interval-ms <n>]
           net_op                --op <getaddrinfo|tcp_connect|udp_send> --host <host> [--port <1..65535>] [--numeric]
           dlopen_external       --path <abs> (or set EJ_DLOPEN_PATH)
           jit_map_jit           [--size <bytes>]
