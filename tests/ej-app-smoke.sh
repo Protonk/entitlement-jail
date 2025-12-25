@@ -141,6 +141,13 @@ data = json.loads(envelope_path.read_text(encoding="utf-8"))
 out_dir = (data.get("data") or {}).get("output_dir")
 if out_dir != str(expected):
     raise SystemExit(f"expected data.output_dir={str(expected)!r}; got {out_dir!r}")
+
+group_id = (data.get("data") or {}).get("group_id")
+if group_id != "baseline":
+    raise SystemExit(f"expected data.group_id='baseline'; got {group_id!r}")
+profiles = (data.get("data") or {}).get("profiles") or []
+if profiles != ["minimal"]:
+    raise SystemExit(f"expected data.profiles=['minimal']; got {profiles!r}")
 PY
 
 echo "OK: ${OUT_DIR}"

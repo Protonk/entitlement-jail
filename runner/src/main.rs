@@ -1385,7 +1385,8 @@ fn main() {
 
             let mut runs = Vec::new();
             let mut skipped = Vec::new();
-            let mut resolved_profiles = Vec::new();
+            let group_profiles_vec: Vec<String> =
+                group_profiles.iter().map(|s| s.to_string()).collect();
 
             for profile_id in group_profiles {
                 let profile = profiles::find_profile(&profiles_manifest, profile_id).unwrap_or_else(|| {
@@ -1399,8 +1400,6 @@ fn main() {
                     );
                     std::process::exit(2);
                 }
-
-                resolved_profiles.push(profile.profile_id.clone());
 
                 let tier = profile.risk_tier.unwrap_or(2);
                 let ack_ok = ack_risk
@@ -1501,7 +1500,7 @@ fn main() {
                 probe_argv: probe_args.clone(),
                 generated_at_unix_ms: generated,
                 output_dir: out_dir.display().to_string(),
-                profiles: resolved_profiles.clone(),
+                profiles: group_profiles_vec.clone(),
                 runs: runs.clone(),
                 skipped: skipped.clone(),
             };
