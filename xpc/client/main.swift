@@ -3,7 +3,7 @@ import Darwin
 
 private func printUsage() {
     let exe = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "xpc-probe-client"
-    fputs("usage: \(exe) [--log-sandbox <path>|--log-stream <path>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]\n", stderr)
+    fputs("usage: \(exe) [--log-stream <path>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]\n", stderr)
 }
 
 if ProcessInfo.processInfo.environment["EJ_XPC_CLIENT_DEBUG"] == "1" {
@@ -16,9 +16,8 @@ if ProcessInfo.processInfo.environment["EJ_XPC_CLIENT_DEBUG"] == "1" {
 }
 
 struct LogCaptureSpec {
-    var mode: String
     var path: String
-    var predicate: String?
+    var predicate_override: String?
 }
 
 private struct ProbeData: Encodable {
@@ -41,6 +40,19 @@ private struct ProbeData: Encodable {
     var log_capture_status: String?
     var log_capture_path: String?
     var log_capture_error: String?
+    var log_capture_predicate: String?
+    var log_capture_observed_lines: Int?
+    var log_capture_observed_deny: Bool?
+    var log_observer_status: String?
+    var log_observer_error: String?
+    var log_observer_path: String?
+    var log_observer_predicate: String?
+    var log_observer_start: String?
+    var log_observer_end: String?
+    var log_observer_last: String?
+    var log_observer_observed_lines: Int?
+    var log_observer_observed_deny: Bool?
+    var log_observer_deny_lines: [String]?
     var deny_evidence: String?
 }
 
@@ -55,7 +67,7 @@ private struct ProcessRun {
     var stderr: Data
 }
 
-private func runProcess(_ argv: [String]) -> ProcessRun {
+private func runCommand(_ argv: [String]) -> ProcessRun {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: argv[0])
     process.arguments = Array(argv.dropFirst())
@@ -81,6 +93,70 @@ private func runProcess(_ argv: [String]) -> ProcessRun {
     return ProcessRun(rc: process.terminationStatus, stdout: out, stderr: err)
 }
 
+private struct LogCaptureSummary {
+    var status: String
+    var error: String?
+    var denyEvidence: String?
+    var observedLines: Int?
+    var observedDeny: Bool?
+    var predicate: String?
+}
+
+private struct ObserverSummary {
+    var status: String
+    var error: String?
+    var path: String?
+    var predicate: String?
+    var start: String?
+    var end: String?
+    var last: String?
+    var observedLines: Int?
+    var observedDeny: Bool?
+    var denyLines: [String]?
+}
+
+private struct LogStreamLayerAttribution: Encodable {
+    var seatbelt: String
+}
+
+private struct LogStreamReportData: Encodable {
+    var pid: String?
+    var process_name: String?
+    var predicate: String?
+    var log_rc: Int?
+    var log_stdout: String
+    var log_stderr: String
+    var log_error: String?
+    var observed_lines: Int
+    var observed_deny: Bool
+    var layer_attribution: LogStreamLayerAttribution
+}
+
+private struct ObserverReportEnvelope: Decodable {
+    var kind: String?
+    var result: JsonResult?
+    var data: ObserverReportData?
+}
+
+private struct ObserverReportData: Decodable {
+    var plan_id: String?
+    var row_id: String?
+    var correlation_id: String?
+    var pid: Int?
+    var process_name: String?
+    var predicate: String?
+    var start: String?
+    var end: String?
+    var last: String?
+    var log_rc: Int?
+    var log_stdout: String?
+    var log_stderr: String?
+    var log_error: String?
+    var observed_lines: Int?
+    var observed_deny: Bool?
+    var deny_lines: [String]?
+}
+
 private func sandboxPredicate(processName: String, pid: String) -> String {
     let escapedPid = pid.replacingOccurrences(of: "\"", with: "\\\"")
     let escapedName = processName.replacingOccurrences(of: "\"", with: "\\\"")
@@ -88,8 +164,12 @@ private func sandboxPredicate(processName: String, pid: String) -> String {
     return #"(eventMessage CONTAINS[c] "\#(strictTerm)") OR ((eventMessage CONTAINS[c] "deny") AND ((eventMessage CONTAINS[c] "\#(escapedPid)") OR (eventMessage CONTAINS[c] "\#(escapedName)")))"#
 }
 
-private func streamSandboxPredicate() -> String {
-    return #"(eventMessage CONTAINS[c] "Sandbox:") OR (eventMessage CONTAINS[c] "deny")"#
+private func streamSandboxPredicate(processName: String, pid: String?) -> String {
+    let escapedName = processName.replacingOccurrences(of: "\"", with: "\\\"")
+    if let pid, !pid.isEmpty {
+        return sandboxPredicate(processName: processName, pid: pid)
+    }
+    return #"(eventMessage CONTAINS[c] "Sandbox: \#(escapedName)") OR ((eventMessage CONTAINS[c] "deny") AND (eventMessage CONTAINS[c] "\#(escapedName)"))"#
 }
 
 private func containerBaseURL(for bundleId: String) -> URL {
@@ -148,47 +228,6 @@ private func hostHomeDirectory() -> String? {
     return String(cString: dir)
 }
 
-private func fetchSandboxLog(start: Date, end: Date, predicate: String) -> (String, String?) {
-    let rawSeconds = Int(ceil(end.timeIntervalSince(start))) + 10
-    let lastSeconds = max(10, min(rawSeconds, 300))
-    let lastStr = "\(lastSeconds)s"
-
-    let cmd = [
-        "/usr/bin/log",
-        "show",
-        "--style",
-        "syslog",
-        "--info",
-        "--debug",
-        "--last",
-        lastStr,
-        "--predicate",
-        predicate,
-    ]
-
-    let run = runProcess(cmd)
-    var out = String(data: run.stdout, encoding: .utf8) ?? ""
-    let err = String(data: run.stderr, encoding: .utf8) ?? ""
-    if run.rc != 0 {
-        let msg = err.isEmpty ? "log show rc=\(run.rc)" : err
-        if out.isEmpty {
-            out = "log show error: \(msg)"
-        } else {
-            out += "\nlog show error: \(msg)"
-        }
-        return (out, msg)
-    }
-    if !err.isEmpty {
-        if out.isEmpty {
-            out = "log show error: \(err)"
-        } else {
-            out += "\nlog show error: \(err)"
-        }
-        return (out, err)
-    }
-    return (out, nil)
-}
-
 private func writeLogCapture(path: String, contents: String) -> String? {
     let url = URL(fileURLWithPath: path)
     let parent = url.deletingLastPathComponent()
@@ -205,6 +244,42 @@ private func writeLogCapture(path: String, contents: String) -> String? {
         fputs("hint: choose a path under \(home) or \(tmp)\n", stderr)
         return "write_failed: \(error)"
     }
+}
+
+private func writeLogStreamReport(path: String, data: LogStreamReportData, ok: Bool) -> String? {
+    let envelope = JsonEnvelope(
+        kind: "sandbox_log_stream_report",
+        generated_at_unix_ms: UInt64(Date().timeIntervalSince1970 * 1000.0),
+        result: JsonResult(ok: ok, exit_code: ok ? 0 : 3),
+        data: data
+    )
+    do {
+        let encoded = try encodeJSON(envelope)
+        let text = String(data: encoded, encoding: .utf8) ?? ""
+        if text.isEmpty {
+            return "failed to encode log stream report"
+        }
+        return writeLogCapture(path: path, contents: text)
+    } catch {
+        return "failed to encode log stream report: \(error)"
+    }
+}
+
+private func filterLogStreamLines(_ stdout: String, pid: String, processName: String) -> [String] {
+    let lowerPid = pid.lowercased()
+    let lowerName = processName.lowercased()
+    let pidToken = lowerPid.isEmpty ? nil : "(\(lowerPid))"
+    return stdout
+        .split(separator: "\n", omittingEmptySubsequences: false)
+        .map(String.init)
+        .filter { line in
+            let lower = line.lowercased()
+            if !lower.contains("deny") && !lower.contains("sandbox:") { return false }
+            if let pidToken, lower.contains(pidToken) { return true }
+            if !lowerPid.isEmpty && lower.contains("deny") && lower.contains(lowerPid) { return true }
+            if !lowerName.isEmpty && lower.contains(lowerName) { return true }
+            return false
+        }
 }
 
 private struct LogStreamHandle {
@@ -258,90 +333,274 @@ private func serviceNameHint(from bundleId: String) -> String {
     return bundleId
 }
 
-private func captureSandboxLogShow(spec: LogCaptureSpec, response: RunProbeResponse, serviceName: String, started: Date, ended: Date) -> (String, String?, String?) {
-    let details = response.details ?? [:]
-    let probePid = details["probe_pid"]
-    let servicePid = details["service_pid"]
-    let fallbackPid = details["pid"]
-    let pid = (probePid?.isEmpty == false ? probePid : (servicePid?.isEmpty == false ? servicePid : fallbackPid)) ?? ""
-    guard !pid.isEmpty else {
-        let writeErr = writeLogCapture(path: spec.path, contents: "log capture skipped: missing pid in response details\n")
-        return ("requested_failed", writeErr ?? "missing pid in response details", "missing_pid")
-    }
-    let processName = details["process_name"] ?? serviceName
-    let predicate = spec.predicate ?? sandboxPredicate(processName: processName, pid: pid)
-    let start = started.addingTimeInterval(-5)
-    let end = ended.addingTimeInterval(5)
-    let (excerpt, logErr) = fetchSandboxLog(start: start, end: end, predicate: predicate)
-    let hasDeny = excerpt.localizedCaseInsensitiveContains("deny")
-    if let writeErr = writeLogCapture(path: spec.path, contents: excerpt) {
-        return ("requested_failed", writeErr, "write_failed")
-    }
-    if let logErr {
-        return ("requested_failed", logErr, "log_error")
-    }
-    return ("requested_written", nil, hasDeny ? "captured" : "not_found")
+private func connectionPidHint(_ connection: NSXPCConnection) -> String? {
+    let pid = connection.processIdentifier
+    return pid > 0 ? "\(pid)" : nil
 }
 
-private func captureSandboxLogStream(spec: LogCaptureSpec, stream: LogStreamHandle?, streamError: String?, response: RunProbeResponse, serviceName: String) -> (String, String?, String?) {
+private func parseIso8601(_ value: String?) -> Date? {
+    guard let value, !value.isEmpty else { return nil }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.date(from: value)
+}
+
+private func formatLogShowTime(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone.current
+    formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    return formatter.string(from: date)
+}
+
+private func observerReportPath(for logPath: String) -> String {
+    return "\(logPath).observer.json"
+}
+
+private func resolveObserverToolPath() -> String? {
+    let bundleURL = Bundle.main.bundleURL
+    let candidate = bundleURL
+        .appendingPathComponent("Contents", isDirectory: true)
+        .appendingPathComponent("MacOS", isDirectory: true)
+        .appendingPathComponent("sandbox-log-observer", isDirectory: false)
+    let path = candidate.path
+    return FileManager.default.isExecutableFile(atPath: path) ? path : nil
+}
+
+private func captureSandboxLogStream(
+    spec: LogCaptureSpec,
+    stream: LogStreamHandle?,
+    streamError: String?,
+    response: RunProbeResponse,
+    serviceName: String,
+    predicate: String
+) -> LogCaptureSummary {
     let details = response.details ?? [:]
     let probePid = details["probe_pid"]
     let servicePid = details["service_pid"]
     let fallbackPid = details["pid"]
     let pid = (probePid?.isEmpty == false ? probePid : (servicePid?.isEmpty == false ? servicePid : fallbackPid)) ?? ""
-    let processName = details["process_name"] ?? serviceName
+    let processName = details["process_name"] ?? serviceNameHint(from: serviceName)
+    var logError = streamError
+    var logRc: Int? = nil
+    var stdout = ""
+    var stderr = ""
 
-    if let streamError {
-        let writeErr = writeLogCapture(path: spec.path, contents: "log stream start failed: \(streamError)\n")
-        return ("requested_failed", writeErr ?? streamError, "log_error")
+    if let stream {
+        let run = stopLogStream(stream)
+        logRc = Int(run.rc)
+        stdout = String(data: run.stdout, encoding: .utf8) ?? ""
+        stderr = String(data: run.stderr, encoding: .utf8) ?? ""
+    } else if logError == nil {
+        logError = "log stream missing"
     }
 
-    guard let stream else {
-        let writeErr = writeLogCapture(path: spec.path, contents: "log stream missing (internal error)\n")
-        return ("requested_failed", writeErr ?? "log stream missing", "log_error")
+    let lowerStdout = stdout.lowercased()
+    let lowerStderr = stderr.lowercased()
+    if lowerStdout.contains("cannot run while sandboxed") || lowerStderr.contains("cannot run while sandboxed") {
+        logError = "Cannot run while sandboxed"
     }
 
-    let run = stopLogStream(stream)
+    let matched = filterLogStreamLines(stdout, pid: pid, processName: processName)
+    let logStdout = matched.joined(separator: "\n")
+    let observedLines = matched.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
+    let observedDeny = matched.contains { $0.localizedCaseInsensitiveContains("deny") }
+
+    let report = LogStreamReportData(
+        pid: pid.isEmpty ? nil : pid,
+        process_name: processName.isEmpty ? nil : processName,
+        predicate: predicate.isEmpty ? nil : predicate,
+        log_rc: logRc,
+        log_stdout: logStdout,
+        log_stderr: stderr,
+        log_error: logError,
+        observed_lines: observedLines,
+        observed_deny: observedDeny,
+        layer_attribution: LogStreamLayerAttribution(seatbelt: "log_stream")
+    )
+
+    let writeErr = writeLogStreamReport(path: spec.path, data: report, ok: logError == nil)
+
+    var status = "requested_written"
+    var error: String? = nil
+    if let writeErr {
+        status = "requested_failed"
+        error = writeErr
+    } else if let logError {
+        status = "requested_failed"
+        error = logError
+    }
+
+    let denyEvidence: String
+    if logError != nil {
+        denyEvidence = "log_error"
+    } else if observedDeny {
+        denyEvidence = "captured"
+    } else {
+        denyEvidence = "not_found"
+    }
+
+    return LogCaptureSummary(
+        status: status,
+        error: error,
+        denyEvidence: denyEvidence,
+        observedLines: observedLines,
+        observedDeny: observedDeny,
+        predicate: predicate.isEmpty ? nil : predicate
+    )
+}
+
+private func captureSandboxLogObserver(
+    logPath: String,
+    response: RunProbeResponse,
+    serviceName: String,
+    predicateOverride: String?,
+    planId: String?,
+    rowId: String?,
+    correlationId: String?,
+    clientStarted: Date,
+    clientEnded: Date
+) -> ObserverSummary {
+    let observerPath = observerReportPath(for: logPath)
+    let details = response.details ?? [:]
+    let probePid = details["probe_pid"]
+    let servicePid = details["service_pid"]
+    let fallbackPid = details["pid"]
+    let pid = (probePid?.isEmpty == false ? probePid : (servicePid?.isEmpty == false ? servicePid : fallbackPid)) ?? ""
+    let processName = (details["process_name"]?.isEmpty == false)
+        ? (details["process_name"] ?? "")
+        : serviceNameHint(from: serviceName)
+
+    guard !pid.isEmpty else {
+        return ObserverSummary(
+            status: "requested_failed",
+            error: "missing_pid",
+            path: observerPath,
+            predicate: nil,
+            start: nil,
+            end: nil,
+            last: nil,
+            observedLines: nil,
+            observedDeny: nil,
+            denyLines: nil
+        )
+    }
+
+    guard let toolPath = resolveObserverToolPath() else {
+        return ObserverSummary(
+            status: "requested_failed",
+            error: "observer_missing",
+            path: observerPath,
+            predicate: nil,
+            start: nil,
+            end: nil,
+            last: nil,
+            observedLines: nil,
+            observedDeny: nil,
+            denyLines: nil
+        )
+    }
+
+    let startSource = parseIso8601(response.started_at_iso8601) ?? clientStarted
+    let endSource = parseIso8601(response.ended_at_iso8601) ?? clientEnded
+    let paddedStart = startSource.addingTimeInterval(-2)
+    let paddedEnd = max(endSource.addingTimeInterval(2), paddedStart.addingTimeInterval(1))
+    let startText = formatLogShowTime(paddedStart)
+    let endText = formatLogShowTime(paddedEnd)
+
+    var argv = [
+        toolPath,
+        "--pid",
+        pid,
+        "--process-name",
+        processName,
+        "--start",
+        startText,
+        "--end",
+        endText,
+    ]
+    if let predicateOverride {
+        argv.append("--predicate")
+        argv.append(predicateOverride)
+    }
+    if let planId {
+        argv.append("--plan-id")
+        argv.append(planId)
+    }
+    if let rowId {
+        argv.append("--row-id")
+        argv.append(rowId)
+    }
+    if let correlationId {
+        argv.append("--correlation-id")
+        argv.append(correlationId)
+    }
+
+    let run = runCommand(argv)
     let stdout = String(data: run.stdout, encoding: .utf8) ?? ""
     let stderr = String(data: run.stderr, encoding: .utf8) ?? ""
 
-    var combined = stdout
-    if !stderr.isEmpty {
-        if !combined.isEmpty { combined += "\n" }
-        combined += "log stream stderr:\n\(stderr)"
-    }
-
-    if let writeErr = writeLogCapture(path: spec.path, contents: combined) {
-        return ("requested_failed", writeErr, "write_failed")
-    }
-
-    if combined.localizedCaseInsensitiveContains("Cannot run while sandboxed") {
-        return ("requested_failed", "Cannot run while sandboxed", "log_error")
-    }
-
-    let lowerPid = pid.lowercased()
-    let lowerName = processName.lowercased()
-    let matched = combined
-        .split(separator: "\n", omittingEmptySubsequences: false)
-        .map(String.init)
-        .filter { line in
-            let lower = line.lowercased()
-            if !lower.contains("deny") && !lower.contains("sandbox:") { return false }
-            if !lowerPid.isEmpty && lower.contains(lowerPid) { return true }
-            if !lowerName.isEmpty && lower.contains(lowerName) { return true }
-            return false
+    let writePayload: String = {
+        if !stdout.isEmpty {
+            return stdout
         }
-
-    let hasDeny = matched.contains { $0.localizedCaseInsensitiveContains("deny") }
-    if !matched.isEmpty {
-        let payload = matched.joined(separator: "\n")
-        if let writeErr = writeLogCapture(path: spec.path, contents: payload) {
-            return ("requested_failed", writeErr, "write_failed")
+        if !stderr.isEmpty {
+            return "observer stderr:\n\(stderr)"
         }
-        return ("requested_written", nil, hasDeny ? "captured" : "not_found")
+        return "observer output empty\n"
+    }()
+
+    let writeErr = writeLogCapture(path: observerPath, contents: writePayload)
+
+    var status = "requested_written"
+    var error: String? = writeErr
+
+    var observerPredicate: String? = predicateOverride
+    var observerStart: String? = startText
+    var observerEnd: String? = endText
+    var observerLast: String? = nil
+    var observedLines: Int? = nil
+    var observedDeny: Bool? = nil
+    var denyLines: [String]? = nil
+
+    if let report = try? decodeJSON(ObserverReportEnvelope.self, from: run.stdout),
+       let data = report.data {
+        observerPredicate = data.predicate ?? observerPredicate
+        observerStart = data.start ?? observerStart
+        observerEnd = data.end ?? observerEnd
+        observerLast = data.last ?? observerLast
+        observedLines = data.observed_lines
+        observedDeny = data.observed_deny
+        denyLines = data.deny_lines
+        if let logError = data.log_error, !logError.isEmpty {
+            status = "requested_failed"
+            error = logError
+        } else if report.result?.ok == false {
+            status = "requested_failed"
+            error = error ?? "observer_report_not_ok"
+        }
+    } else if error == nil {
+        status = "requested_failed"
+        error = "observer_decode_failed"
     }
 
-    return ("requested_written", nil, "not_found")
+    if run.rc != 0 && error == nil {
+        status = "requested_failed"
+        error = "observer_exit=\(run.rc)"
+    }
+
+    return ObserverSummary(
+        status: status,
+        error: error,
+        path: observerPath,
+        predicate: observerPredicate,
+        start: observerStart,
+        end: observerEnd,
+        last: observerLast,
+        observedLines: observedLines,
+        observedDeny: observedDeny,
+        denyLines: denyLines
+    )
 }
 
 let args = CommandLine.arguments
@@ -350,7 +609,6 @@ var logPath: String?
 var logPredicate: String?
 var logPathClass: String?
 var logName: String?
-var logMode: String?
 var planId: String?
 var rowId: String?
 var correlationId: String?
@@ -373,28 +631,17 @@ parseLoop: while idx < args.count {
         printUsage()
         exit(0)
     case "--log-sandbox":
-        if logMode != nil && logMode != "show" {
-            fputs("cannot combine --log-sandbox with --log-stream\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        logMode = "show"
-        guard idx + 1 < args.count else {
-            fputs("missing value for \(a)\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        logPath = args[idx + 1]
-        idx += 2
+        fputs("--log-sandbox has been removed; use --log-stream or sandbox-log-observer instead\n", stderr)
+        printUsage()
+        exit(2)
     case "--log-stream":
-        if logMode != nil && logMode != "stream" {
-            fputs("cannot combine --log-stream with --log-sandbox\n", stderr)
+        guard idx + 1 < args.count else {
+            fputs("missing value for \(a)\n", stderr)
             printUsage()
             exit(2)
         }
-        logMode = "stream"
-        guard idx + 1 < args.count else {
-            fputs("missing value for \(a)\n", stderr)
+        if logPath != nil {
+            fputs("--log-stream specified multiple times\n", stderr)
             printUsage()
             exit(2)
         }
@@ -563,7 +810,7 @@ parseLoop: while idx < args.count {
 }
 
 if logPredicate != nil && logPath == nil && logPathClass == nil {
-    fputs("missing value for --log-sandbox/--log-stream or --log-path-class/--log-name (required when --log-predicate is set)\n", stderr)
+    fputs("missing value for --log-stream or --log-path-class/--log-name (required when --log-predicate is set)\n", stderr)
     printUsage()
     exit(2)
 }
@@ -618,8 +865,7 @@ if logPathClass != nil && resolvedLogPath == nil {
     exit(2)
 }
 
-let resolvedLogMode = logMode ?? (resolvedLogPath != nil ? "stream" : "show")
-let logSpec = resolvedLogPath.map { LogCaptureSpec(mode: resolvedLogMode, path: $0, predicate: logPredicate) }
+let logSpec = resolvedLogPath.map { LogCaptureSpec(path: $0, predicate_override: logPredicate) }
 
 if correlationId == nil {
     correlationId = UUID().uuidString
@@ -775,39 +1021,95 @@ else {
     exit(1)
 }
 
-let started = Date()
-
 private var logStream: LogStreamHandle?
 private var logStreamError: String?
-if let spec = logSpec, spec.mode == "stream" {
-    let predicate = spec.predicate ?? streamSandboxPredicate()
+private var logStreamPredicate: String?
+if let spec = logSpec {
+    let processNameHint = serviceNameHint(from: serviceName)
+    let pidHint = connectionPidHint(connection)
+    let predicate = spec.predicate_override ?? streamSandboxPredicate(processName: processNameHint, pid: pidHint)
+    logStreamPredicate = predicate
     let (handle, err) = startLogStream(predicate: predicate)
     logStream = handle
     logStreamError = err
     Thread.sleep(forTimeInterval: 0.2)
 }
 
+let clientStarted = Date()
 proxy.runProbe(requestData) { responseData in
-    let ended = Date()
+    let clientEnded = Date()
     let rawJson = String(data: responseData, encoding: .utf8)
     do {
         var response = try decodeJSON(RunProbeResponse.self, from: responseData)
         exitCode = Int32(clamping: response.rc)
 
+        var logCapturePredicate: String? = nil
+        var logCaptureObservedLines: Int? = nil
+        var logCaptureObservedDeny: Bool? = nil
+        var logObserverStatus: String? = nil
+        var logObserverError: String? = nil
+        var logObserverPath: String? = nil
+        var logObserverPredicate: String? = nil
+        var logObserverStart: String? = nil
+        var logObserverEnd: String? = nil
+        var logObserverLast: String? = nil
+        var logObserverObservedLines: Int? = nil
+        var logObserverObservedDeny: Bool? = nil
+        var logObserverDenyLines: [String]? = nil
         if let spec = logSpec {
-            if spec.mode == "stream" {
-                Thread.sleep(forTimeInterval: 0.2)
-            }
-            let (status, error, denyEvidence) = (spec.mode == "stream")
-                ? captureSandboxLogStream(spec: spec, stream: logStream, streamError: logStreamError, response: response, serviceName: serviceName)
-                : captureSandboxLogShow(spec: spec, response: response, serviceName: serviceName, started: started, ended: ended)
-            response.log_capture_status = status
+            Thread.sleep(forTimeInterval: 0.2)
+            let predicate = logStreamPredicate ?? spec.predicate_override ?? ""
+            let summary = captureSandboxLogStream(
+                spec: spec,
+                stream: logStream,
+                streamError: logStreamError,
+                response: response,
+                serviceName: serviceName,
+                predicate: predicate
+            )
+            response.log_capture_status = summary.status
             response.log_capture_path = spec.path
-            response.log_capture_error = error
-            response.deny_evidence = denyEvidence
+            response.log_capture_error = summary.error
+            logCapturePredicate = summary.predicate
+            logCaptureObservedLines = summary.observedLines
+            logCaptureObservedDeny = summary.observedDeny
+
+            let observer = captureSandboxLogObserver(
+                logPath: spec.path,
+                response: response,
+                serviceName: serviceName,
+                predicateOverride: spec.predicate_override,
+                planId: response.plan_id ?? planId,
+                rowId: response.row_id ?? rowId,
+                correlationId: response.correlation_id ?? correlationId,
+                clientStarted: clientStarted,
+                clientEnded: clientEnded
+            )
+            logObserverStatus = observer.status
+            logObserverError = observer.error
+            logObserverPath = observer.path
+            logObserverPredicate = observer.predicate
+            logObserverStart = observer.start
+            logObserverEnd = observer.end
+            logObserverLast = observer.last
+            logObserverObservedLines = observer.observedLines
+            logObserverObservedDeny = observer.observedDeny
+            logObserverDenyLines = observer.denyLines
+
+            let logStreamFound = summary.observedDeny == true
+            let observerFound = observer.observedDeny == true
+            let observerSucceeded = observer.status == "requested_written"
+            if logStreamFound || observerFound {
+                response.deny_evidence = "captured"
+            } else if observerSucceeded || summary.denyEvidence == "not_found" {
+                response.deny_evidence = "not_found"
+            } else {
+                response.deny_evidence = "log_error"
+            }
         } else {
             response.log_capture_status = "not_requested"
             response.deny_evidence = "not_captured"
+            logObserverStatus = "not_requested"
         }
 
         let data = ProbeData(
@@ -830,6 +1132,19 @@ proxy.runProbe(requestData) { responseData in
             log_capture_status: response.log_capture_status,
             log_capture_path: response.log_capture_path,
             log_capture_error: response.log_capture_error,
+            log_capture_predicate: logCapturePredicate,
+            log_capture_observed_lines: logCaptureObservedLines,
+            log_capture_observed_deny: logCaptureObservedDeny,
+            log_observer_status: logObserverStatus,
+            log_observer_error: logObserverError,
+            log_observer_path: logObserverPath,
+            log_observer_predicate: logObserverPredicate,
+            log_observer_start: logObserverStart,
+            log_observer_end: logObserverEnd,
+            log_observer_last: logObserverLast,
+            log_observer_observed_lines: logObserverObservedLines,
+            log_observer_observed_deny: logObserverObservedDeny,
+            log_observer_deny_lines: logObserverDenyLines,
             deny_evidence: response.deny_evidence
         )
 

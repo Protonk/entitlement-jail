@@ -24,7 +24,7 @@ Usage:
 ```sh
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-system <absolute-platform-binary> [args...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-embedded <tool-name> [args...]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc [--profile <id>] [--ack-risk <id|bundle-id>] [--log-sandbox <path>|--log-stream <path>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc [--profile <id>] [--ack-risk <id|bundle-id>] [--log-stream <path>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail verify-evidence
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail inspect-macho <service-id|main|path>
@@ -82,6 +82,7 @@ Kinds:
 - `inspector_report`
 - `quarantine_observer_report`
 - `sandbox_log_observer_report`
+- `sandbox_log_stream_report`
 
 ## `run-system`: in-place platform binaries
 
@@ -140,7 +141,7 @@ Helper location (important):
 
 Invocation:
 
-- `run-xpc [--log-sandbox <path>|--log-stream <path>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]`
+- `run-xpc [--log-stream <path>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]`
 - Example service bundle id: `com.yourteam.entitlement-jail.ProbeService_minimal`
 
 Built-in probe ids (in-process):
@@ -172,16 +173,16 @@ Notes:
 - `probe_catalog` includes `trace_symbols`, mapping probe ids to stable `ej_*` marker symbols for external tooling.
 - Filesystem probes are safe-by-default: destructive direct-path operations are refused unless you target a harness path (for `fs_op`/`fs_coordinated_op` via `--path-class`/`--target`, or for `fs_xattr` via an explicit path under `*/entitlement-jail-harness/*`) or pass `--allow-unsafe-path` (or `--allow-write` for `fs_xattr`).
 - `dlopen_external` loads and executes dylib initializers by design; use a signed test dylib.
-- `--log-stream` writes a best-effort live unified log excerpt for sandbox denial lines (uses `log stream` during the probe); absence of deny lines is not a denial claim.
-- `--log-sandbox` writes a best-effort post-run excerpt (uses `log show`) and may be empty on systems that do not persist sandbox denials in the log store.
-- `--log-path-class`/`--log-name` chooses a container-safe output path for the capture file and performs the same live capture as `--log-stream`.
-- `--log-path-class`/`--log-name` resolves the capture path under the service’s container (useful when repo paths are blocked).
-- Responses include `log_capture_status`; `deny_evidence` is `not_captured` when log capture is not requested, `captured` when a denial line is observed, and `not_found` when capture ran but no denial lines matched.
+- `--log-stream` writes a best-effort live unified log excerpt for sandbox denial lines (uses `log stream` during the probe) and emits a PID-scoped JSON report at the requested path (`kind: sandbox_log_stream_report`, excerpt in `data.log_stdout`); absence of deny lines is not a denial claim.
+- `--log-stream` also runs the unsandboxed observer automatically and writes a second report at `<log_stream_path>.observer.json` (`kind: sandbox_log_observer_report`); it uses the probe start/end timestamps to set the observer time window.
+- `--log-path-class`/`--log-name` chooses a container-safe output path for the log stream report (useful when repo paths are blocked); the observer report lives alongside it.
+- In-sandbox post-run log access is intentionally unsupported; the observer runs outside the sandbox boundary.
+- Responses include `log_capture_status`, `log_capture_predicate`, `log_capture_observed_*`, plus `log_observer_status`, `log_observer_path`, `log_observer_observed_*`, and `log_observer_deny_lines`; `deny_evidence` is `not_captured` when log capture is not requested, `captured` when a denial line is observed (stream or observer), `not_found` when capture ran but no denial lines matched, and `log_error` when both stream and observer failed.
 - All JSON responses use the envelope described above (including top-level `schema_version`).
-- `--log-sandbox`/`--log-stream` uses `/usr/bin/log`; when the launcher is sandboxed, `log` may refuse to run and deny evidence will not be captured. The default build keeps the launcher unsandboxed so log capture works.
+- `--log-stream` uses `/usr/bin/log`; when the launcher is sandboxed, `log` may refuse to run and deny evidence will not be captured. The default build keeps the launcher unsandboxed so log capture works.
 - `--hold-open` keeps the XPC connection open after the response to make debugger/trace attachment easier.
-- `--log-sandbox`/`--log-stream`/`--log-path-class`/`--log-name`/`--log-predicate` must appear before `<xpc-service-bundle-id>`.
-- `--log-predicate` overrides the default `log show` predicate (pass a full predicate string).
+- `--log-stream`/`--log-path-class`/`--log-name`/`--log-predicate` must appear before `<xpc-service-bundle-id>`.
+- `--log-predicate` overrides the default PID-scoped predicate for both stream and observer (pass a full predicate string).
 - `--attach <seconds>` is a convenience for attach workflows: it sets a pre-run wait using a FIFO under the service’s container `tmp` plus a matching `--hold-open` (unless you set `--hold-open` explicitly).
 - `--wait-fifo`/`--wait-exists` block **before** probe execution; the wait outcome is recorded in `data.details` (`wait_*` keys).
 - `--wait-create` tells the service to create the FIFO path before waiting (only valid with `--wait-fifo`).
@@ -355,7 +356,7 @@ Behavior:
 - Reads the `com.apple.quarantine` xattr (if present).
 - Records Gatekeeper status and (optionally) an assessment signal (observer-only; does not execute the file).
 
-Do not run the observer from inside `EntitlementJail.app` (or any sandboxed parent), or you lose the “outside the sandbox” boundary and mix attribution.
+Do not run the observer from a sandboxed parent process; the default build’s host-side launcher is unsandboxed, which preserves the “outside the sandbox” boundary.
 
 ## Unsandboxed observer: `sandbox-log-observer`
 
@@ -380,6 +381,9 @@ runner/target/release/sandbox-log-observer --pid <pid> --process-name <name> --l
 Notes:
 
 - `--predicate` overrides the default `Sandbox: <name>(<pid>)` predicate.
+- Prefer `--start`/`--end` when you have probe timing; `--last` is a fallback.
+- `--plan-id`/`--row-id`/`--correlation-id` annotate the JSON output for easier stitching.
+- `data.deny_lines` is a structured list of deny-shaped log lines (case-insensitive match on `deny`).
 - Use it outside the sandbox boundary; do not run it from a sandboxed parent process.
 
 ## Evidence manifest (signed BOM)

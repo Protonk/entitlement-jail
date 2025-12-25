@@ -29,7 +29,7 @@ XPC gives you:
 
 Both requests and responses are serialized as JSON bytes (`Data`) rather than passing rich Objective‑C objects over XPC. This keeps the interface inspectable and stable, and makes it easy for callers to treat the service output as a structured research record.
 
-`RunProbeResponse` carries correlation metadata (for example `correlation_id`, `probe_id`, `argv`), service identity/build fields, and timing/thread hints (`started_at_iso8601`, `ended_at_iso8601`, `thread_id`) when available. The XPC client wraps responses in the uniform JSON envelope described in `runner/README.md` and may annotate log capture fields (`data.log_capture_*`, `data.deny_evidence`) when `--log-sandbox`/`--log-stream` is used.
+`RunProbeResponse` carries correlation metadata (for example `correlation_id`, `probe_id`, `argv`), service identity/build fields, and timing/thread hints (`started_at_iso8601`, `ended_at_iso8601`, `thread_id`) when available. The XPC client wraps responses in the uniform JSON envelope described in `runner/README.md` and may annotate log capture fields (`data.log_capture_*`, `data.log_observer_*`, `data.deny_evidence`) when `--log-stream` is used.
 
 `RunProbeRequest` supports an optional `wait_spec` block to block **before** probe execution (used by `run-xpc --wait-*` / `--attach`).
 

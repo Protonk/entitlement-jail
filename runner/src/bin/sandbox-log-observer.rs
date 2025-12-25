@@ -10,7 +10,7 @@ fn print_usage() {
     eprintln!(
         "\
 usage:
-  sandbox-log-observer --pid <pid> --process-name <name> [--start <time> --end <time> | --last <duration>] [--predicate <predicate>]
+  sandbox-log-observer --pid <pid> --process-name <name> [--start <time> --end <time> | --last <duration>] [--predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>]
 
 notes:
   - runs `log show` with a sandbox-deny predicate (observer-only)
@@ -38,6 +38,9 @@ struct ObserverLayerAttribution {
 
 #[derive(Serialize)]
 struct LogObserverData {
+    plan_id: Option<String>,
+    row_id: Option<String>,
+    correlation_id: Option<String>,
     pid: i32,
     process_name: Option<String>,
     predicate: String,
@@ -50,6 +53,7 @@ struct LogObserverData {
     log_error: Option<String>,
     observed_lines: usize,
     observed_deny: bool,
+    deny_lines: Vec<String>,
     layer_attribution: ObserverLayerAttribution,
 }
 
@@ -66,6 +70,9 @@ fn main() {
     let mut start: Option<String> = None;
     let mut end: Option<String> = None;
     let mut last: Option<String> = None;
+    let mut plan_id: Option<String> = None;
+    let mut row_id: Option<String> = None;
+    let mut correlation_id: Option<String> = None;
 
     let mut idx = 0usize;
     while idx < args.len() {
@@ -150,6 +157,42 @@ fn main() {
                 }
                 idx += 2;
             }
+            "--plan-id" => {
+                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                match value {
+                    Some(v) => plan_id = Some(v.to_string()),
+                    None => {
+                        eprintln!("missing value for --plan-id");
+                        print_usage();
+                        std::process::exit(2);
+                    }
+                }
+                idx += 2;
+            }
+            "--row-id" => {
+                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                match value {
+                    Some(v) => row_id = Some(v.to_string()),
+                    None => {
+                        eprintln!("missing value for --row-id");
+                        print_usage();
+                        std::process::exit(2);
+                    }
+                }
+                idx += 2;
+            }
+            "--correlation-id" => {
+                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                match value {
+                    Some(v) => correlation_id = Some(v.to_string()),
+                    None => {
+                        eprintln!("missing value for --correlation-id");
+                        print_usage();
+                        std::process::exit(2);
+                    }
+                }
+                idx += 2;
+            }
             _ => {
                 eprintln!("unknown arg: {}", arg);
                 print_usage();
@@ -221,6 +264,9 @@ fn main() {
         Ok(out) => out,
         Err(err) => {
             let data = LogObserverData {
+                plan_id: plan_id.clone(),
+                row_id: row_id.clone(),
+                correlation_id: correlation_id.clone(),
                 pid,
                 process_name,
                 predicate,
@@ -233,6 +279,7 @@ fn main() {
                 log_error: Some(format!("failed to run log: {err}")),
                 observed_lines: 0,
                 observed_deny: false,
+                deny_lines: Vec::new(),
                 layer_attribution: ObserverLayerAttribution {
                     seatbelt: "observer_only".to_string(),
                 },
@@ -255,9 +302,17 @@ fn main() {
         .lines()
         .filter(|line| !line.trim().is_empty())
         .count();
-    let observed_deny = stdout.lines().any(|line| line.contains("deny"));
+    let deny_lines: Vec<String> = stdout
+        .lines()
+        .filter(|line| line.to_ascii_lowercase().contains("deny"))
+        .map(|line| line.to_string())
+        .collect();
+    let observed_deny = !deny_lines.is_empty();
 
     let data = LogObserverData {
+        plan_id,
+        row_id,
+        correlation_id,
         pid,
         process_name,
         predicate,
@@ -274,6 +329,7 @@ fn main() {
         },
         observed_lines,
         observed_deny,
+        deny_lines,
         layer_attribution: ObserverLayerAttribution {
             seatbelt: "observer_only".to_string(),
         },

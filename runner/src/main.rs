@@ -17,7 +17,7 @@ fn print_usage() {
 usage:
   entitlement-jail run-system <absolute-platform-binary> [args...]
   entitlement-jail run-embedded <tool-name> [args...]
-  entitlement-jail run-xpc [--ack-risk <id|bundle-id>] [--log-sandbox <path>|--log-stream <path>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] (--profile <id> | <xpc-service-bundle-id>) <probe-id> [probe-args...]
+  entitlement-jail run-xpc [--ack-risk <id|bundle-id>] [--log-stream <path>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] (--profile <id> | <xpc-service-bundle-id>) <probe-id> [probe-args...]
   entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
   entitlement-jail verify-evidence
   entitlement-jail inspect-macho <service-id|main|path>
@@ -1646,8 +1646,12 @@ fn main() {
                         ack_risk = Some(value.to_string());
                         idx += 2;
                     }
-                    Some("--log-sandbox")
-                    | Some("--log-stream")
+                    Some("--log-sandbox") => {
+                        eprintln!("--log-sandbox has been removed; use --log-stream or sandbox-log-observer instead");
+                        print_usage();
+                        std::process::exit(2);
+                    }
+                    Some("--log-stream")
                     | Some("--log-path-class")
                     | Some("--log-name")
                     | Some("--log-predicate")
@@ -1729,8 +1733,7 @@ fn main() {
                 let mut insert_idx = 0usize;
                 while insert_idx < forward_args.len() {
                     match forward_args.get(insert_idx).and_then(|s| s.to_str()) {
-                        Some("--log-sandbox")
-                        | Some("--log-stream")
+                        Some("--log-stream")
                         | Some("--log-path-class")
                         | Some("--log-name")
                         | Some("--log-predicate")
@@ -1759,8 +1762,7 @@ fn main() {
                 let mut insert_idx = 0usize;
                 while insert_idx < forward_args.len() {
                     match forward_args.get(insert_idx).and_then(|s| s.to_str()) {
-                        Some("--log-sandbox")
-                        | Some("--log-stream")
+                        Some("--log-stream")
                         | Some("--log-path-class")
                         | Some("--log-name")
                         | Some("--log-predicate")
@@ -1812,8 +1814,7 @@ fn main() {
                 let mut insert_idx = 0usize;
                 while insert_idx < forward_args.len() {
                     match forward_args.get(insert_idx).and_then(|s| s.to_str()) {
-                        Some("--log-sandbox")
-                        | Some("--log-stream")
+                        Some("--log-stream")
                         | Some("--log-path-class")
                         | Some("--log-name")
                         | Some("--log-predicate")
