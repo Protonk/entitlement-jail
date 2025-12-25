@@ -394,6 +394,15 @@ private struct LogStreamHandle {
     var predicate: String
 }
 
+private struct ObserverStreamHandle {
+    var process: Process
+    var stdoutPipe: Pipe
+    var stderrPipe: Pipe
+    var path: String
+    var predicate: String?
+    var format: String?
+}
+
 private func startLogStream(predicate: String) -> (LogStreamHandle?, String?) {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/log")
@@ -449,6 +458,20 @@ private func serviceNameHint(from bundleId: String) -> String {
 private func connectionPidHint(_ connection: NSXPCConnection) -> String? {
     let pid = connection.processIdentifier
     return pid > 0 ? "\(pid)" : nil
+}
+
+private func waitForConnectionPid(_ connection: NSXPCConnection, timeout: TimeInterval) -> String? {
+    if let pid = connectionPidHint(connection) {
+        return pid
+    }
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        Thread.sleep(forTimeInterval: 0.05)
+        if let pid = connectionPidHint(connection) {
+            return pid
+        }
+    }
+    return nil
 }
 
 private func parseIso8601(_ value: String?) -> Date? {
@@ -656,6 +679,306 @@ private func captureSandboxLogObserver(
     clientStarted: Date,
     clientEnded: Date
 ) -> ObserverSummary {
+    return captureSandboxLogObserver(
+        observerPath: observerPath,
+        response: response,
+        serviceName: serviceName,
+        pidHint: pidHint,
+        processNameHint: processNameHint,
+        predicateOverride: predicateOverride,
+        planId: planId,
+        rowId: rowId,
+        correlationId: correlationId,
+        observerFormat: observerFormat,
+        observerDuration: observerDuration,
+        observerFollow: observerFollow,
+        clientStarted: clientStarted,
+        clientEnded: clientEnded,
+        forceShow: false
+    )
+}
+
+private func summarizeObserverRun(
+    stdout: String,
+    stderr: String,
+    rc: Int32,
+    observerPath: String,
+    predicateOverride: String?,
+    observerFormat: String?,
+    observerStart: String?,
+    observerEnd: String?,
+    observerLast: String?
+) -> ObserverSummary {
+    let observerFileExists = FileManager.default.fileExists(atPath: observerPath)
+    let writePayload: String = {
+        if !stdout.isEmpty {
+            return stdout
+        }
+        if !stderr.isEmpty {
+            return "observer stderr:\n\(stderr)"
+        }
+        return "observer output empty\n"
+    }()
+
+    let writeErr = observerFileExists ? nil : writeLogCapture(path: observerPath, contents: writePayload)
+
+    var status = "requested_written"
+    var error: String? = writeErr
+    if writeErr != nil {
+        status = "requested_failed"
+    }
+
+    var observerPredicate: String? = predicateOverride
+    var observedLines: Int? = nil
+    var observedDeny: Bool? = nil
+    var denyLines: [String]? = nil
+    var report: ObserverReportEnvelope? = nil
+    var start = observerStart
+    var end = observerEnd
+    var last = observerLast
+
+    let reportFromStdout = parseObserverReport(stdout, format: observerFormat)
+    let reportFromFile = reportFromStdout
+        ?? (stdout.isEmpty ? parseObserverReportFile(path: observerPath, format: observerFormat) : nil)
+    if let parsed = reportFromFile, let data = parsed.data {
+        report = parsed
+        observerPredicate = data.predicate ?? observerPredicate
+        start = data.start ?? start
+        end = data.end ?? end
+        last = data.last ?? last
+        observedLines = data.observed_lines
+        observedDeny = data.observed_deny
+        denyLines = data.deny_lines
+        if let logError = data.log_error, !logError.isEmpty {
+            status = "requested_failed"
+            error = logError
+        } else if parsed.result?.ok == false {
+            status = "requested_failed"
+            error = error ?? "observer_report_not_ok"
+        }
+    } else if error == nil {
+        status = "requested_failed"
+        error = "observer_decode_failed"
+    }
+
+    if rc != 0 && error == nil {
+        status = "requested_failed"
+        error = "observer_exit=\(rc)"
+    }
+
+    return ObserverSummary(
+        status: status,
+        error: error,
+        path: observerPath,
+        predicate: observerPredicate,
+        start: start,
+        end: end,
+        last: last,
+        observedLines: observedLines,
+        observedDeny: observedDeny,
+        denyLines: denyLines,
+        report: report
+    )
+}
+
+private func startSandboxLogObserverStream(
+    observerPath: String?,
+    pidHint: String?,
+    processNameHint: String?,
+    predicateOverride: String?,
+    planId: String?,
+    rowId: String?,
+    correlationId: String?,
+    observerFormat: String?,
+    observerDuration: TimeInterval?,
+    observerFollow: Bool
+) -> (ObserverStreamHandle?, ObserverSummary?) {
+    guard let observerPath else {
+        return (nil, ObserverSummary(
+            status: "requested_failed",
+            error: "missing_observer_path",
+            path: nil,
+            predicate: nil,
+            start: nil,
+            end: nil,
+            last: nil,
+            observedLines: nil,
+            observedDeny: nil,
+            denyLines: nil,
+            report: nil
+        ))
+    }
+
+    let pid = pidHint ?? ""
+    let processName = processNameHint ?? ""
+
+    guard !pid.isEmpty else {
+        return (nil, ObserverSummary(
+            status: "requested_failed",
+            error: "missing_pid",
+            path: observerPath,
+            predicate: nil,
+            start: nil,
+            end: nil,
+            last: nil,
+            observedLines: nil,
+            observedDeny: nil,
+            denyLines: nil,
+            report: nil
+        ))
+    }
+
+    guard !processName.isEmpty else {
+        return (nil, ObserverSummary(
+            status: "requested_failed",
+            error: "missing_process_name",
+            path: observerPath,
+            predicate: nil,
+            start: nil,
+            end: nil,
+            last: nil,
+            observedLines: nil,
+            observedDeny: nil,
+            denyLines: nil,
+            report: nil
+        ))
+    }
+
+    guard let toolPath = resolveObserverToolPath() else {
+        return (nil, ObserverSummary(
+            status: "requested_failed",
+            error: "observer_missing",
+            path: observerPath,
+            predicate: nil,
+            start: nil,
+            end: nil,
+            last: nil,
+            observedLines: nil,
+            observedDeny: nil,
+            denyLines: nil,
+            report: nil
+        ))
+    }
+
+    var argv = [
+        toolPath,
+        "--pid",
+        pid,
+        "--process-name",
+        processName,
+    ]
+
+    if observerFollow {
+        argv.append("--follow")
+    }
+    if let observerDuration {
+        argv.append("--duration")
+        argv.append(String(observerDuration))
+    }
+    if let predicateOverride {
+        argv.append("--predicate")
+        argv.append(predicateOverride)
+    }
+    if let observerFormat {
+        argv.append("--format")
+        argv.append(observerFormat)
+    }
+    argv.append("--output")
+    argv.append(observerPath)
+    if let planId {
+        argv.append("--plan-id")
+        argv.append(planId)
+    }
+    if let rowId {
+        argv.append("--row-id")
+        argv.append(rowId)
+    }
+    if let correlationId {
+        argv.append("--correlation-id")
+        argv.append(correlationId)
+    }
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: toolPath)
+    process.arguments = Array(argv.dropFirst())
+
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+    process.standardOutput = stdoutPipe
+    process.standardError = stderrPipe
+
+    do {
+        try process.run()
+    } catch {
+        return (nil, ObserverSummary(
+            status: "requested_failed",
+            error: "observer_spawn_failed",
+            path: observerPath,
+            predicate: predicateOverride,
+            start: nil,
+            end: nil,
+            last: nil,
+            observedLines: nil,
+            observedDeny: nil,
+            denyLines: nil,
+            report: nil
+        ))
+    }
+
+    return (ObserverStreamHandle(
+        process: process,
+        stdoutPipe: stdoutPipe,
+        stderrPipe: stderrPipe,
+        path: observerPath,
+        predicate: predicateOverride,
+        format: observerFormat
+    ), nil)
+}
+
+private func finishSandboxLogObserverStream(
+    handle: ObserverStreamHandle,
+    observerFollow: Bool,
+    observerFormat: String?
+) -> ObserverSummary {
+    if observerFollow && handle.process.isRunning {
+        handle.process.terminate()
+    }
+    handle.process.waitUntilExit()
+
+    let stdout = String(data: handle.stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let stderr = String(data: handle.stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let rc = handle.process.terminationStatus
+
+    return summarizeObserverRun(
+        stdout: stdout,
+        stderr: stderr,
+        rc: rc,
+        observerPath: handle.path,
+        predicateOverride: handle.predicate,
+        observerFormat: observerFormat ?? handle.format,
+        observerStart: nil,
+        observerEnd: nil,
+        observerLast: nil
+    )
+}
+
+private func captureSandboxLogObserver(
+    observerPath: String?,
+    response: RunProbeResponse,
+    serviceName: String,
+    pidHint: String?,
+    processNameHint: String?,
+    predicateOverride: String?,
+    planId: String?,
+    rowId: String?,
+    correlationId: String?,
+    observerFormat: String?,
+    observerDuration: TimeInterval?,
+    observerFollow: Bool,
+    clientStarted: Date,
+    clientEnded: Date,
+    forceShow: Bool
+) -> ObserverSummary {
     guard let observerPath else {
         return ObserverSummary(
             status: "requested_failed",
@@ -715,9 +1038,10 @@ private func captureSandboxLogObserver(
         )
     }
 
-    let useStream = observerFollow || observerDuration != nil
+    let useStream = !forceShow && (observerFollow || observerDuration != nil)
     var observerStart: String? = nil
     var observerEnd: String? = nil
+    let observerLast: String? = nil
 
     var argv = [
         toolPath,
@@ -738,8 +1062,9 @@ private func captureSandboxLogObserver(
     } else {
         let startSource = parseIso8601(response.started_at_iso8601) ?? clientStarted
         let endSource = parseIso8601(response.ended_at_iso8601) ?? clientEnded
-        let paddedStart = startSource.addingTimeInterval(-2)
-        let paddedEnd = max(endSource.addingTimeInterval(2), paddedStart.addingTimeInterval(1))
+        let paddingSeconds: TimeInterval = 5
+        let paddedStart = startSource.addingTimeInterval(-paddingSeconds)
+        let paddedEnd = max(endSource.addingTimeInterval(paddingSeconds), paddedStart.addingTimeInterval(1))
         observerStart = formatLogShowTime(paddedStart)
         observerEnd = formatLogShowTime(paddedEnd)
         if let observerStart, let observerEnd {
@@ -777,73 +1102,16 @@ private func captureSandboxLogObserver(
     let stdout = String(data: run.stdout, encoding: .utf8) ?? ""
     let stderr = String(data: run.stderr, encoding: .utf8) ?? ""
 
-    let observerFileExists = FileManager.default.fileExists(atPath: observerPath)
-    let writePayload: String = {
-        if !stdout.isEmpty {
-            return stdout
-        }
-        if !stderr.isEmpty {
-            return "observer stderr:\n\(stderr)"
-        }
-        return "observer output empty\n"
-    }()
-
-    let writeErr = observerFileExists ? nil : writeLogCapture(path: observerPath, contents: writePayload)
-
-    var status = "requested_written"
-    var error: String? = writeErr
-    if writeErr != nil {
-        status = "requested_failed"
-    }
-
-    var observerPredicate: String? = predicateOverride
-    var observerLast: String? = nil
-    var observedLines: Int? = nil
-    var observedDeny: Bool? = nil
-    var denyLines: [String]? = nil
-    var report: ObserverReportEnvelope? = nil
-
-    let reportFromStdout = parseObserverReport(stdout, format: observerFormat)
-    let reportFromFile = reportFromStdout
-        ?? (stdout.isEmpty ? parseObserverReportFile(path: observerPath, format: observerFormat) : nil)
-    if let parsed = reportFromFile, let data = parsed.data {
-        report = parsed
-        observerPredicate = data.predicate ?? observerPredicate
-        observerStart = data.start ?? observerStart
-        observerEnd = data.end ?? observerEnd
-        observerLast = data.last ?? observerLast
-        observedLines = data.observed_lines
-        observedDeny = data.observed_deny
-        denyLines = data.deny_lines
-        if let logError = data.log_error, !logError.isEmpty {
-            status = "requested_failed"
-            error = logError
-        } else if parsed.result?.ok == false {
-            status = "requested_failed"
-            error = error ?? "observer_report_not_ok"
-        }
-    } else if error == nil {
-        status = "requested_failed"
-        error = "observer_decode_failed"
-    }
-
-    if run.rc != 0 && error == nil {
-        status = "requested_failed"
-        error = "observer_exit=\(run.rc)"
-    }
-
-    return ObserverSummary(
-        status: status,
-        error: error,
-        path: observerPath,
-        predicate: observerPredicate,
-        start: observerStart,
-        end: observerEnd,
-        last: observerLast,
-        observedLines: observedLines,
-        observedDeny: observedDeny,
-        denyLines: denyLines,
-        report: report
+    return summarizeObserverRun(
+        stdout: stdout,
+        stderr: stderr,
+        rc: run.rc,
+        observerPath: observerPath,
+        predicateOverride: predicateOverride,
+        observerFormat: observerFormat,
+        observerStart: observerStart,
+        observerEnd: observerEnd,
+        observerLast: observerLast
     )
 }
 
@@ -1384,6 +1652,7 @@ else {
 private var logStream: LogStreamHandle?
 private var logStreamError: String?
 private var logStreamPredicate: String?
+private var observerStreamHandle: ObserverStreamHandle?
 if let spec = logSpec {
     let predicate = spec.predicate_override ?? streamSandboxPredicate(processName: processNameHint, pid: pidHint)
     logStreamPredicate = predicate
@@ -1391,6 +1660,25 @@ if let spec = logSpec {
     logStream = handle
     logStreamError = err
     Thread.sleep(forTimeInterval: 0.2)
+}
+
+let observerStreamRequested = shouldObserve && (observerFollow == true || observerDuration != nil)
+if observerStreamRequested {
+    let observerPid = pidHint ?? waitForConnectionPid(connection, timeout: 0.5)
+    let (handle, _) = startSandboxLogObserverStream(
+        observerPath: observerOutputPath,
+        pidHint: observerPid,
+        processNameHint: processNameHint,
+        predicateOverride: logPredicate,
+        planId: planId,
+        rowId: rowId,
+        correlationId: correlationId,
+        observerFormat: observerFormat,
+        observerDuration: observerDuration,
+        observerFollow: observerFollow == true
+    )
+    observerStreamHandle = handle
+    Thread.sleep(forTimeInterval: 0.1)
 }
 
 let clientStarted = Date()
@@ -1445,22 +1733,32 @@ proxy.runProbe(requestData) { responseData in
         }
 
         if shouldObserve {
-            let observer = captureSandboxLogObserver(
-                observerPath: observerOutputPath,
-                response: response,
-                serviceName: serviceName,
-                pidHint: pidHint,
-                processNameHint: processNameHint,
-                predicateOverride: logPredicate,
-                planId: response.plan_id ?? planId,
-                rowId: response.row_id ?? rowId,
-                correlationId: response.correlation_id ?? correlationId,
-                observerFormat: observerFormat,
-                observerDuration: observerDuration,
-                observerFollow: observerFollow == true,
-                clientStarted: clientStarted,
-                clientEnded: clientEnded
-            )
+            let observer: ObserverSummary
+            if let handle = observerStreamHandle {
+                observer = finishSandboxLogObserverStream(
+                    handle: handle,
+                    observerFollow: observerFollow == true,
+                    observerFormat: observerFormat
+                )
+            } else {
+                observer = captureSandboxLogObserver(
+                    observerPath: observerOutputPath,
+                    response: response,
+                    serviceName: serviceName,
+                    pidHint: pidHint,
+                    processNameHint: processNameHint,
+                    predicateOverride: logPredicate,
+                    planId: response.plan_id ?? planId,
+                    rowId: response.row_id ?? rowId,
+                    correlationId: response.correlation_id ?? correlationId,
+                    observerFormat: observerFormat,
+                    observerDuration: observerDuration,
+                    observerFollow: observerFollow == true,
+                    clientStarted: clientStarted,
+                    clientEnded: clientEnded,
+                    forceShow: observerStreamRequested
+                )
+            }
             logObserverStatus = observer.status
             logObserverError = observer.error
             logObserverPath = observer.path

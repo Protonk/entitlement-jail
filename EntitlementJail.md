@@ -155,7 +155,7 @@ Notes:
 - `--log-stream auto` writes to an app-managed path under `~/Library/Application Support/entitlement-jail/logs/`; `--log-stream stdout` writes the stream report to stdout and requires `--json-out` so the probe JSON goes to a file (observer output still goes to a file path).
 - `--log-stream` implies observer capture (same as `--observe`).
 - `--observe` runs the embedded `sandbox-log-observer` even without `--log-stream`.
-- `--observer-duration <seconds>` (or `--observer-follow`) makes the observer run in live mode (`log stream`) instead of windowed `log show`.
+- `--observer-duration <seconds>` (or `--observer-follow`) makes the observer run in live mode (`log stream`) when possible; if the PID is not available in time, the observer falls back to windowed `log show` (check `data.log_observer_report.data.mode`).
 - `--observer-follow` cannot be combined with `--observer-duration`.
 - `--observer-format jsonl` and `--observer-output <path|auto>` control observer persistence; `jsonl` emits per-line events plus a final report line.
 - `--log-path-class` + `--log-name` chooses a container-safe output path for the log stream report (still host-side capture). Allowed classes: `home`, `tmp`, `downloads`, `desktop`, `documents`, `app_support`, `caches`.
