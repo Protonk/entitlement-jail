@@ -93,16 +93,20 @@ def codesign_entitlements(path):
     return plist, None
 
 ENT_KEYS = {
+    "app_sandbox": "com.apple.security.app-sandbox",
     "get_task_allow": "com.apple.security.get-task-allow",
     "disable_library_validation": "com.apple.security.cs.disable-library-validation",
     "allow_dyld_environment_variables": "com.apple.security.cs.allow-dyld-environment-variables",
     "allow_jit": "com.apple.security.cs.allow-jit",
     "allow_unsigned_executable_memory": "com.apple.security.cs.allow-unsigned-executable-memory",
     "network_client": "com.apple.security.network.client",
+    "downloads_read_write": "com.apple.security.files.downloads.read-write",
+    "user_selected_executable": "com.apple.security.files.user-selected.executable",
+    "bookmarks_app_scope": "com.apple.security.files.bookmarks.app-scope",
     "cs_debugger": "com.apple.security.cs.debugger",
 }
 
-def service_record(service_name):
+def service_record(profile_id, service_name, kind=None, bundle_id=None):
     bin_path = os.path.join(
         app_path,
         "Contents",
@@ -121,6 +125,10 @@ def service_record(service_name):
             if key in entitlements:
                 ent_map[alias] = bool(entitlements.get(key))
     return {
+        "profile_id": profile_id,
+        "kind": kind,
+        "bundle_id": bundle_id,
+        "service_name": service_name,
         "path": bin_path,
         "exists": exists,
         "signed": signed,
@@ -129,15 +137,43 @@ def service_record(service_name):
         "entitlements_error": ent_error if entitlements is None else None,
     }
 
-services = {
-    "minimal": service_record("ProbeService_minimal"),
-    "debuggable": service_record("ProbeService_debuggable"),
-    "fully_injectable": service_record("ProbeService_fully_injectable"),
-    "plugin_host_relaxed": service_record("ProbeService_plugin_host_relaxed"),
-    "jit_map_jit": service_record("ProbeService_jit_map_jit"),
-    "jit_rwx_legacy": service_record("ProbeService_jit_rwx_legacy"),
-    "net_client": service_record("ProbeService_net_client"),
-}
+services = {}
+profiles_manifest_path = os.path.join(app_path, "Contents", "Resources", "Evidence", "profiles.json")
+profiles_manifest_error = None
+if os.path.exists(profiles_manifest_path):
+    try:
+        with open(profiles_manifest_path, "r", encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        profiles = manifest.get("profiles")
+        if isinstance(profiles, list):
+            for entry in profiles:
+                profile_id = entry.get("profile_id")
+                service_name = entry.get("service_name")
+                if not profile_id or not service_name:
+                    continue
+                services[profile_id] = service_record(
+                    profile_id=profile_id,
+                    service_name=service_name,
+                    kind=entry.get("kind"),
+                    bundle_id=entry.get("bundle_id"),
+                )
+        else:
+            profiles_manifest_error = "profiles.json missing 'profiles' array"
+    except Exception as e:
+        profiles_manifest_error = str(e)
+else:
+    profiles_manifest_error = "missing"
+
+if not services:
+    services = {
+        "minimal": service_record("minimal", "ProbeService_minimal", "probe"),
+        "debuggable": service_record("debuggable", "ProbeService_debuggable", "probe"),
+        "fully_injectable": service_record("fully_injectable", "ProbeService_fully_injectable", "probe"),
+        "plugin_host_relaxed": service_record("plugin_host_relaxed", "ProbeService_plugin_host_relaxed", "probe"),
+        "jit_map_jit": service_record("jit_map_jit", "ProbeService_jit_map_jit", "probe"),
+        "jit_rwx_legacy": service_record("jit_rwx_legacy", "ProbeService_jit_rwx_legacy", "probe"),
+        "net_client": service_record("net_client", "ProbeService_net_client", "probe"),
+    }
 
 app_exists = os.path.exists(app_path)
 app_signed, app_error = codesign_verify(app_path, deep=True) if app_exists else (False, "missing")
@@ -152,6 +188,11 @@ dylib_signed, dylib_error = codesign_verify(dylib_path) if dylib_exists else (Fa
 
 report = {
     "schema_version": 1,
+    "profiles_manifest": {
+        "path": profiles_manifest_path,
+        "exists": os.path.exists(profiles_manifest_path),
+        "error": profiles_manifest_error,
+    },
     "app": {
         "path": app_path,
         "exists": app_exists,

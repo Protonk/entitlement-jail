@@ -6,7 +6,7 @@ This file is a “research integrity” contract for anyone (human or agent) ext
 
 Before you touch code, run experiments, or write up results, orient yourself in the project’s two core ideas:
 
-First, EntitlementJail is not a single binary that “has entitlements”. It is an app bundle that intentionally contains *many* separately signed executables: a sandboxed launcher plus a zoo of XPC services, each with its own entitlement profile. This makes entitlements a first-class experimental variable without leaning on fragile child-process inheritance or “exec by path” patterns.
+First, EntitlementJail is not a single binary that “has entitlements”. It is an app bundle that intentionally contains *many* separately signed executables: a plain-signed host-side launcher plus a zoo of sandboxed XPC services, each with its own entitlement profile. This makes entitlements a first-class experimental variable without leaning on fragile child-process inheritance or “exec by path” patterns.
 
 Second, when something fails on macOS, there are multiple layers that can plausibly be responsible. A clean writeup keeps “what happened” (return codes, errno, paths, timing, logs) separate from “which subsystem caused it” (Seatbelt/App Sandbox, quarantine/Gatekeeper, or something else like signing validity or launchd/XPC behavior). This repo’s documentation, tools, and output formats are built around that separation.
 

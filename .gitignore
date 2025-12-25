@@ -14,3 +14,7 @@ runner/target
 # experiment harness artifacts
 experiments/bin/
 experiments/out/
+
+# tests artifacts
+tests/out/
+tests/__pycache__/

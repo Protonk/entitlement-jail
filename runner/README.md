@@ -15,7 +15,7 @@ Supported execution surfaces:
 
 ## Invoking the tool
 
-The sandboxed launcher lives at:
+The launcher lives at:
 
 - `EntitlementJail.app/Contents/MacOS/entitlement-jail`
 
@@ -106,7 +106,7 @@ Behavior:
 - Verifies the target exists and has executable bits before spawning.
 - Spawns the process and exits with the child’s exit status (stdout/stderr are not captured or rewrapped).
 
-## `run-embedded`: bundle-embedded helpers (inheritance)
+## `run-embedded`: bundle-embedded helpers
 
 `run-embedded` runs an executable that is shipped *inside the app bundle*, by a simple tool name (a single path component).
 
@@ -117,7 +117,10 @@ Resolution rules:
   - `EntitlementJail.app/Contents/Helpers/<tool-name>`
   - `EntitlementJail.app/Contents/Helpers/Probes/<tool-name>`
 
-Signing note: `run-embedded` depends on correct sandbox-inheritance signing. Do not guess or “fix it until it works”; follow [SIGNING.md](../SIGNING.md).
+Signing note:
+
+- In the default build, the launcher is plain-signed (unsandboxed host-side) and embedded helpers are signed plainly as well.
+- If you produce a sandboxed launcher build, embedded helpers must be signed for sandbox inheritance; follow [SIGNING.md](../SIGNING.md).
 
 Behavior:
 
@@ -169,11 +172,13 @@ Notes:
 - `probe_catalog` includes `trace_symbols`, mapping probe ids to stable `ej_*` marker symbols for external tooling.
 - Filesystem probes are safe-by-default: destructive direct-path operations are refused unless you target a harness path (for `fs_op`/`fs_coordinated_op` via `--path-class`/`--target`, or for `fs_xattr` via an explicit path under `*/entitlement-jail-harness/*`) or pass `--allow-unsafe-path` (or `--allow-write` for `fs_xattr`).
 - `dlopen_external` loads and executes dylib initializers by design; use a signed test dylib.
-- `--log-sandbox`/`--log-stream`/`--log-path-class` writes a best-effort unified log excerpt filtered to `Sandbox:` lines for the probe PID (uses `log show`; absence of deny lines is not a denial claim).
+- `--log-stream` writes a best-effort live unified log excerpt for sandbox denial lines (uses `log stream` during the probe); absence of deny lines is not a denial claim.
+- `--log-sandbox` writes a best-effort post-run excerpt (uses `log show`) and may be empty on systems that do not persist sandbox denials in the log store.
+- `--log-path-class`/`--log-name` chooses a container-safe output path for the capture file and performs the same live capture as `--log-stream`.
 - `--log-path-class`/`--log-name` resolves the capture path under the service’s container (useful when repo paths are blocked).
-- Responses include `log_capture_status`; when no log capture is requested, `deny_evidence` is set to `not_captured`.
+- Responses include `log_capture_status`; `deny_evidence` is `not_captured` when log capture is not requested, `captured` when a denial line is observed, and `not_found` when capture ran but no denial lines matched.
 - All JSON responses use the envelope described above (including top-level `schema_version`).
-- When `run-xpc` runs inside `EntitlementJail.app`, `/usr/bin/log` may be blocked by the app sandbox; log capture will report an error instead of a denial signal. Use `sandbox-log-observer` outside the sandbox for deny evidence.
+- `--log-sandbox`/`--log-stream` uses `/usr/bin/log`; when the launcher is sandboxed, `log` may refuse to run and deny evidence will not be captured. The default build keeps the launcher unsandboxed so log capture works.
 - `--hold-open` keeps the XPC connection open after the response to make debugger/trace attachment easier.
 - `--log-sandbox`/`--log-stream`/`--log-path-class`/`--log-name`/`--log-predicate` must appear before `<xpc-service-bundle-id>`.
 - `--log-predicate` overrides the default `log show` predicate (pass a full predicate string).
@@ -279,8 +284,8 @@ Output (default, overwritten each run):
 ~/Library/Application Support/entitlement-jail/matrix/latest
 ```
 
-When running inside the sandboxed app, `HOME` resolves to the container home, so the default path lives under `~/Library/Containers/<bundle-id>/Data/...`.
-If you pass `--out`, choose a container-writable path; repo paths are typically blocked from inside the sandbox.
+When running inside a sandboxed-launcher build, `HOME` resolves to the container home, so the default path lives under `~/Library/Containers/<bundle-id>/Data/...`.
+If you pass `--out` in that configuration, choose a container-writable path; repo paths are typically blocked from inside the sandbox.
 
 Files:
 
@@ -354,7 +359,11 @@ Do not run the observer from inside `EntitlementJail.app` (or any sandboxed pare
 
 ## Unsandboxed observer: `sandbox-log-observer`
 
-`sandbox-log-observer` runs `log show` outside the App Sandbox and emits a JSON envelope with the `Sandbox:` excerpt. Use it when `run-xpc --log-sandbox` is blocked by the app sandbox.
+`sandbox-log-observer` runs `log show` outside the App Sandbox and emits a JSON envelope with a sandbox-deny excerpt.
+
+In the distributed bundle it is embedded at:
+
+- `EntitlementJail.app/Contents/MacOS/sandbox-log-observer`
 
 Build:
 
@@ -371,7 +380,7 @@ runner/target/release/sandbox-log-observer --pid <pid> --process-name <name> --l
 Notes:
 
 - `--predicate` overrides the default `Sandbox: <name>(<pid>)` predicate.
-- Use it outside the sandbox boundary; do not run it from inside `EntitlementJail.app`.
+- Use it outside the sandbox boundary; do not run it from a sandboxed parent process.
 
 ## Evidence manifest (signed BOM)
 
@@ -418,7 +427,7 @@ Default output path (overwritten on each run):
 ~/Library/Application Support/entitlement-jail/evidence/latest
 ```
 
-When running inside the sandboxed app, `HOME` resolves to the container home, so the default path lives under `~/Library/Containers/<bundle-id>/Data/...`.
+When running inside a sandboxed-launcher build, `HOME` resolves to the container home, so the default path lives under `~/Library/Containers/<bundle-id>/Data/...`.
 
 Outputs:
 
@@ -482,7 +491,7 @@ This repo treats “what happened” and “why it happened” as separate quest
 
 ## JSON outputs (high level)
 
-XPC-backed commands print JSON to stdout (the sandboxed Rust launcher does not reformat it):
+XPC-backed commands print JSON to stdout (the Rust launcher does not reformat it):
 
 - `run-xpc` prints a `kind: probe_response` envelope and exits with `result.rc`.
 - `quarantine-lab` prints a `kind: quarantine_response` envelope and exits with `result.rc`.

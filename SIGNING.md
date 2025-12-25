@@ -4,13 +4,13 @@ This document is the canonical reference for identities, entitlements, signing o
 
 ## Entitlements + targets
 
-- Main app entitlements live in `EntitlementJail.entitlements` and should enable the App Sandbox (`com.apple.security.app-sandbox`) but must **not** set `com.apple.security.inherit` (see [Apple Developer: Enabling App Sandbox](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html)).
-- Sandboxed child-process inheritance helpers must be signed with **exactly** `com.apple.security.app-sandbox` + `com.apple.security.inherit` (and no other entitlements). This repo provides `EntitlementJail.inherit.entitlements` for that purpose (see [Apple Developer: Enabling App Sandbox](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html)).
+- Main app entitlements live in `EntitlementJail.entitlements`. In the default build, the launcher is intentionally **not** sandboxed (it does not set `com.apple.security.app-sandbox`) so it can run `/usr/bin/log` for deny-evidence capture. The sandbox boundary (and the entitlement variable) lives in the embedded XPC services.
+- `EntitlementJail.inherit.entitlements` is retained for optional sandboxed-launcher builds and inheritance experiments. Apple’s rule is: sandboxed apps can only execute embedded helper tools that are signed with **exactly** `com.apple.security.app-sandbox` + `com.apple.security.inherit` (and no other entitlements) (see [Apple Developer: Enabling App Sandbox](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html)).
 - XPC services are separate signed targets with their own entitlement plists under `xpc/services/<ServiceName>/Entitlements.plist` (treat the service entitlements as the experimental variable).
 - Every Mach-O executable inside a sandboxed app bundle (helpers, XPC services, etc.) needs explicit signing/sandboxing attention; don’t assume the outer app signature “covers” nested executables (see [Apple Developer QA1773: Common app sandboxing issues](https://developer.apple.com/library/archive/qa/qa1773/_index.html)).
-- The XPC client helper tools (`xpc-probe-client`, `xpc-quarantine-client`) are embedded under `EntitlementJail.app/Contents/MacOS/` to preserve app bundle context for XPC lookup; they must be signed for sandbox inheritance like other embedded helpers.
+- The XPC client helper tools (`xpc-probe-client`, `xpc-quarantine-client`) are embedded under `EntitlementJail.app/Contents/MacOS/` to preserve app bundle context for XPC lookup; in the default build they are signed plainly (unsandboxed host-side).
 - Optional debugger-side tooling (for example `runner/target/release/ej-inspector`) should be signed separately with `Inspector.entitlements` (`com.apple.security.cs.debugger`) and must **not** be embedded in the app bundle.
-- Observer tools (`runner/target/release/quarantine-observer`, `runner/target/release/sandbox-log-observer`) are standalone CLIs, not embedded in the app bundle, and should be signed without entitlements if you distribute them.
+- Observer tools (`runner/target/release/quarantine-observer`, `runner/target/release/sandbox-log-observer`) are signed without entitlements if you distribute them. `sandbox-log-observer` is also embedded at `EntitlementJail.app/Contents/MacOS/sandbox-log-observer`.
 
 Team ID expectation:
 
@@ -33,8 +33,9 @@ ID='Developer ID Application: YOUR NAME (TEAMID)'
 APP_ENT="EntitlementJail.entitlements"
 INHERIT_ENT="EntitlementJail.inherit.entitlements"
 
-codesign -f --options runtime --timestamp --entitlements "$INHERIT_ENT" -s "$ID" "$APP/Contents/MacOS/xpc-probe-client"
-codesign -f --options runtime --timestamp --entitlements "$INHERIT_ENT" -s "$ID" "$APP/Contents/MacOS/xpc-quarantine-client"
+codesign -f --options runtime --timestamp -s "$ID" "$APP/Contents/MacOS/xpc-probe-client"
+codesign -f --options runtime --timestamp -s "$ID" "$APP/Contents/MacOS/xpc-quarantine-client"
+codesign -f --options runtime --timestamp -s "$ID" "$APP/Contents/MacOS/sandbox-log-observer"
 
 codesign -f --options runtime --timestamp --entitlements "xpc/services/QuarantineLab_default/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/QuarantineLab_default.xpc"
 codesign -f --options runtime --timestamp --entitlements "xpc/services/QuarantineLab_net_client/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/QuarantineLab_net_client.xpc"

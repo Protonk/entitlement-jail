@@ -13,7 +13,7 @@ usage:
   sandbox-log-observer --pid <pid> --process-name <name> [--start <time> --end <time> | --last <duration>] [--predicate <predicate>]
 
 notes:
-  - runs `log show` with a Sandbox: predicate (observer-only)
+  - runs `log show` with a sandbox-deny predicate (observer-only)
   - intended to run outside EntitlementJail.app (unsandboxed)"
     );
 }
@@ -25,7 +25,10 @@ fn cmd_output_to_string(bytes: &[u8]) -> String {
 fn sandbox_predicate(process_name: &str, pid: i32) -> String {
     let term = format!("Sandbox: {}({})", process_name, pid);
     let escaped = term.replace('"', "\\\"");
-    format!(r#"(eventMessage CONTAINS[c] "{}")"#, escaped)
+    format!(
+        r#"((eventMessage CONTAINS[c] "{}") OR ((eventMessage CONTAINS[c] "deny") AND (eventMessage CONTAINS[c] "{}")))"#,
+        escaped, pid
+    )
 }
 
 #[derive(Serialize)]
@@ -189,7 +192,11 @@ fn main() {
     };
 
     let mut cmd = Command::new("/usr/bin/log");
-    cmd.arg("show").arg("--style").arg("syslog");
+    cmd.arg("show")
+        .arg("--style")
+        .arg("syslog")
+        .arg("--info")
+        .arg("--debug");
 
     let last = if start.is_none() && end.is_none() {
         Some(last.unwrap_or_else(|| "5s".to_string()))

@@ -1,7 +1,7 @@
 # EntitlementJail.app (User Guide)
 
 EntitlementJail is a macOS research/teaching tool for exploring **App Sandbox + entitlements** without collapsing “couldn’t do X” into “the sandbox denied X”.
-It ships as an app bundle containing a sandboxed CLI launcher plus a process zoo of XPC services (each separately signed with different entitlements).
+It ships as an app bundle containing a host-side CLI launcher (plain-signed; not sandboxed) plus a process zoo of sandboxed XPC services (each separately signed with different entitlements).
 
 This guide assumes you have only `EntitlementJail.app` and this file (`EntitlementJail.md`).
 
@@ -22,8 +22,8 @@ This guide assumes you have only `EntitlementJail.app` and this file (`Entitleme
 - Compare across profiles: `run-matrix --group <...> <probe-id> [probe-args...]`
 - Evidence bundle: `bundle-evidence` (plus `verify-evidence`, `inspect-macho`)
 - Quarantine/Gatekeeper deltas (no execution): `quarantine-lab`
-- Output locations: defaults live under the app container (prefix like `~/Library/Containers/com.yourteam.entitlement-jail/Data/...`). Trust `data.output_dir` in JSON reports.
-- Deny evidence: `--log-*` capture may fail (“Cannot run while sandboxed”); use `sandbox-log-observer` outside the sandbox boundary if you have the source repo.
+- Output locations: defaults live under `~/Library/Application Support/entitlement-jail/...`. If you run a sandboxed build, the same relative paths will be under `~/Library/Containers/<bundle-id>/Data/...`. Trust `data.output_dir` in JSON reports.
+- Deny evidence: request log capture via `--log-*`, or run the embedded observer `EntitlementJail.app/Contents/MacOS/sandbox-log-observer` from Terminal.
 
 ## Quick start
 
@@ -45,6 +45,12 @@ Run an “observer” probe in the baseline service:
 
 ```sh
 $EJ run-xpc --profile minimal capabilities_snapshot
+```
+
+Request deny evidence capture for a run (best-effort; writes a sandbox-deny excerpt to a file):
+
+```sh
+$EJ run-xpc --log-stream /tmp/ej-sandbox.log --profile minimal net_op --op tcp_connect --host 127.0.0.1 --port 9
 ```
 
 Compare the same probe across a curated group:
@@ -80,11 +86,11 @@ $EJ run-xpc --attach 60 --profile debuggable probe_catalog
 EntitlementJail records *what happened* (return codes, errno, paths, timing) and attaches “best-effort attribution hints”, but it avoids overclaiming:
 
 - A permission-shaped failure (often `EPERM`/`EACCES`) is **not automatically** a sandbox denial.
-- “Seatbelt/App Sandbox denial” is only attributed when there is **deny evidence** (for example, a matching `Sandbox:` unified log line for the service PID).
+- “Seatbelt/App Sandbox denial” is only attributed when there is **deny evidence** (for example, a matching unified log denial line for the service PID, often containing `deny` / `Sandbox:`).
 - Quarantine/Gatekeeper behavior is measured separately (Quarantine Lab does not execute anything).
 
 ## Workflows
-All workflows use the sandboxed CLI at `EntitlementJail.app/Contents/MacOS/entitlement-jail` (the quick start sets `EJ` to this path). Run `--help` on any command to see the exact argument syntax.
+All workflows use the CLI at `EntitlementJail.app/Contents/MacOS/entitlement-jail` (the quick start sets `EJ` to this path). Run `--help` on any command to see the exact argument syntax.
 
 ### Discover profiles and services
 
@@ -120,7 +126,7 @@ This is about **guardrails**, not morality: Tier 2 profiles intentionally carry 
 
 Use `list-profiles` as the source of truth. Some common ids include: `minimal`, `net_client`, `downloads_rw`, `bookmarks_app_scope`, `debuggable`, and `fully_injectable`.
 
-There are also Quarantine Lab profiles (kind `quarantine`) such as `quarantine_default`, `quarantine_net_client`, and `quarantine_downloads_rw`.
+There are also Quarantine Lab profiles (kind `quarantine`) such as `quarantine_default`, `quarantine_net_client`, `quarantine_downloads_rw`, `quarantine_user_selected_executable`, and `quarantine_bookmarks_app_scope`.
 
 ### Run probes in a service (`run-xpc`)
 
@@ -142,7 +148,7 @@ Notes:
 
 - Prefer `--profile <id>` and omit the explicit bundle id.
 - Tier 2 profiles require `--ack-risk` (you can pass either the profile id or the full bundle id).
-- `--log-sandbox` / `--log-stream` / `--log-path-class` are best-effort unified log capture for `Sandbox:` lines. Absence of deny lines is not a denial claim.
+- `--log-stream` is a best-effort **live** capture for sandbox denial lines; `--log-sandbox` is a best-effort **post-run** capture and may be empty on systems that don’t persist denials in the log store.
 - `--log-path-class` + `--log-name` writes the capture file under the service container (useful when repo paths are blocked).
 - `--hold-open` keeps the service process alive after printing the JSON response.
 - `--attach <seconds>` sets up a FIFO wait and, by default, also sets `--hold-open <seconds>` (so wall time can approach `2*seconds` if you trigger near the timeout). For automation/harnesses, consider `--hold-open 0`.
@@ -201,7 +207,7 @@ Some probes return a permission-shaped failure (often `EPERM`/`EACCES`). That is
 If you want deny evidence for a specific run, request log capture:
 
 ```sh
-$EJ run-xpc --log-sandbox /tmp/ej-sandbox.log --profile minimal fs_op --op stat --path-class tmp
+$EJ run-xpc --log-stream /tmp/ej-sandbox.log --profile minimal fs_op --op stat --path-class tmp
 $EJ run-xpc --log-path-class tmp --log-name ej-sandbox.log --profile minimal fs_op --op stat --path-class tmp
 ```
 
@@ -209,8 +215,8 @@ Interpretation rules:
 
 - If log capture was requested, check `data.log_capture_status` and `data.log_capture_error`.
 - If log capture was not requested, `data.deny_evidence` is set to `not_captured`.
-- Log capture may fail from inside the sandbox boundary (for example, if `/usr/bin/log` is blocked); treat that as "no deny evidence captured", not as a Seatbelt signal. In that case the capture file may exist but be empty.
-- If you have the source repo, use `sandbox-log-observer` outside the sandbox boundary to capture a `Sandbox:` excerpt by PID.
+- Log capture is best-effort; if `/usr/bin/log` fails, treat that as "no deny evidence captured", not as a Seatbelt signal.
+- Use the embedded observer `EntitlementJail.app/Contents/MacOS/sandbox-log-observer` to capture a sandbox-deny excerpt by PID when you want an explicit “outside the sandbox boundary” witness.
 - Use `data.details.service_pid` (or `data.details.probe_pid`) plus `data.details.process_name` as inputs.
 
 **Filesystem probes (fs_op, fs_xattr, fs_coordinated_op)**
@@ -265,10 +271,10 @@ Groups (current build; use `list-profiles` as the source of truth):
 Default output directory (overwritten each run; see `data.output_dir`):
 
 ```
-~/Library/Containers/com.yourteam.entitlement-jail/Data/Library/Application Support/entitlement-jail/matrix/latest
+~/Library/Application Support/entitlement-jail/matrix/latest
 ```
 
-If you pass `--out`, choose a container-writable path; repo paths are typically blocked from inside the sandbox.
+If you pass `--out`, it can be any writable directory (including a path inside this repo). If you are running a sandboxed build, repo paths may be blocked; use a home/tmp path instead.
 
 ### Evidence and inspection
 
@@ -298,10 +304,10 @@ $EJ inspect-macho <bundle_id_from_show_profile_output>
 `bundle-evidence` collects these files plus JSON reports into one directory (overwritten each run):
 
 ```
-~/Library/Containers/com.yourteam.entitlement-jail/Data/Library/Application Support/entitlement-jail/evidence/latest
+~/Library/Application Support/entitlement-jail/evidence/latest
 ```
 
-If you pass `--out`, choose a container-writable path; repo paths are typically blocked from inside the sandbox.
+If you pass `--out`, it can be any writable directory (including a path inside this repo). If you are running a sandboxed build, repo paths may be blocked; use a home/tmp path instead.
 
 Optional: if you need to audit entitlements/signing, treat `show-profile`/`describe-service` as convenience views and `codesign -d --entitlements :- <mach-o>` as the ground truth. (This is inspection only; it does not execute anything.)
 
@@ -382,7 +388,7 @@ What to read first:
 - Service identity: `data.service_bundle_id`, `data.service_name`.
 - “Where did it write?”: `data.output_dir` (for commands like `run-matrix` and `bundle-evidence`).
 - “What path did it use?”: `data.details.file_path` (common for filesystem probes like `fs_op`/`fs_xattr`).
-- Log capture: `data.log_capture_status`, `data.log_capture_error`, and `data.deny_evidence`.
+- Log capture: `data.log_capture_status`, `data.log_capture_error`, and `data.deny_evidence` (`not_captured`, `captured`, or `not_found`).
 - Observer inputs: `data.details.service_pid` (or `data.details.probe_pid`) and `data.details.process_name`.
 
 Quick extraction without `jq` (macOS ships `plutil`):
@@ -396,6 +402,6 @@ plutil -extract data.details.file_path raw -o - report.json
 ## Safety notes
 
 - `run-system` runs **platform binaries only** (allowlisted to standard system prefixes). It exists for specific demonstrations; most work should use `run-xpc`.
-- `run-embedded` runs signed helper tools embedded in the app bundle (sandbox inheritance demonstrations). It does not run arbitrary on-disk tools by path.
+- `run-embedded` runs signed helper tools embedded in the app bundle. It does not run arbitrary on-disk tools by path.
 - `dlopen_external` executes dylib initializers by design. Treat it as code execution and use it intentionally.
 - If you did not capture deny evidence, do not claim “sandbox denied”; keep attribution explicit.

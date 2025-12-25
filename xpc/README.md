@@ -4,7 +4,9 @@ This document is the authoritative reference for the XPC-based execution surface
 
 ## Why XPC exists in this repo
 
-The `EntitlementJail.app` main executable is a sandboxed Rust launcher. For entitlements-as-a-variable research, child-process sandbox inheritance is restrictive and brittle, and Apple’s guidance is to prefer XPC services for helper-like functionality (see [Apple Developer: Enabling App Sandbox](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html?utm_source=chatgpt.com)).
+`EntitlementJail.app` ships as a host-side Rust CLI launcher plus a zoo of sandboxed XPC services. In the default build, the launcher is **plain-signed (unsandboxed host-side)** so it can perform observer tasks like log capture and copying artifacts into repo paths. The experimental variable lives in the XPC services: each `.xpc` is a separately signed target with its own entitlement profile.
+
+For entitlements-as-a-variable research, child-process sandbox inheritance is restrictive and brittle, and Apple’s guidance is to prefer XPC services for helper-like functionality (see [Apple Developer: Enabling App Sandbox](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html)).
 
 XPC gives you:
 
@@ -27,13 +29,13 @@ XPC gives you:
 
 Both requests and responses are serialized as JSON bytes (`Data`) rather than passing rich Objective‑C objects over XPC. This keeps the interface inspectable and stable, and makes it easy for callers to treat the service output as a structured research record.
 
-`RunProbeResponse` carries correlation metadata (for example `correlation_id`, `probe_id`, `argv`), service identity/build fields, and timing/thread hints (`started_at_iso8601`, `ended_at_iso8601`, `thread_id`) when available. The XPC client wraps responses in the uniform JSON envelope described in `runner/README.md` and may annotate `log_capture_status` when `--log-sandbox` is used.
+`RunProbeResponse` carries correlation metadata (for example `correlation_id`, `probe_id`, `argv`), service identity/build fields, and timing/thread hints (`started_at_iso8601`, `ended_at_iso8601`, `thread_id`) when available. The XPC client wraps responses in the uniform JSON envelope described in `runner/README.md` and may annotate log capture fields (`data.log_capture_*`, `data.deny_evidence`) when `--log-sandbox`/`--log-stream` is used.
 
 `RunProbeRequest` supports an optional `wait_spec` block to block **before** probe execution (used by `run-xpc --wait-*` / `--attach`).
 
 ### Client helpers (why the main binary delegates)
 
-The sandboxed Rust launcher does not speak NSXPC directly. Instead it runs embedded Swift helper executables:
+The Rust launcher does not speak NSXPC directly. Instead it runs embedded Swift helper executables (small, inspectable wrappers around `NSXPCConnection`):
 
 - `xpc/client/main.swift` → builds `Contents/MacOS/xpc-probe-client` (must live under `Contents/MacOS` so `Bundle.main` resolves to `EntitlementJail.app`)
 - `xpc/quarantine-client/main.swift` → builds `Contents/MacOS/xpc-quarantine-client` (same reason)
@@ -75,7 +77,7 @@ Current services:
 - `QuarantineLab_default`: writes/opens/copies artifacts and reports `com.apple.quarantine` deltas.
 - `QuarantineLab_net_client`: identical code to `QuarantineLab_default`, but with `com.apple.security.network.client`.
 - `QuarantineLab_downloads_rw`: identical code to `QuarantineLab_default`, but with `com.apple.security.files.downloads.read-write`.
-- `QuarantineLab_user_selected_executable`: identical code to `QuarantineLab_default`, but with different entitlements.
+- `QuarantineLab_user_selected_executable`: identical code to `QuarantineLab_default`, but with `com.apple.security.files.user-selected.executable`.
 - `QuarantineLab_bookmarks_app_scope`: identical code to `QuarantineLab_default`, but with `com.apple.security.files.bookmarks.app-scope`.
 
 Built-in probe ids (in-process):
@@ -160,6 +162,7 @@ Services:
 - `QuarantineLab_net_client`: App Sandbox + `com.apple.security.network.client`.
 - `QuarantineLab_downloads_rw`: App Sandbox + `com.apple.security.files.downloads.read-write`.
 - `QuarantineLab_user_selected_executable`: App Sandbox + `com.apple.security.files.user-selected.executable`.
+- `QuarantineLab_bookmarks_app_scope`: App Sandbox + `com.apple.security.files.bookmarks.app-scope`.
 
 Operations (`--operation`):
 

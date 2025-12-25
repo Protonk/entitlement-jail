@@ -130,6 +130,10 @@ cp "${INFO_PLIST_TEMPLATE}" "${APP_BUNDLE}/Contents/Info.plist"
 cp "${RUNNER_BIN}" "${APP_BUNDLE}/Contents/MacOS/entitlement-jail"
 chmod +x "${APP_BUNDLE}/Contents/MacOS/entitlement-jail"
 
+# Embed observer tooling (runs outside the App Sandbox boundary when launched from Terminal)
+cp "${SANDBOX_LOG_OBSERVER_BIN}" "${APP_BUNDLE}/Contents/MacOS/sandbox-log-observer"
+chmod +x "${APP_BUNDLE}/Contents/MacOS/sandbox-log-observer"
+
 # Optional: embed fencerunner
 if [[ -n "${EMBED_FENCERUNNER_PATH}" ]]; then
   if [[ ! -x "${EMBED_FENCERUNNER_PATH}" ]]; then
@@ -265,16 +269,17 @@ sign_macho_entitlements() {
   fi
 }
 
-echo "==> Codesigning embedded helper tools (App Sandbox inheritance)"
+echo "==> Codesigning embedded helper tools (plain; unsandboxed host-side)"
 if [[ -d "${APP_BUNDLE}/Contents/Helpers" ]]; then
   while IFS= read -r -d '' f; do
-    sign_macho_inherit "${f}"
+    sign_macho_plain "${f}"
   done < <(find "${APP_BUNDLE}/Contents/Helpers" -type f -print0)
 fi
 
-echo "==> Codesigning embedded MacOS helper tools (App Sandbox inheritance)"
-sign_macho_inherit "${APP_BUNDLE}/Contents/MacOS/xpc-probe-client"
-sign_macho_inherit "${APP_BUNDLE}/Contents/MacOS/xpc-quarantine-client"
+echo "==> Codesigning embedded MacOS tools (plain; unsandboxed host-side)"
+sign_macho_plain "${APP_BUNDLE}/Contents/MacOS/xpc-probe-client"
+sign_macho_plain "${APP_BUNDLE}/Contents/MacOS/xpc-quarantine-client"
+sign_macho_plain "${APP_BUNDLE}/Contents/MacOS/sandbox-log-observer"
 
 echo "==> Codesigning embedded XPC services"
 if [[ "${BUILD_XPC}" == "1" ]] && [[ -d "${XPC_SERVICES_DIR}" ]]; then

@@ -258,7 +258,7 @@ def main() -> int:
 
     entries = []
 
-    helper_names = ["xpc-probe-client", "xpc-quarantine-client"]
+    helper_names = ["xpc-probe-client", "xpc-quarantine-client", "sandbox-log-observer"]
     for name in helper_names:
         helper_path = contents_dir / "MacOS" / name
         if not helper_path.exists():

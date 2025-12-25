@@ -8,7 +8,7 @@ It also tries to keep “entitlements as an experimental variable” structurall
 
 ## What’s in the box
 
-The shipped app bundle (`EntitlementJail.app`) contains a sandboxed CLI launcher and a “process zoo” of embedded XPC services:
+The shipped app bundle (`EntitlementJail.app`) contains a plain-signed host-side CLI launcher and a “process zoo” of embedded sandboxed XPC services:
 
 `EntitlementJail.app/Contents/MacOS/entitlement-jail` (Rust; see `runner/`) is the main entrypoint. `EntitlementJail.app/Contents/XPCServices/*.xpc` (Swift; see `xpc/`) are the research targets: the same probes, signed over and over with different entitlements.
 
