@@ -64,6 +64,11 @@ fn sandbox_predicate(process_name: &str, pid: i32) -> String {
     )
 }
 
+fn is_log_prelude_line(line: &str) -> bool {
+    line.to_ascii_lowercase()
+        .contains("filtering the log data using")
+}
+
 fn open_output(path: &Path, append: bool) -> Result<std::fs::File, String> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() && parent != Path::new(".") {
@@ -524,6 +529,9 @@ fn main() {
             if trimmed.is_empty() {
                 continue;
             }
+            if is_log_prelude_line(trimmed) {
+                continue;
+            }
             observed_lines += 1;
             let is_deny = trimmed.to_ascii_lowercase().contains("deny");
             if is_deny {
@@ -645,14 +653,23 @@ fn main() {
         log_stdout = cmd_output_to_string(&out.stdout);
         log_stderr = cmd_output_to_string(&out.stderr);
 
-        observed_lines = log_stdout
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .count();
-        deny_lines = log_stdout
-            .lines()
+        let mut filtered: Vec<&str> = Vec::new();
+        for line in log_stdout.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if is_log_prelude_line(trimmed) {
+                continue;
+            }
+            filtered.push(line);
+        }
+
+        observed_lines = filtered.len();
+        deny_lines = filtered
+            .iter()
             .filter(|line| line.to_ascii_lowercase().contains("deny"))
-            .map(|line| line.to_string())
+            .map(|line| (*line).to_string())
             .collect();
 
         if !out.status.success() {

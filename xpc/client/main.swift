@@ -64,6 +64,8 @@ private struct DecodeFailureData: Encodable {
 
 private struct ProcessRun {
     var rc: Int32
+    var terminationReason: Process.TerminationReason?
+    var terminatedByClient: Bool
     var stdout: Data
     var stderr: Data
 }
@@ -83,6 +85,8 @@ private func runCommand(_ argv: [String]) -> ProcessRun {
     } catch {
         return ProcessRun(
             rc: 127,
+            terminationReason: nil,
+            terminatedByClient: false,
             stdout: Data(),
             stderr: Data("spawn failed: \(error)\n".utf8)
         )
@@ -91,7 +95,13 @@ private func runCommand(_ argv: [String]) -> ProcessRun {
     process.waitUntilExit()
     let out = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
     let err = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-    return ProcessRun(rc: process.terminationStatus, stdout: out, stderr: err)
+    return ProcessRun(
+        rc: process.terminationStatus,
+        terminationReason: process.terminationReason,
+        terminatedByClient: false,
+        stdout: out,
+        stderr: err
+    )
 }
 
 private struct LogCaptureSummary {
@@ -126,6 +136,7 @@ private struct LogStreamReportData: Encodable {
     var process_name: String?
     var predicate: String?
     var log_rc: Int?
+    var log_rc_raw: Int?
     var log_stdout: String
     var log_stderr: String
     var log_error: String?
@@ -313,12 +324,19 @@ private func autoLogBaseDir() -> String {
         .path
 }
 
-private func autoLogPath(kind: String, serviceName: String, probeId: String, correlationId: String?) -> String {
+private func autoLogPath(
+    kind: String,
+    serviceName: String,
+    probeId: String,
+    correlationId: String?,
+    fileExtension: String = "json"
+) -> String {
     let stamp = Int(Date().timeIntervalSince1970 * 1000.0)
     let service = sanitizeComponent(serviceName, fallback: "service")
     let probe = sanitizeComponent(probeId, fallback: "probe")
     let corr = sanitizeComponent(correlationId ?? "corr", fallback: "corr")
-    let file = "\(kind).\(stamp).\(service).\(probe).\(corr).json"
+    let ext = fileExtension.isEmpty ? "json" : fileExtension
+    let file = "\(kind).\(stamp).\(service).\(probe).\(corr).\(ext)"
     return URL(fileURLWithPath: autoLogBaseDir(), isDirectory: true)
         .appendingPathComponent(file, isDirectory: false)
         .path
@@ -347,6 +365,10 @@ private func writeLogStreamReport(path: String, data: LogStreamReportData, ok: B
     }
 }
 
+private func isLogPreludeLine(_ line: String) -> Bool {
+    return line.range(of: "filtering the log data using", options: [.caseInsensitive]) != nil
+}
+
 private func filterLogStreamLines(_ stdout: String, pid: String, processName: String) -> [String] {
     let lowerPid = pid.lowercased()
     let lowerName = processName.lowercased()
@@ -355,6 +377,7 @@ private func filterLogStreamLines(_ stdout: String, pid: String, processName: St
         .split(separator: "\n", omittingEmptySubsequences: false)
         .map(String.init)
         .filter { line in
+            if isLogPreludeLine(line) { return false }
             let lower = line.lowercased()
             if !lower.contains("deny") && !lower.contains("sandbox:") { return false }
             if let pidToken, lower.contains(pidToken) { return true }
@@ -399,13 +422,21 @@ private func startLogStream(predicate: String) -> (LogStreamHandle?, String?) {
 }
 
 private func stopLogStream(_ handle: LogStreamHandle) -> ProcessRun {
+    var terminatedByClient = false
     if handle.process.isRunning {
         handle.process.terminate()
+        terminatedByClient = true
     }
     handle.process.waitUntilExit()
     let out = handle.stdoutPipe.fileHandleForReading.readDataToEndOfFile()
     let err = handle.stderrPipe.fileHandleForReading.readDataToEndOfFile()
-    return ProcessRun(rc: handle.process.terminationStatus, stdout: out, stderr: err)
+    return ProcessRun(
+        rc: handle.process.terminationStatus,
+        terminationReason: handle.process.terminationReason,
+        terminatedByClient: terminatedByClient,
+        stdout: out,
+        stderr: err
+    )
 }
 
 private func serviceNameHint(from bundleId: String) -> String {
@@ -435,8 +466,9 @@ private func formatLogShowTime(_ date: Date) -> String {
     return formatter.string(from: date)
 }
 
-private func observerReportPath(for logPath: String) -> String {
-    return "\(logPath).observer.json"
+private func observerReportPath(for logPath: String, format: String?) -> String {
+    let ext = (format == "jsonl") ? "jsonl" : "json"
+    return "\(logPath).observer.\(ext)"
 }
 
 private func parseObserverReportJson(_ text: String) -> ObserverReportEnvelope? {
@@ -534,13 +566,18 @@ private func captureSandboxLogStream(
         ?? processNameHint
         ?? serviceNameHint(from: serviceName)
     var logError = streamError
+    var logRcRaw: Int? = nil
     var logRc: Int? = nil
     var stdout = ""
     var stderr = ""
 
     if let stream {
         let run = stopLogStream(stream)
-        logRc = Int(run.rc)
+        logRcRaw = Int(run.rc)
+        logRc = logRcRaw
+        if run.terminatedByClient, run.terminationReason == .uncaughtSignal, logRcRaw == 15 {
+            logRc = 0
+        }
         stdout = String(data: run.stdout, encoding: .utf8) ?? ""
         stderr = String(data: run.stderr, encoding: .utf8) ?? ""
     } else if logError == nil {
@@ -563,6 +600,7 @@ private func captureSandboxLogStream(
         process_name: processName.isEmpty ? nil : processName,
         predicate: predicate.isEmpty ? nil : predicate,
         log_rc: logRc,
+        log_rc_raw: logRcRaw,
         log_stdout: logStdout,
         log_stderr: stderr,
         log_error: logError,
@@ -1159,6 +1197,7 @@ if logPathClass != nil && resolvedLogPath == nil {
 
 let logSpec = resolvedLogPath.map { LogCaptureSpec(path: $0, predicate_override: logPredicate) }
 let logStreamUsesStdout = resolvedLogPath == "stdout" || resolvedLogPath == "-"
+let observerExtension = (observerFormat == "jsonl") ? "jsonl" : "json"
 
 let observerOutputPath: String? = {
     if let observerOutput {
@@ -1167,20 +1206,22 @@ let observerOutputPath: String? = {
                 kind: "sandbox-log-observer",
                 serviceName: serviceName,
                 probeId: probeId,
-                correlationId: correlationId
+                correlationId: correlationId,
+                fileExtension: observerExtension
             )
         }
         return observerOutput
     }
     if let logPath = resolvedLogPath, logPath != "stdout" && logPath != "-" {
-        return observerReportPath(for: logPath)
+        return observerReportPath(for: logPath, format: observerFormat)
     }
     if observerRequested || logSpec != nil {
         return autoLogPath(
             kind: "sandbox-log-observer",
             serviceName: serviceName,
             probeId: probeId,
-            correlationId: correlationId
+            correlationId: correlationId,
+            fileExtension: observerExtension
         )
     }
     return nil

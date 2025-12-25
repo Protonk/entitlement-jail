@@ -228,16 +228,17 @@ $EJ run-xpc --log-path-class tmp --log-name ej-sandbox.log --profile minimal fs_
 The log stream report is a JSON envelope (`kind: sandbox_log_stream_report`). `data` includes:
 
 - `pid`, `process_name`, `predicate`
-- `log_rc`, `log_stdout`, `log_stderr`, `log_error`
+- `log_rc`, `log_rc_raw`, `log_stdout`, `log_stderr`, `log_error`
 - `observed_lines`, `observed_deny`
 - `layer_attribution.seatbelt` = `log_stream`
 
 `data.log_stdout` is a filtered excerpt (deny/Sandbox lines for the PID/process), not the full `log stream` output.
+The `log_rc` value is normalized to `0` when the stream is terminated intentionally; `log_rc_raw` preserves the raw exit status.
 
 When the observer runs (via `--observe` or any `--log-stream`), the CLI writes a second report to `--observer-output` if set. Otherwise:
 
-- If `--log-stream` points to a file path, the observer report defaults to `<log_stream_path>.observer.json`.
-- If `--log-stream stdout` (or no log stream path is provided), the observer report defaults to an app-managed path under `~/Library/Application Support/entitlement-jail/logs/`.
+- If `--log-stream` points to a file path, the observer report defaults to `<log_stream_path>.observer.json` (or `.observer.jsonl` when `--observer-format jsonl` is set).
+- If `--log-stream stdout` (or no log stream path is provided), the observer report defaults to an app-managed path under `~/Library/Application Support/entitlement-jail/logs/` (extension matches the observer format).
 
 The observer report is a JSON envelope (`kind: sandbox_log_observer_report`). `data` includes:
 
@@ -270,6 +271,7 @@ Interpretation rules:
 - `data.log_capture_status` is `not_requested`, `requested_written`, or `requested_failed`; `data.log_observer_status` is `requested_written` or `requested_failed`.
 - `data.log_observer_path` points to the observer report file.
 - `data.log_capture_path` is the stream report path (or `stdout`/`-` when `--log-stream stdout` is used).
+- The log prelude line (“Filtering the log data using …”) is ignored for `observed_*` and `deny_lines`.
 - If log capture was not requested, `data.deny_evidence` is set to `not_captured`.
 - If stream and observer both fail, `data.deny_evidence` is set to `log_error`.
 - Log capture is best-effort; if `/usr/bin/log` fails, treat that as "no deny evidence captured", not as a Seatbelt signal. Log capture is host-side only; in-sandbox log capture is not viable.
