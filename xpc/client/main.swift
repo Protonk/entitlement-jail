@@ -3,7 +3,7 @@ import Darwin
 
 private func printUsage() {
     let exe = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "xpc-probe-client"
-    fputs("usage: \(exe) [--log-stream <path>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]\n", stderr)
+    fputs("usage: \(exe) [--log-stream <path|auto|stdout>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--observe] [--observer-duration <seconds>] [--observer-format <json|jsonl>] [--observer-output <path|auto>] [--observer-follow] [--json-out <path>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]\n", stderr)
 }
 
 if ProcessInfo.processInfo.environment["EJ_XPC_CLIENT_DEBUG"] == "1" {
@@ -53,6 +53,7 @@ private struct ProbeData: Encodable {
     var log_observer_observed_lines: Int?
     var log_observer_observed_deny: Bool?
     var log_observer_deny_lines: [String]?
+    var log_observer_report: ObserverReportEnvelope?
     var deny_evidence: String?
 }
 
@@ -113,6 +114,7 @@ private struct ObserverSummary {
     var observedLines: Int?
     var observedDeny: Bool?
     var denyLines: [String]?
+    var report: ObserverReportEnvelope?
 }
 
 private struct LogStreamLayerAttribution: Encodable {
@@ -132,13 +134,18 @@ private struct LogStreamReportData: Encodable {
     var layer_attribution: LogStreamLayerAttribution
 }
 
-private struct ObserverReportEnvelope: Decodable {
+private struct ObserverReportEnvelope: Codable {
+    var schema_version: Int?
     var kind: String?
+    var generated_at_unix_ms: UInt64?
     var result: JsonResult?
     var data: ObserverReportData?
 }
 
-private struct ObserverReportData: Decodable {
+private struct ObserverReportData: Codable {
+    var observer_schema_version: Int?
+    var mode: String?
+    var duration_ms: UInt64?
     var plan_id: String?
     var row_id: String?
     var correlation_id: String?
@@ -152,6 +159,7 @@ private struct ObserverReportData: Decodable {
     var log_stdout: String?
     var log_stderr: String?
     var log_error: String?
+    var log_truncated: Bool?
     var observed_lines: Int?
     var observed_deny: Bool?
     var deny_lines: [String]?
@@ -246,6 +254,76 @@ private func writeLogCapture(path: String, contents: String) -> String? {
     }
 }
 
+private func writeFile(path: String, contents: String, label: String) -> String? {
+    let url = URL(fileURLWithPath: path)
+    let parent = url.deletingLastPathComponent()
+    if !parent.path.isEmpty && parent.path != "." {
+        try? FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true, attributes: nil)
+    }
+    do {
+        try contents.write(to: url, atomically: true, encoding: .utf8)
+        return nil
+    } catch {
+        fputs("failed to write \(label): \(error)\n", stderr)
+        let home = NSHomeDirectory()
+        let tmp = NSTemporaryDirectory()
+        fputs("hint: choose a path under \(home) or \(tmp)\n", stderr)
+        return "write_failed: \(error)"
+    }
+}
+
+private func emitProbeJSON(_ json: String, jsonOutPath: String?, logStreamUsesStdout: Bool) {
+    if let jsonOutPath {
+        if writeFile(path: jsonOutPath, contents: json, label: "probe JSON output") != nil {
+            if !logStreamUsesStdout {
+                print(json)
+            }
+        }
+        return
+    }
+    print(json)
+}
+
+private func sanitizeComponent(_ value: String, fallback: String) -> String {
+    let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+    var out = ""
+    for scalar in value.unicodeScalars {
+        if scalar.isASCII && allowed.contains(scalar) {
+            out.unicodeScalars.append(scalar)
+        } else {
+            out.append("-")
+        }
+    }
+    let trimmed = out.trimmingCharacters(in: CharacterSet(charactersIn: "-_."))
+    let normalized = trimmed.isEmpty ? fallback : trimmed
+    if normalized.count > 80 {
+        return String(normalized.prefix(80))
+    }
+    return normalized
+}
+
+private func autoLogBaseDir() -> String {
+    let homePath = hostHomeDirectory() ?? NSHomeDirectory()
+    let home = URL(fileURLWithPath: homePath, isDirectory: true)
+    return home
+        .appendingPathComponent("Library", isDirectory: true)
+        .appendingPathComponent("Application Support", isDirectory: true)
+        .appendingPathComponent("entitlement-jail", isDirectory: true)
+        .appendingPathComponent("logs", isDirectory: true)
+        .path
+}
+
+private func autoLogPath(kind: String, serviceName: String, probeId: String, correlationId: String?) -> String {
+    let stamp = Int(Date().timeIntervalSince1970 * 1000.0)
+    let service = sanitizeComponent(serviceName, fallback: "service")
+    let probe = sanitizeComponent(probeId, fallback: "probe")
+    let corr = sanitizeComponent(correlationId ?? "corr", fallback: "corr")
+    let file = "\(kind).\(stamp).\(service).\(probe).\(corr).json"
+    return URL(fileURLWithPath: autoLogBaseDir(), isDirectory: true)
+        .appendingPathComponent(file, isDirectory: false)
+        .path
+}
+
 private func writeLogStreamReport(path: String, data: LogStreamReportData, ok: Bool) -> String? {
     let envelope = JsonEnvelope(
         kind: "sandbox_log_stream_report",
@@ -258,6 +336,10 @@ private func writeLogStreamReport(path: String, data: LogStreamReportData, ok: B
         let text = String(data: encoded, encoding: .utf8) ?? ""
         if text.isEmpty {
             return "failed to encode log stream report"
+        }
+        if path == "stdout" || path == "-" {
+            print(text)
+            return nil
         }
         return writeLogCapture(path: path, contents: text)
     } catch {
@@ -357,6 +439,70 @@ private func observerReportPath(for logPath: String) -> String {
     return "\(logPath).observer.json"
 }
 
+private func parseObserverReportJson(_ text: String) -> ObserverReportEnvelope? {
+    guard let data = text.data(using: .utf8) else { return nil }
+    return try? decodeJSON(ObserverReportEnvelope.self, from: data)
+}
+
+private func parseObserverReportJsonl(_ text: String) -> ObserverReportEnvelope? {
+    var lastReport: ObserverReportEnvelope?
+    for line in text.split(whereSeparator: \.isNewline) {
+        guard let data = String(line).data(using: .utf8) else { continue }
+        if let report = try? decodeJSON(ObserverReportEnvelope.self, from: data),
+           report.kind == "sandbox_log_observer_report" {
+            lastReport = report
+        }
+    }
+    return lastReport
+}
+
+private func parseObserverReport(_ text: String, format: String?) -> ObserverReportEnvelope? {
+    if format == "jsonl" {
+        return parseObserverReportJsonl(text)
+    }
+    if format == "json" {
+        return parseObserverReportJson(text)
+    }
+    return parseObserverReportJson(text) ?? parseObserverReportJsonl(text)
+}
+
+private func parseObserverReportFile(path: String, format: String?) -> ObserverReportEnvelope? {
+    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+    return parseObserverReport(text, format: format)
+}
+
+private func mergeDetails(
+    _ details: [String: String]?,
+    pidHint: String?,
+    processNameHint: String?
+) -> [String: String]? {
+    var out = details ?? [:]
+    var updated = false
+
+    if (out["pid"]?.isEmpty ?? true), let pidHint, !pidHint.isEmpty {
+        out["pid"] = pidHint
+        out["service_pid"] = pidHint
+        out["probe_pid"] = pidHint
+        if out["pid_source"] == nil {
+            out["pid_source"] = "xpc_connection"
+        }
+        updated = true
+    }
+
+    if (out["process_name"]?.isEmpty ?? true), let processNameHint, !processNameHint.isEmpty {
+        out["process_name"] = processNameHint
+        if out["process_name_source"] == nil {
+            out["process_name_source"] = "service_name_hint"
+        }
+        updated = true
+    }
+
+    if out.isEmpty && !updated {
+        return nil
+    }
+    return out
+}
+
 private func resolveObserverToolPath() -> String? {
     let bundleURL = Bundle.main.bundleURL
     let candidate = bundleURL
@@ -373,14 +519,20 @@ private func captureSandboxLogStream(
     streamError: String?,
     response: RunProbeResponse,
     serviceName: String,
+    pidHint: String?,
+    processNameHint: String?,
     predicate: String
 ) -> LogCaptureSummary {
     let details = response.details ?? [:]
     let probePid = details["probe_pid"]
     let servicePid = details["service_pid"]
     let fallbackPid = details["pid"]
-    let pid = (probePid?.isEmpty == false ? probePid : (servicePid?.isEmpty == false ? servicePid : fallbackPid)) ?? ""
-    let processName = details["process_name"] ?? serviceNameHint(from: serviceName)
+    let pid = (probePid?.isEmpty == false ? probePid : (servicePid?.isEmpty == false ? servicePid : fallbackPid))
+        ?? (pidHint?.isEmpty == false ? pidHint : nil)
+        ?? ""
+    let processName = (details["process_name"]?.isEmpty == false ? details["process_name"] : nil)
+        ?? processNameHint
+        ?? serviceNameHint(from: serviceName)
     var logError = streamError
     var logRc: Int? = nil
     var stdout = ""
@@ -451,25 +603,47 @@ private func captureSandboxLogStream(
 }
 
 private func captureSandboxLogObserver(
-    logPath: String,
+    observerPath: String?,
     response: RunProbeResponse,
     serviceName: String,
+    pidHint: String?,
+    processNameHint: String?,
     predicateOverride: String?,
     planId: String?,
     rowId: String?,
     correlationId: String?,
+    observerFormat: String?,
+    observerDuration: TimeInterval?,
+    observerFollow: Bool,
     clientStarted: Date,
     clientEnded: Date
 ) -> ObserverSummary {
-    let observerPath = observerReportPath(for: logPath)
+    guard let observerPath else {
+        return ObserverSummary(
+            status: "requested_failed",
+            error: "missing_observer_path",
+            path: nil,
+            predicate: nil,
+            start: nil,
+            end: nil,
+            last: nil,
+            observedLines: nil,
+            observedDeny: nil,
+            denyLines: nil,
+            report: nil
+        )
+    }
+
     let details = response.details ?? [:]
     let probePid = details["probe_pid"]
     let servicePid = details["service_pid"]
     let fallbackPid = details["pid"]
-    let pid = (probePid?.isEmpty == false ? probePid : (servicePid?.isEmpty == false ? servicePid : fallbackPid)) ?? ""
-    let processName = (details["process_name"]?.isEmpty == false)
-        ? (details["process_name"] ?? "")
-        : serviceNameHint(from: serviceName)
+    let pid = (probePid?.isEmpty == false ? probePid : (servicePid?.isEmpty == false ? servicePid : fallbackPid))
+        ?? (pidHint?.isEmpty == false ? pidHint : nil)
+        ?? ""
+    let processName = (details["process_name"]?.isEmpty == false ? details["process_name"] : nil)
+        ?? processNameHint
+        ?? serviceNameHint(from: serviceName)
 
     guard !pid.isEmpty else {
         return ObserverSummary(
@@ -482,7 +656,8 @@ private func captureSandboxLogObserver(
             last: nil,
             observedLines: nil,
             observedDeny: nil,
-            denyLines: nil
+            denyLines: nil,
+            report: nil
         )
     }
 
@@ -497,16 +672,14 @@ private func captureSandboxLogObserver(
             last: nil,
             observedLines: nil,
             observedDeny: nil,
-            denyLines: nil
+            denyLines: nil,
+            report: nil
         )
     }
 
-    let startSource = parseIso8601(response.started_at_iso8601) ?? clientStarted
-    let endSource = parseIso8601(response.ended_at_iso8601) ?? clientEnded
-    let paddedStart = startSource.addingTimeInterval(-2)
-    let paddedEnd = max(endSource.addingTimeInterval(2), paddedStart.addingTimeInterval(1))
-    let startText = formatLogShowTime(paddedStart)
-    let endText = formatLogShowTime(paddedEnd)
+    let useStream = observerFollow || observerDuration != nil
+    var observerStart: String? = nil
+    var observerEnd: String? = nil
 
     var argv = [
         toolPath,
@@ -514,15 +687,41 @@ private func captureSandboxLogObserver(
         pid,
         "--process-name",
         processName,
-        "--start",
-        startText,
-        "--end",
-        endText,
     ]
+
+    if useStream {
+        if observerFollow {
+            argv.append("--follow")
+        }
+        if let observerDuration {
+            argv.append("--duration")
+            argv.append(String(observerDuration))
+        }
+    } else {
+        let startSource = parseIso8601(response.started_at_iso8601) ?? clientStarted
+        let endSource = parseIso8601(response.ended_at_iso8601) ?? clientEnded
+        let paddedStart = startSource.addingTimeInterval(-2)
+        let paddedEnd = max(endSource.addingTimeInterval(2), paddedStart.addingTimeInterval(1))
+        observerStart = formatLogShowTime(paddedStart)
+        observerEnd = formatLogShowTime(paddedEnd)
+        if let observerStart, let observerEnd {
+            argv.append("--start")
+            argv.append(observerStart)
+            argv.append("--end")
+            argv.append(observerEnd)
+        }
+    }
+
     if let predicateOverride {
         argv.append("--predicate")
         argv.append(predicateOverride)
     }
+    if let observerFormat {
+        argv.append("--format")
+        argv.append(observerFormat)
+    }
+    argv.append("--output")
+    argv.append(observerPath)
     if let planId {
         argv.append("--plan-id")
         argv.append(planId)
@@ -540,6 +739,7 @@ private func captureSandboxLogObserver(
     let stdout = String(data: run.stdout, encoding: .utf8) ?? ""
     let stderr = String(data: run.stderr, encoding: .utf8) ?? ""
 
+    let observerFileExists = FileManager.default.fileExists(atPath: observerPath)
     let writePayload: String = {
         if !stdout.isEmpty {
             return stdout
@@ -550,21 +750,26 @@ private func captureSandboxLogObserver(
         return "observer output empty\n"
     }()
 
-    let writeErr = writeLogCapture(path: observerPath, contents: writePayload)
+    let writeErr = observerFileExists ? nil : writeLogCapture(path: observerPath, contents: writePayload)
 
     var status = "requested_written"
     var error: String? = writeErr
+    if writeErr != nil {
+        status = "requested_failed"
+    }
 
     var observerPredicate: String? = predicateOverride
-    var observerStart: String? = startText
-    var observerEnd: String? = endText
     var observerLast: String? = nil
     var observedLines: Int? = nil
     var observedDeny: Bool? = nil
     var denyLines: [String]? = nil
+    var report: ObserverReportEnvelope? = nil
 
-    if let report = try? decodeJSON(ObserverReportEnvelope.self, from: run.stdout),
-       let data = report.data {
+    let reportFromStdout = parseObserverReport(stdout, format: observerFormat)
+    let reportFromFile = reportFromStdout
+        ?? (stdout.isEmpty ? parseObserverReportFile(path: observerPath, format: observerFormat) : nil)
+    if let parsed = reportFromFile, let data = parsed.data {
+        report = parsed
         observerPredicate = data.predicate ?? observerPredicate
         observerStart = data.start ?? observerStart
         observerEnd = data.end ?? observerEnd
@@ -575,7 +780,7 @@ private func captureSandboxLogObserver(
         if let logError = data.log_error, !logError.isEmpty {
             status = "requested_failed"
             error = logError
-        } else if report.result?.ok == false {
+        } else if parsed.result?.ok == false {
             status = "requested_failed"
             error = error ?? "observer_report_not_ok"
         }
@@ -599,7 +804,8 @@ private func captureSandboxLogObserver(
         last: observerLast,
         observedLines: observedLines,
         observedDeny: observedDeny,
-        denyLines: denyLines
+        denyLines: denyLines,
+        report: report
     )
 }
 
@@ -609,6 +815,12 @@ var logPath: String?
 var logPredicate: String?
 var logPathClass: String?
 var logName: String?
+var jsonOutPath: String?
+var observe: Bool = false
+var observerFormat: String?
+var observerOutput: String?
+var observerDuration: TimeInterval?
+var observerFollow: Bool?
 var planId: String?
 var rowId: String?
 var correlationId: String?
@@ -647,6 +859,19 @@ parseLoop: while idx < args.count {
         }
         logPath = args[idx + 1]
         idx += 2
+    case "--json-out":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --json-out\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        if jsonOutPath != nil {
+            fputs("--json-out specified multiple times\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        jsonOutPath = args[idx + 1]
+        idx += 2
     case "--log-path-class":
         guard idx + 1 < args.count else {
             fputs("missing value for --log-path-class\n", stderr)
@@ -671,6 +896,42 @@ parseLoop: while idx < args.count {
         }
         logPredicate = args[idx + 1]
         idx += 2
+    case "--observe":
+        observe = true
+        idx += 1
+    case "--observer-duration":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --observer-duration\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        let raw = args[idx + 1]
+        guard let secs = Double(raw), secs > 0 else {
+            fputs("invalid value for --observer-duration (expected seconds > 0)\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        observerDuration = secs
+        idx += 2
+    case "--observer-format":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --observer-format\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        observerFormat = args[idx + 1]
+        idx += 2
+    case "--observer-output":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --observer-output\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        observerOutput = args[idx + 1]
+        idx += 2
+    case "--observer-follow":
+        observerFollow = true
+        idx += 1
     case "--plan-id":
         guard idx + 1 < args.count else {
             fputs("missing value for --plan-id\n", stderr)
@@ -809,8 +1070,26 @@ parseLoop: while idx < args.count {
     }
 }
 
-if logPredicate != nil && logPath == nil && logPathClass == nil {
+let observerRequested = observe
+    || observerDuration != nil
+    || observerFormat != nil
+    || observerOutput != nil
+    || observerFollow == true
+
+if logPredicate != nil && logPath == nil && logPathClass == nil && !observerRequested {
     fputs("missing value for --log-stream or --log-path-class/--log-name (required when --log-predicate is set)\n", stderr)
+    printUsage()
+    exit(2)
+}
+
+if let observerFormat, observerFormat != "json" && observerFormat != "jsonl" {
+    fputs("invalid value for --observer-format (expected json|jsonl)\n", stderr)
+    printUsage()
+    exit(2)
+}
+
+if observerFollow == true && observerDuration != nil {
+    fputs("--observer-follow cannot be combined with --observer-duration\n", stderr)
     printUsage()
     exit(2)
 }
@@ -841,6 +1120,12 @@ if let logName, !isSinglePathComponent(logName) {
     exit(2)
 }
 
+if let logPath, (logPath == "stdout" || logPath == "-"), jsonOutPath == nil {
+    fputs("--log-stream stdout requires --json-out to avoid mixing output streams\n", stderr)
+    printUsage()
+    exit(2)
+}
+
 guard args.count - idx >= 2 else {
     printUsage()
     exit(2)
@@ -850,8 +1135,15 @@ let serviceName = args[idx]
 let probeId = args[idx + 1]
 let probeArgs = Array(args.dropFirst(idx + 2))
 
+if correlationId == nil {
+    correlationId = UUID().uuidString
+}
+
 let resolvedLogPath: String? = {
     if let logPath {
+        if logPath == "auto" {
+            return autoLogPath(kind: "sandbox-log-stream", serviceName: serviceName, probeId: probeId, correlationId: correlationId)
+        }
         return logPath
     }
     if let logPathClass, let logName {
@@ -866,10 +1158,35 @@ if logPathClass != nil && resolvedLogPath == nil {
 }
 
 let logSpec = resolvedLogPath.map { LogCaptureSpec(path: $0, predicate_override: logPredicate) }
+let logStreamUsesStdout = resolvedLogPath == "stdout" || resolvedLogPath == "-"
 
-if correlationId == nil {
-    correlationId = UUID().uuidString
-}
+let observerOutputPath: String? = {
+    if let observerOutput {
+        if observerOutput == "auto" {
+            return autoLogPath(
+                kind: "sandbox-log-observer",
+                serviceName: serviceName,
+                probeId: probeId,
+                correlationId: correlationId
+            )
+        }
+        return observerOutput
+    }
+    if let logPath = resolvedLogPath, logPath != "stdout" && logPath != "-" {
+        return observerReportPath(for: logPath)
+    }
+    if observerRequested || logSpec != nil {
+        return autoLogPath(
+            kind: "sandbox-log-observer",
+            serviceName: serviceName,
+            probeId: probeId,
+            correlationId: correlationId
+        )
+    }
+    return nil
+}()
+
+let shouldObserve = observerRequested || logSpec != nil
 
 if let attachSeconds {
     if holdOpenSeconds == nil {
@@ -1007,6 +1324,8 @@ do {
 let connection = NSXPCConnection(serviceName: serviceName)
 connection.remoteObjectInterface = NSXPCInterface(with: ProbeServiceProtocol.self)
 connection.resume()
+let processNameHint = serviceNameHint(from: serviceName)
+let pidHint = connectionPidHint(connection)
 
 let semaphore = DispatchSemaphore(value: 0)
 var exitCode: Int32 = 1
@@ -1025,8 +1344,6 @@ private var logStream: LogStreamHandle?
 private var logStreamError: String?
 private var logStreamPredicate: String?
 if let spec = logSpec {
-    let processNameHint = serviceNameHint(from: serviceName)
-    let pidHint = connectionPidHint(connection)
     let predicate = spec.predicate_override ?? streamSandboxPredicate(processName: processNameHint, pid: pidHint)
     logStreamPredicate = predicate
     let (handle, err) = startLogStream(predicate: predicate)
@@ -1056,6 +1373,11 @@ proxy.runProbe(requestData) { responseData in
         var logObserverObservedLines: Int? = nil
         var logObserverObservedDeny: Bool? = nil
         var logObserverDenyLines: [String]? = nil
+        var logObserverReport: ObserverReportEnvelope? = nil
+        var logStreamFound = false
+        var logStreamSucceeded = false
+        var observerFound = false
+        var observerSucceeded = false
         if let spec = logSpec {
             Thread.sleep(forTimeInterval: 0.2)
             let predicate = logStreamPredicate ?? spec.predicate_override ?? ""
@@ -1065,6 +1387,8 @@ proxy.runProbe(requestData) { responseData in
                 streamError: logStreamError,
                 response: response,
                 serviceName: serviceName,
+                pidHint: pidHint,
+                processNameHint: processNameHint,
                 predicate: predicate
             )
             response.log_capture_status = summary.status
@@ -1073,15 +1397,26 @@ proxy.runProbe(requestData) { responseData in
             logCapturePredicate = summary.predicate
             logCaptureObservedLines = summary.observedLines
             logCaptureObservedDeny = summary.observedDeny
+            logStreamFound = summary.observedDeny == true
+            logStreamSucceeded = summary.status == "requested_written"
+        } else {
+            response.log_capture_status = "not_requested"
+        }
 
+        if shouldObserve {
             let observer = captureSandboxLogObserver(
-                logPath: spec.path,
+                observerPath: observerOutputPath,
                 response: response,
                 serviceName: serviceName,
-                predicateOverride: spec.predicate_override,
+                pidHint: pidHint,
+                processNameHint: processNameHint,
+                predicateOverride: logPredicate,
                 planId: response.plan_id ?? planId,
                 rowId: response.row_id ?? rowId,
                 correlationId: response.correlation_id ?? correlationId,
+                observerFormat: observerFormat,
+                observerDuration: observerDuration,
+                observerFollow: observerFollow == true,
                 clientStarted: clientStarted,
                 clientEnded: clientEnded
             )
@@ -1095,21 +1430,23 @@ proxy.runProbe(requestData) { responseData in
             logObserverObservedLines = observer.observedLines
             logObserverObservedDeny = observer.observedDeny
             logObserverDenyLines = observer.denyLines
+            logObserverReport = observer.report
+            observerFound = observer.observedDeny == true
+            observerSucceeded = observer.status == "requested_written"
+        } else {
+            logObserverStatus = "not_requested"
+        }
 
-            let logStreamFound = summary.observedDeny == true
-            let observerFound = observer.observedDeny == true
-            let observerSucceeded = observer.status == "requested_written"
+        if logSpec != nil || shouldObserve {
             if logStreamFound || observerFound {
                 response.deny_evidence = "captured"
-            } else if observerSucceeded || summary.denyEvidence == "not_found" {
+            } else if observerSucceeded || logStreamSucceeded {
                 response.deny_evidence = "not_found"
             } else {
                 response.deny_evidence = "log_error"
             }
         } else {
-            response.log_capture_status = "not_requested"
             response.deny_evidence = "not_captured"
-            logObserverStatus = "not_requested"
         }
 
         let data = ProbeData(
@@ -1126,7 +1463,7 @@ proxy.runProbe(requestData) { responseData in
             started_at_iso8601: response.started_at_iso8601,
             ended_at_iso8601: response.ended_at_iso8601,
             thread_id: response.thread_id,
-            details: response.details,
+            details: mergeDetails(response.details, pidHint: pidHint, processNameHint: processNameHint),
             layer_attribution: response.layer_attribution,
             sandbox_log_excerpt_ref: response.sandbox_log_excerpt_ref,
             log_capture_status: response.log_capture_status,
@@ -1145,6 +1482,7 @@ proxy.runProbe(requestData) { responseData in
             log_observer_observed_lines: logObserverObservedLines,
             log_observer_observed_deny: logObserverObservedDeny,
             log_observer_deny_lines: logObserverDenyLines,
+            log_observer_report: logObserverReport,
             deny_evidence: response.deny_evidence
         )
 
@@ -1169,14 +1507,14 @@ proxy.runProbe(requestData) { responseData in
         do {
             let data = try encodeJSON(envelope)
             if let json = String(data: data, encoding: .utf8) {
-                print(json)
+                emitProbeJSON(json, jsonOutPath: jsonOutPath, logStreamUsesStdout: logStreamUsesStdout)
             } else {
                 fputs("failed to encode response JSON\n", stderr)
             }
         } catch {
             fputs("failed to encode response JSON: \(error)\n", stderr)
             if let rawJson {
-                print(rawJson)
+                emitProbeJSON(rawJson, jsonOutPath: jsonOutPath, logStreamUsesStdout: logStreamUsesStdout)
             }
         }
     } catch {
@@ -1199,11 +1537,11 @@ proxy.runProbe(requestData) { responseData in
         )
         if let encoded = try? encodeJSON(envelope),
            let json = String(data: encoded, encoding: .utf8) {
-            print(json)
+            emitProbeJSON(json, jsonOutPath: jsonOutPath, logStreamUsesStdout: logStreamUsesStdout)
         } else {
             fputs("failed to encode response JSON: \(error)\n", stderr)
             if let rawJson {
-                print(rawJson)
+                emitProbeJSON(rawJson, jsonOutPath: jsonOutPath, logStreamUsesStdout: logStreamUsesStdout)
             }
         }
         exitCode = 1

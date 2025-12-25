@@ -23,7 +23,7 @@ This guide assumes you have only `EntitlementJail.app` and this file (`Entitleme
 - Evidence bundle: `bundle-evidence` (plus `verify-evidence`, `inspect-macho`)
 - Quarantine/Gatekeeper deltas (no execution): `quarantine-lab`
 - Output locations: defaults live under `~/Library/Application Support/entitlement-jail/...`. If you run a sandboxed build, the same relative paths will be under `~/Library/Containers/<bundle-id>/Data/...`. Trust `data.output_dir` in JSON reports.
-- Deny evidence: request log capture via `--log-stream` (also runs the observer automatically), or run the embedded observer `EntitlementJail.app/Contents/MacOS/sandbox-log-observer` from Terminal.
+- Deny evidence: prefer `--observe` (observer-first); `--log-stream` also runs the observer automatically, or run the embedded observer `EntitlementJail.app/Contents/MacOS/sandbox-log-observer` from Terminal.
 
 ## Quick start
 
@@ -47,9 +47,10 @@ Run an “observer” probe in the baseline service:
 $EJ run-xpc --profile minimal capabilities_snapshot
 ```
 
-Request deny evidence capture for a run (best-effort; writes JSON reports for the stream and observer):
+Request deny evidence capture for a run (observer-first; stream optional):
 
 ```sh
+$EJ run-xpc --observe --profile minimal net_op --op tcp_connect --host 127.0.0.1 --port 9
 $EJ run-xpc --log-stream /tmp/ej-sandbox.log --profile minimal net_op --op tcp_connect --host 127.0.0.1 --port 9
 ```
 
@@ -136,7 +137,9 @@ Usage:
 
 ```sh
 $EJ run-xpc [--ack-risk <id|bundle-id>]
-            [--log-stream <path>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>]
+            [--log-stream <path|auto|stdout>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>]
+            [--observe] [--observer-duration <seconds>] [--observer-format <json|jsonl>] [--observer-output <path|auto>] [--observer-follow]
+            [--json-out <path>]
             [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>]
             [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>]
             [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create]
@@ -148,10 +151,17 @@ Notes:
 
 - Prefer `--profile <id>` and omit the explicit bundle id.
 - Tier 2 profiles require `--ack-risk` (you can pass either the profile id or the full bundle id).
-- `--log-stream` is a best-effort **live** capture for sandbox denial lines; it writes a PID-scoped JSON report to the path you provide (see `data.log_capture_*` fields for summary).
-- `--log-stream` also runs the unsandboxed observer automatically and writes `<log_stream_path>.observer.json` (see `data.log_observer_*` fields).
-- `--log-path-class` + `--log-name` chooses a container-safe output path for the log stream report (still host-side capture).
+- `--log-stream` is a best-effort **live** capture for sandbox denial lines; it writes a PID/process-filtered JSON report (`kind: sandbox_log_stream_report`) to the path you provide and sets `data.log_capture_*` in the probe response.
+- `--log-stream auto` writes to an app-managed path under `~/Library/Application Support/entitlement-jail/logs/`; `--log-stream stdout` writes the stream report to stdout and requires `--json-out` so the probe JSON goes to a file (observer output still goes to a file path).
+- `--log-stream` implies observer capture (same as `--observe`).
+- `--observe` runs the embedded `sandbox-log-observer` even without `--log-stream`.
+- `--observer-duration <seconds>` (or `--observer-follow`) makes the observer run in live mode (`log stream`) instead of windowed `log show`.
+- `--observer-follow` cannot be combined with `--observer-duration`.
+- `--observer-format jsonl` and `--observer-output <path|auto>` control observer persistence; `jsonl` emits per-line events plus a final report line.
+- `--log-path-class` + `--log-name` chooses a container-safe output path for the log stream report (still host-side capture). Allowed classes: `home`, `tmp`, `downloads`, `desktop`, `documents`, `app_support`, `caches`.
+- `--log-path-class`/`--log-name` must be provided together and cannot be combined with an explicit `--log-stream <path>`.
 - `--log-predicate` overrides the default PID-scoped predicate for both stream and observer (advanced; use with care).
+- `--json-out` writes the probe JSON response to a file (stdout stays available for log stream output).
 - `--hold-open` keeps the service process alive after printing the JSON response.
 - `--attach <seconds>` sets up a FIFO wait and, by default, also sets `--hold-open <seconds>` (so wall time can approach `2*seconds` if you trigger near the timeout). For automation/harnesses, consider `--hold-open 0`.
 
@@ -204,29 +214,68 @@ Wait metadata is recorded in `data.details` (`wait_*` fields).
 
 **Sandbox log capture (deny evidence)**
 
-Some probes return a permission-shaped failure (often `EPERM`/`EACCES`). That is *compatible with* a sandbox denial, but it is not proof of one.
+Some probes return a permission-shaped failure (often `EPERM`/`EACCES`). That is *compatible with* a sandbox denial, but it is not proof of one. Treat the observer as the evidence source; log stream is a best-effort feed.
 
-If you want deny evidence for a specific run, request log capture:
+If you want deny evidence for a specific run, prefer the observer (log stream is optional):
 
 ```sh
+$EJ run-xpc --observe --profile minimal fs_op --op stat --path-class tmp
+$EJ run-xpc --observe --observer-duration 3 --profile minimal fs_op --op stat --path-class tmp
 $EJ run-xpc --log-stream /tmp/ej-sandbox.log --profile minimal fs_op --op stat --path-class tmp
 $EJ run-xpc --log-path-class tmp --log-name ej-sandbox.log --profile minimal fs_op --op stat --path-class tmp
 ```
 
-The log capture file is a JSON envelope (`kind: sandbox_log_stream_report`). The PID-scoped excerpt lives in `data.log_stdout`; summary fields live in `data.observed_*` and `data.log_error`.
+The log stream report is a JSON envelope (`kind: sandbox_log_stream_report`). `data` includes:
 
-When `--log-stream` is used, the CLI also runs the unsandboxed observer automatically and writes a second report at `<log_stream_path>.observer.json` (`kind: sandbox_log_observer_report`). The observer report includes a structured `data.deny_lines` array and uses the probe start/end timestamps to set the log show window.
+- `pid`, `process_name`, `predicate`
+- `log_rc`, `log_stdout`, `log_stderr`, `log_error`
+- `observed_lines`, `observed_deny`
+- `layer_attribution.seatbelt` = `log_stream`
+
+`data.log_stdout` is a filtered excerpt (deny/Sandbox lines for the PID/process), not the full `log stream` output.
+
+When the observer runs (via `--observe` or any `--log-stream`), the CLI writes a second report to `--observer-output` if set. Otherwise:
+
+- If `--log-stream` points to a file path, the observer report defaults to `<log_stream_path>.observer.json`.
+- If `--log-stream stdout` (or no log stream path is provided), the observer report defaults to an app-managed path under `~/Library/Application Support/entitlement-jail/logs/`.
+
+The observer report is a JSON envelope (`kind: sandbox_log_observer_report`). `data` includes:
+
+- `observer_schema_version`, `mode` (`show`/`stream`), `duration_ms`
+- `plan_id`, `row_id`, `correlation_id`
+- `pid`, `process_name`, `predicate`, `start`, `end`, `last`
+- `log_rc`, `log_stdout`, `log_stderr`, `log_error`, `log_truncated`
+- `observed_lines`, `observed_deny`, `deny_lines`
+- `layer_attribution.seatbelt` = `observer_only`
+
+The full observer report is also embedded in `data.log_observer_report` in the `run-xpc` response.
+
+Standalone observer examples:
+
+```sh
+EntitlementJail.app/Contents/MacOS/sandbox-log-observer --pid <pid> --process-name <name> --last 5s
+EntitlementJail.app/Contents/MacOS/sandbox-log-observer --pid <pid> --process-name <name> --duration 5 --format jsonl --output /tmp/ej-observer.jsonl
+```
+
+If you omit `--predicate`, you must provide `--process-name`; the observer will build a PID-scoped sandbox predicate. `--output` writes a copy of the JSON/JSONL stream to disk in addition to stdout (JSONL appends).
+
+Without `--duration`/`--follow`, the observer uses `log show` and defaults to `--last 5s` unless you pass `--start`/`--end` or `--last`.
+
+If you use `--format jsonl`, the output stream includes `sandbox_log_observer_event` envelopes for each observed line plus a final `sandbox_log_observer_report` line.
 
 Interpretation rules:
 
-- If log capture was requested, check `data.log_capture_status`, `data.log_capture_error`, `data.log_capture_predicate`, and `data.log_capture_observed_*`.
-- For observer output, check `data.log_observer_status`, `data.log_observer_error`, `data.log_observer_predicate`, `data.log_observer_observed_*`, and `data.log_observer_deny_lines`.
+- If log capture was requested, check `data.log_capture_status`, `data.log_capture_error`, `data.log_capture_path`, `data.log_capture_predicate`, `data.log_capture_observed_lines`, and `data.log_capture_observed_deny`.
+- For observer output, check `data.log_observer_status`, `data.log_observer_error`, `data.log_observer_path`, `data.log_observer_predicate`, `data.log_observer_start`, `data.log_observer_end`, `data.log_observer_last`, `data.log_observer_observed_lines`, `data.log_observer_observed_deny`, `data.log_observer_deny_lines`, and `data.log_observer_report`.
+- `data.log_capture_status` is `not_requested`, `requested_written`, or `requested_failed`; `data.log_observer_status` is `requested_written` or `requested_failed`.
 - `data.log_observer_path` points to the observer report file.
+- `data.log_capture_path` is the stream report path (or `stdout`/`-` when `--log-stream stdout` is used).
 - If log capture was not requested, `data.deny_evidence` is set to `not_captured`.
 - If stream and observer both fail, `data.deny_evidence` is set to `log_error`.
 - Log capture is best-effort; if `/usr/bin/log` fails, treat that as "no deny evidence captured", not as a Seatbelt signal. Log capture is host-side only; in-sandbox log capture is not viable.
 - Use the embedded observer `EntitlementJail.app/Contents/MacOS/sandbox-log-observer` when you want an explicit “outside the sandbox boundary” witness or to re-run with a custom predicate.
 - Use `data.details.service_pid` (or `data.details.probe_pid`) plus `data.details.process_name` as inputs.
+- If those fields are missing, the CLI injects fallbacks and annotates `data.details.pid_source` / `data.details.process_name_source`.
 
 **Filesystem probes (fs_op, fs_xattr, fs_coordinated_op)**
 
@@ -277,10 +326,10 @@ Groups (current build; use `list-profiles` as the source of truth):
 - `inject`: `minimal`, `plugin_host_relaxed`, `dyld_env_enabled`, `fully_injectable` (Tier 2 requires `--ack-risk`)
 - `jit`: `minimal`, `jit_map_jit`, `jit_rwx_legacy` (Tier 2 requires `--ack-risk`)
 
-Default output directory (overwritten each run; see `data.output_dir`):
+Default output directory (per group, overwritten each run; see `data.output_dir`):
 
 ```
-~/Library/Application Support/entitlement-jail/matrix/latest
+~/Library/Application Support/entitlement-jail/matrix/<group>/latest
 ```
 
 If you pass `--out`, it can be any writable directory (including a path inside this repo). If you are running a sandboxed build, repo paths may be blocked; use a home/tmp path instead.
@@ -397,8 +446,8 @@ What to read first:
 - Service identity: `data.service_bundle_id`, `data.service_name`.
 - “Where did it write?”: `data.output_dir` (for commands like `run-matrix` and `bundle-evidence`).
 - “What path did it use?”: `data.details.file_path` (common for filesystem probes like `fs_op`/`fs_xattr`).
-- Log capture: `data.log_capture_status`, `data.log_capture_error`, `data.log_capture_predicate`, and `data.deny_evidence` (`not_captured`, `captured`, `not_found`, or `log_error`).
-- Observer summary: `data.log_observer_status`, `data.log_observer_error`, `data.log_observer_observed_*`, and `data.log_observer_path` (observer report).
+- Log capture: `data.log_capture_status`, `data.log_capture_error`, `data.log_capture_path`, `data.log_capture_predicate`, `data.log_capture_observed_lines`, `data.log_capture_observed_deny`, and `data.deny_evidence` (`not_captured`, `captured`, `not_found`, or `log_error`).
+- Observer summary: `data.log_observer_status`, `data.log_observer_error`, `data.log_observer_path`, `data.log_observer_predicate`, `data.log_observer_start`, `data.log_observer_end`, `data.log_observer_last`, `data.log_observer_observed_lines`, `data.log_observer_observed_deny`, `data.log_observer_deny_lines`, plus the embedded `data.log_observer_report`.
 - Observer inputs: `data.details.service_pid` (or `data.details.probe_pid`) and `data.details.process_name`.
 
 Quick extraction without `jq` (macOS ships `plutil`):

@@ -24,7 +24,7 @@ Usage:
 ```sh
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-system <absolute-platform-binary> [args...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-embedded <tool-name> [args...]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc [--profile <id>] [--ack-risk <id|bundle-id>] [--log-stream <path>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc [--profile <id>] [--ack-risk <id|bundle-id>] [--log-stream <path|auto|stdout>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--observe] [--observer-duration <seconds>] [--observer-format <json|jsonl>] [--observer-output <path|auto>] [--observer-follow] [--json-out <path>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail verify-evidence
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail inspect-macho <service-id|main|path>
@@ -141,7 +141,7 @@ Helper location (important):
 
 Invocation:
 
-- `run-xpc [--log-stream <path>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]`
+- `run-xpc [--log-stream <path|auto|stdout>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--observe] [--observer-duration <seconds>] [--observer-format <json|jsonl>] [--observer-output <path|auto>] [--observer-follow] [--json-out <path>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]`
 - Example service bundle id: `com.yourteam.entitlement-jail.ProbeService_minimal`
 
 Built-in probe ids (in-process):
@@ -173,15 +173,19 @@ Notes:
 - `probe_catalog` includes `trace_symbols`, mapping probe ids to stable `ej_*` marker symbols for external tooling.
 - Filesystem probes are safe-by-default: destructive direct-path operations are refused unless you target a harness path (for `fs_op`/`fs_coordinated_op` via `--path-class`/`--target`, or for `fs_xattr` via an explicit path under `*/entitlement-jail-harness/*`) or pass `--allow-unsafe-path` (or `--allow-write` for `fs_xattr`).
 - `dlopen_external` loads and executes dylib initializers by design; use a signed test dylib.
-- `--log-stream` writes a best-effort live unified log excerpt for sandbox denial lines (uses `log stream` during the probe) and emits a PID-scoped JSON report at the requested path (`kind: sandbox_log_stream_report`, excerpt in `data.log_stdout`); absence of deny lines is not a denial claim.
-- `--log-stream` also runs the unsandboxed observer automatically and writes a second report at `<log_stream_path>.observer.json` (`kind: sandbox_log_observer_report`); it uses the probe start/end timestamps to set the observer time window.
-- `--log-path-class`/`--log-name` chooses a container-safe output path for the log stream report (useful when repo paths are blocked); the observer report lives alongside it.
+- `--log-stream` writes a best-effort live unified log excerpt for sandbox denial lines (uses `log stream` during the probe) and emits a PID-scoped JSON report at the requested path (`kind: sandbox_log_stream_report`, excerpt in `data.log_stdout`); absence of deny lines is not a denial claim. Use `--log-stream auto` for an app-managed path; `--log-stream stdout` writes the stream report to stdout and requires `--json-out`.
+- `--observe` runs the unsandboxed observer even without `--log-stream`; `--log-stream` also triggers the observer automatically.
+- `--observer-duration`/`--observer-follow` run the observer in live mode (`log stream`); default observer mode uses `log show` and probe start/end timestamps.
+- `--observer-format jsonl` and `--observer-output <path|auto>` control observer persistence (`jsonl` emits per-line events plus a final report line).
+- `--log-path-class`/`--log-name` chooses a container-safe output path for the log stream report (useful when repo paths are blocked); the observer report lives alongside it unless overridden.
 - In-sandbox post-run log access is intentionally unsupported; the observer runs outside the sandbox boundary.
-- Responses include `log_capture_status`, `log_capture_predicate`, `log_capture_observed_*`, plus `log_observer_status`, `log_observer_path`, `log_observer_observed_*`, and `log_observer_deny_lines`; `deny_evidence` is `not_captured` when log capture is not requested, `captured` when a denial line is observed (stream or observer), `not_found` when capture ran but no denial lines matched, and `log_error` when both stream and observer failed.
+- Responses include `log_capture_status`, `log_capture_predicate`, `log_capture_observed_*`, plus `log_observer_status`, `log_observer_path`, `log_observer_observed_*`, `log_observer_deny_lines`, and the embedded `log_observer_report`; `deny_evidence` is `not_captured` when log capture is not requested, `captured` when a denial line is observed (stream or observer), `not_found` when capture ran but no denial lines matched, and `log_error` when both stream and observer failed.
+- If the service omits PID/process name in `data.details`, the client injects fallbacks and records `pid_source` / `process_name_source`.
 - All JSON responses use the envelope described above (including top-level `schema_version`).
 - `--log-stream` uses `/usr/bin/log`; when the launcher is sandboxed, `log` may refuse to run and deny evidence will not be captured. The default build keeps the launcher unsandboxed so log capture works.
 - `--hold-open` keeps the XPC connection open after the response to make debugger/trace attachment easier.
-- `--log-stream`/`--log-path-class`/`--log-name`/`--log-predicate` must appear before `<xpc-service-bundle-id>`.
+- `--json-out` writes the probe JSON response to a file (stdout stays available for log stream output).
+- Log/observer flags (`--log-*`, `--observe`, `--observer-*`, `--json-out`) must appear before `<xpc-service-bundle-id>`.
 - `--log-predicate` overrides the default PID-scoped predicate for both stream and observer (pass a full predicate string).
 - `--attach <seconds>` is a convenience for attach workflows: it sets a pre-run wait using a FIFO under the service’s container `tmp` plus a matching `--hold-open` (unless you set `--hold-open` explicitly).
 - `--wait-fifo`/`--wait-exists` block **before** probe execution; the wait outcome is recorded in `data.details` (`wait_*` keys).
@@ -282,7 +286,7 @@ Example:
 Output (default, overwritten each run):
 
 ```
-~/Library/Application Support/entitlement-jail/matrix/latest
+~/Library/Application Support/entitlement-jail/matrix/<group>/latest
 ```
 
 When running inside a sandboxed-launcher build, `HOME` resolves to the container home, so the default path lives under `~/Library/Containers/<bundle-id>/Data/...`.
@@ -360,7 +364,7 @@ Do not run the observer from a sandboxed parent process; the default build’s h
 
 ## Unsandboxed observer: `sandbox-log-observer`
 
-`sandbox-log-observer` runs `log show` outside the App Sandbox and emits a JSON envelope with a sandbox-deny excerpt.
+`sandbox-log-observer` runs `log show` by default (or `log stream` with `--duration`/`--follow`) and emits a versioned JSON envelope with a sandbox-deny excerpt.
 
 In the distributed bundle it is embedded at:
 
@@ -376,13 +380,18 @@ Run:
 
 ```sh
 runner/target/release/sandbox-log-observer --pid <pid> --process-name <name> --last 5s
+runner/target/release/sandbox-log-observer --pid <pid> --process-name <name> --duration 5 --format jsonl --output /tmp/ej-observer.jsonl
 ```
 
 Notes:
 
 - `--predicate` overrides the default `Sandbox: <name>(<pid>)` predicate.
-- Prefer `--start`/`--end` when you have probe timing; `--last` is a fallback.
+- Prefer `--start`/`--end` when you have probe timing; `--last` is a fallback. Use `--duration`/`--follow` for live observation.
+- `--format jsonl` emits per-line `sandbox_log_observer_event` lines plus a final `sandbox_log_observer_report` summary line.
+- `--output` writes a file (appends for jsonl, overwrites for json).
 - `--plan-id`/`--row-id`/`--correlation-id` annotate the JSON output for easier stitching.
+- `data.mode` is `show` or `stream`; `data.duration_ms` is set when `--duration` is used.
+- `data.observer_schema_version` is the observer report schema version (stable unless explicitly bumped).
 - `data.deny_lines` is a structured list of deny-shaped log lines (case-insensitive match on `deny`).
 - Use it outside the sandbox boundary; do not run it from a sandboxed parent process.
 

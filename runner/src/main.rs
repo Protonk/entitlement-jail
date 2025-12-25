@@ -17,7 +17,7 @@ fn print_usage() {
 usage:
   entitlement-jail run-system <absolute-platform-binary> [args...]
   entitlement-jail run-embedded <tool-name> [args...]
-  entitlement-jail run-xpc [--ack-risk <id|bundle-id>] [--log-stream <path>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] (--profile <id> | <xpc-service-bundle-id>) <probe-id> [probe-args...]
+  entitlement-jail run-xpc [--ack-risk <id|bundle-id>] [--log-stream <path|auto|stdout>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--observe] [--observer-duration <seconds>] [--observer-format <json|jsonl>] [--observer-output <path|auto>] [--observer-follow] [--json-out <path>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] (--profile <id> | <xpc-service-bundle-id>) <probe-id> [probe-args...]
   entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
   entitlement-jail verify-evidence
   entitlement-jail inspect-macho <service-id|main|path>
@@ -386,13 +386,14 @@ fn default_bundle_output_dir() -> Result<PathBuf, String> {
         .join("latest"))
 }
 
-fn default_matrix_output_dir() -> Result<PathBuf, String> {
+fn default_matrix_output_dir(group_id: &str) -> Result<PathBuf, String> {
     let home = env::var("HOME").map_err(|_| "HOME not set".to_string())?;
     Ok(PathBuf::from(home)
         .join("Library")
         .join("Application Support")
         .join("entitlement-jail")
         .join("matrix")
+        .join(group_id)
         .join("latest"))
 }
 
@@ -1324,6 +1325,10 @@ fn main() {
                     std::process::exit(2);
                 }
             };
+            if let Err(err) = ensure_single_component("group id", &group_id) {
+                eprintln!("{err}");
+                std::process::exit(2);
+            }
 
             let probe_id = match args.get(idx).and_then(|s| s.to_str()) {
                 Some(probe) => probe.to_string(),
@@ -1361,7 +1366,7 @@ fn main() {
                         std::process::exit(2);
                     }
                 },
-                None => match default_matrix_output_dir() {
+                None => match default_matrix_output_dir(&group_id) {
                     Ok(path) => path,
                     Err(err) => {
                         eprintln!("{err}");
@@ -1655,6 +1660,10 @@ fn main() {
                     | Some("--log-path-class")
                     | Some("--log-name")
                     | Some("--log-predicate")
+                    | Some("--json-out")
+                    | Some("--observer-duration")
+                    | Some("--observer-format")
+                    | Some("--observer-output")
                     | Some("--plan-id")
                     | Some("--row-id")
                     | Some("--correlation-id")
@@ -1673,6 +1682,9 @@ fn main() {
                             std::process::exit(2);
                         }
                         idx += 2;
+                    }
+                    Some("--observe") | Some("--observer-follow") => {
+                        idx += 1;
                     }
                     Some("--wait-create") => {
                         idx += 1;
@@ -1737,6 +1749,10 @@ fn main() {
                         | Some("--log-path-class")
                         | Some("--log-name")
                         | Some("--log-predicate")
+                        | Some("--json-out")
+                        | Some("--observer-duration")
+                        | Some("--observer-format")
+                        | Some("--observer-output")
                         | Some("--plan-id")
                         | Some("--row-id")
                         | Some("--correlation-id")
@@ -1751,7 +1767,9 @@ fn main() {
                         | Some("--hold-open") => {
                             insert_idx += 2;
                         }
-                        Some("--wait-create") => {
+                        Some("--wait-create")
+                        | Some("--observe")
+                        | Some("--observer-follow") => {
                             insert_idx += 1;
                         }
                         _ => break,
@@ -1766,6 +1784,10 @@ fn main() {
                         | Some("--log-path-class")
                         | Some("--log-name")
                         | Some("--log-predicate")
+                        | Some("--json-out")
+                        | Some("--observer-duration")
+                        | Some("--observer-format")
+                        | Some("--observer-output")
                         | Some("--plan-id")
                         | Some("--row-id")
                         | Some("--correlation-id")
@@ -1780,7 +1802,9 @@ fn main() {
                         | Some("--hold-open") => {
                             insert_idx += 2;
                         }
-                        Some("--wait-create") => {
+                        Some("--wait-create")
+                        | Some("--observe")
+                        | Some("--observer-follow") => {
                             insert_idx += 1;
                         }
                         _ => break,
@@ -1818,6 +1842,10 @@ fn main() {
                         | Some("--log-path-class")
                         | Some("--log-name")
                         | Some("--log-predicate")
+                        | Some("--json-out")
+                        | Some("--observer-duration")
+                        | Some("--observer-format")
+                        | Some("--observer-output")
                         | Some("--plan-id")
                         | Some("--row-id")
                         | Some("--correlation-id")
@@ -1832,7 +1860,9 @@ fn main() {
                         | Some("--hold-open") => {
                             insert_idx += 2;
                         }
-                        Some("--wait-create") => {
+                        Some("--wait-create")
+                        | Some("--observe")
+                        | Some("--observer-follow") => {
                             insert_idx += 1;
                         }
                         _ => break,

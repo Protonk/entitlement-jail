@@ -83,6 +83,16 @@ pub fn render_envelope<T: Serialize>(
         .map_err(|e| format!("failed to encode JSON: {e}"))
 }
 
+#[allow(dead_code)]
+pub fn render_envelope_compact<T: Serialize>(
+    kind: &str,
+    result: JsonResult,
+    data: &T,
+) -> Result<String, String> {
+    let value = envelope_value(kind, result, data)?;
+    serde_json::to_string(&value).map_err(|e| format!("failed to encode JSON: {e}"))
+}
+
 pub fn print_envelope<T: Serialize>(
     kind: &str,
     result: JsonResult,
@@ -102,4 +112,28 @@ pub fn write_envelope<T: Serialize>(
     let text = render_envelope(kind, result, data)?;
     std::fs::write(path, text)
         .map_err(|e| format!("failed to write {}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    struct Dummy {
+        label: String,
+    }
+
+    #[test]
+    fn compact_envelope_is_single_line() {
+        let payload = Dummy {
+            label: "ok".to_string(),
+        };
+        let text = render_envelope_compact("dummy", JsonResult::from_ok(true), &payload)
+            .expect("render");
+        assert!(!text.contains('\n'));
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("parse");
+        assert_eq!(parsed["kind"], "dummy");
+        assert_eq!(parsed["schema_version"], SCHEMA_VERSION);
+    }
 }
