@@ -43,6 +43,7 @@ public struct RunProbeRequest: Codable {
     public var probe_id: String
     public var argv: [String]
     public var expected_outcome: String?
+    public var preload_dylib_path: String?
     public var env_overrides: [String: String]?
     public var wait_spec: WaitSpec?
 
@@ -53,6 +54,7 @@ public struct RunProbeRequest: Codable {
         probe_id: String,
         argv: [String],
         expected_outcome: String? = nil,
+        preload_dylib_path: String? = nil,
         env_overrides: [String: String]?,
         wait_spec: WaitSpec? = nil
     ) {
@@ -62,6 +64,7 @@ public struct RunProbeRequest: Codable {
         self.probe_id = probe_id
         self.argv = argv
         self.expected_outcome = expected_outcome
+        self.preload_dylib_path = preload_dylib_path
         self.env_overrides = env_overrides
         self.wait_spec = wait_spec
     }

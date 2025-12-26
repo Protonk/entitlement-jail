@@ -1,50 +1,244 @@
-# Experiment Harness (tri-run mismatch atlas)
+# `experiments/` (tri-run harness: mismatch atlas)
 
-This directory contains an experiment harness that treats:
+This is developer documentation for the experiment harness under `experiments/`. It’s a **tri-run** runner that executes the same probe inputs three ways and writes a structured **mismatch atlas** (`atlas.json`) describing where the witnesses agree and where they diverge.
 
-- `entitlement-jail` / XPC targets as the **entitlement-defined runtime witness**
-- `sandbox-exec` + `.sb` profiles as the **policy-defined runtime witness** (hypothesis only; `sandbox-exec` is deprecated)
+The tri-run witnesses are:
 
-The core unit is a **tri-run row**: for the same `probe_id` and `inputs`, emit three comparable outcomes:
+1. **baseline** — an unsandboxed Swift substrate binary
+2. **policy** — the same substrate under `sandbox-exec -f <profile.sb>` (hypothesis witness; `sandbox-exec` is deprecated)
+3. **entitlement** — `EntitlementJail.app` running probes inside sandboxed XPC services (entitlements are the variable)
 
-1. **baseline** (no `sandbox-exec`, no `entitlement-jail`)
-2. **policy** (`sandbox-exec -f <profile.sb> ...`)
-3. **entitlement** (`EntitlementJail.app/.../entitlement-jail run-xpc <xpc-service> ...`, with probes executed *in-process* inside the service)
+Related docs:
 
-The output is a **mismatch atlas**: where policy↔entitlement parity matches, and where it fails (with explicit layer attribution).
+- CLI behavior and JSON envelopes: [runner/README.md](../runner/README.md)
+- XPC services as entitlement targets: [xpc/README.md](../xpc/README.md)
+- End-user workflows (matrix runs, log capture, evidence): [EntitlementJail.md](../EntitlementJail.md)
+- Build/sign the app bundle: [SIGNING.md](../SIGNING.md)
 
-## Contract (frozen)
+## What lives in `experiments/`
 
-### Probe row schema
+Build outputs:
 
-Every probe row is:
+- `bin/ej-harness` — the tri-run harness (built from `harness/main.swift`)
+- `bin/witness-substrate` — the baseline/policy witness runner (built from `substrate/main.swift`)
+
+Sources:
+
+- `build-experiments.sh` — compiles the two binaries above using `xcrun swiftc`
+- `harness/main.swift` — tri-run orchestration, normalization, mismatch classification, log capture
+- `substrate/main.swift` — unsandboxed “witness substrate” that runs the same in-process probes as XPC services
+
+Inputs:
+
+- `plans/*.json` — which probes to run (rows)
+- `nodes/*.json` — which “lattice nodes” to run them across (policy profile + XPC service ids)
+- `policy/*.sb` — SBPL profiles used by the policy witness (`sandbox-exec`)
+
+Outputs:
+
+- `out/<plan-id>-<timestamp>/atlas.json` plus per-row artifacts (`stdout.txt`, `stderr.txt`, sandbox log excerpts, copied policy profiles)
+
+## Build
+
+Preferred entrypoint:
+
+```sh
+make build-experiments
+```
+
+This runs `./experiments/build-experiments.sh`, which:
+
+- builds `experiments/bin/witness-substrate` from:
+  - `xpc/ProbeAPI.swift`
+  - `xpc/InProcessProbeCore.swift`
+  - `experiments/substrate/main.swift`
+- builds `experiments/bin/ej-harness` from:
+  - `xpc/ProbeAPI.swift`
+  - `experiments/harness/main.swift`
+
+Useful knobs:
+
+- `SWIFT_OPT_LEVEL=-Onone make build-experiments` for a more inspection-friendly build
+- `SWIFT_MODULE_CACHE=...` to relocate the Swift module cache (defaults to `./.tmp/swift-module-cache`)
+
+## Run
+
+The harness CLI is intentionally tiny:
+
+```sh
+./experiments/bin/ej-harness run [options]
+```
+
+Options (see `experiments/harness/main.swift` for the authoritative defaults):
+
+- `--plan <path>` (default: `experiments/plans/tri-run-default.json`)
+- `--nodes <path>` (default: `experiments/nodes/entitlement-lattice.json`)
+- `--out-dir <dir>` (default: `experiments/out/<plan-id>-<timestamp>`)
+- `--substrate <path>` (default: `experiments/bin/witness-substrate`)
+- `--entitlement-jail <path>` (default: `EntitlementJail.app/Contents/MacOS/entitlement-jail`)
+
+The command prints the absolute path to the written `atlas.json` (one line).
+
+Common runs:
+
+```sh
+./experiments/bin/ej-harness run
+./experiments/bin/ej-harness run --plan experiments/plans/tri-run-smoke.json
+./experiments/bin/ej-harness run --nodes experiments/nodes/entitlement-lattice-e0-e2.json
+./experiments/bin/ej-harness run --nodes experiments/nodes/entitlement-lattice-debug-jit.json --plan experiments/plans/tri-run-debug-jit.json
+```
+
+## The witness model (what’s being compared)
+
+### Baseline and policy use the same probe implementation
+
+The baseline and policy witnesses both execute `experiments/bin/witness-substrate`. That binary calls directly into `xpc/InProcessProbeCore.swift`, so probe behavior is shared with the XPC services.
+
+The policy witness is simply:
+
+```sh
+/usr/bin/sandbox-exec -D HOME=/Users/<you> -f <profile.sb> <baseline argv...>
+```
+
+The `-D HOME=...` parameter is required because the SBPL profiles reference `(param "HOME")`.
+
+### Entitlement witness goes through `EntitlementJail.app`
+
+The entitlement witness uses the shipped CLI and the XPC services specified by the node:
+
+- probe rows → `EntitlementJail.app/.../entitlement-jail run-xpc <service> <probe-id> ...`
+- quarantine-lab rows → `EntitlementJail.app/.../entitlement-jail quarantine-lab <service> <payload-class> ...`
+
+Those commands rely on a built and signed `EntitlementJail.app` with the expected embedded services. See [SIGNING.md](../SIGNING.md).
+
+### About `sandbox-exec`
+
+`sandbox-exec` is deprecated. In this repo it’s treated as a **policy-defined runtime witness** for teaching/research only, not as a faithful model of App Sandbox.
+
+## Inputs (plans + nodes)
+
+### Plan (`experiments/plans/*.json`)
+
+A plan is a list of probe rows. Minimal schema (matches `ProbePlan`/`ProbeRow` in `experiments/harness/main.swift`):
 
 ```json
 {
-  "row_id": "string (optional; defaults to probe_id)",
-  "probe_id": "string",
-  "inputs": { "kind": "probe|quarantine-lab", "argv": ["..."], "payload_class": "optional" },
-  "expected_side_effects": ["string"],
-  "capture_spec": { "capture_sandbox_log": true }
+  "plan_id": "tri-run-smoke",
+  "probes": [
+    {
+      "row_id": "optional (defaults to probe_id)",
+      "probe_id": "probe_catalog",
+      "inputs": { "kind": "probe", "argv": [] },
+      "expected_side_effects": ["none"],
+      "capture_spec": { "capture_sandbox_log": false }
+    }
+  ]
 }
 ```
 
-### Probe result schema
+`inputs.kind`:
 
-Every witness run is normalized into:
+- `probe` → runs `witness-substrate probe <probe-id> ...` for baseline/policy and `entitlement-jail run-xpc ...` for entitlement
+- `quarantine-lab` → runs `witness-substrate quarantine-lab ...` for baseline/policy and `entitlement-jail quarantine-lab ...` for entitlement
+
+`row_id`:
+
+- Drives artifact directory naming.
+- If omitted, defaults to `probe_id`.
+- If you want multiple variants of the same `probe_id` (e.g. several `fs_op` arg sets), set distinct `row_id` values.
+
+Ephemeral port substitution:
+
+- If any `inputs.argv` contains `--port 0`, the harness starts a harness-owned localhost TCP server and substitutes the chosen port into all witnesses for that row.
+
+### Nodes / lattice (`experiments/nodes/*.json`)
+
+Nodes define the “lattice” you run the plan across. Minimal schema (matches `EntitlementLattice`/`EntitlementNode` in `experiments/harness/main.swift`):
+
+```json
+{
+  "nodes": [
+    {
+      "node_id": "E0_minimal",
+      "policy_profile": "experiments/policy/P0_minimal.sb",
+      "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_minimal",
+      "xpc_quarantine_service_bundle_id": "com.yourteam.entitlement-jail.QuarantineLab_default"
+    }
+  ]
+}
+```
+
+Notes:
+
+- `policy_profile` is copied into the output bundle under `nodes/<node_id>/policy-profile.sb` so an atlas is self-contained.
+- `xpc_quarantine_service_bundle_id` is optional. If a plan row is `kind=quarantine-lab` and a node omits the quarantine service id, the harness writes a synthetic “service missing” result for that witness (rows are not dropped).
+
+### Policy profiles (`experiments/policy/*.sb`)
+
+These are intentionally small, teaching-grade SBPL profiles (“attempted equivalents”), not a claim of equivalence to App Sandbox entitlements.
+
+Profiles typically use a `HOME` parameter and a helper like:
+
+```lisp
+(subpath (string-append (param "HOME") "/Downloads"))
+```
+
+The harness passes that parameter automatically.
+
+## Outputs (atlas + artifacts)
+
+### Directory layout
+
+Default output directory:
+
+- `experiments/out/<plan-id>-<timestamp>/`
+
+Key contents:
+
+- `atlas.json` — the mismatch atlas (JSON, sorted keys; compact)
+- `nodes/<node_id>/policy-profile.sb` — the materialized SBPL profile used for that node
+- `<row_id>/baseline/stdout.txt` and `stderr.txt`
+- `<row_id>/<node_id>/policy/stdout.txt` and `stderr.txt`
+- `<row_id>/<node_id>/entitlement/stdout.txt` and `stderr.txt`
+- Optional sandbox log excerpts under each run directory:
+  - `sandbox-log.txt`
+  - `sandbox-log-retry.txt` (only for entitlement permission-shaped errors with no deny observed on first attempt)
+
+### Atlas schema (contract)
+
+The harness emits an `Atlas`:
+
+```json
+{
+  "plan_id": "tri-run-smoke",
+  "created_at_iso8601": "2025-12-24T07:18:06Z",
+  "nodes": [/* copies of node objects */],
+  "rows": [/* TriRunRow */]
+}
+```
+
+Each `TriRunRow` contains:
+
+- the original inputs (`probe_id`, `row_id`, `inputs`, `expected_side_effects`, `capture_spec`)
+- the selected node (`node_id`, `policy_profile_ref`, `entitlement_service_bundle_id`)
+- the three normalized witness results (`baseline`, `policy`, `entitlement`)
+- the exact argv used for each witness (`*_cmd_argv`)
+- a computed `parity` classification
+
+Normalized witness results (`ProbeResult`) look like:
 
 ```json
 {
   "rc": 0,
-  "normalized_outcome": "string",
-  "errno_or_error": { "errno": 1, "error": "string" },
+  "normalized_outcome": "ok",
+  "errno_or_error": { "errno": null, "error": null },
   "stdout_ref": "relative/path/to/stdout.txt",
   "stderr_ref": "relative/path/to/stderr.txt",
   "layer_attribution": {
-    "seatbelt_deny_op": "string|null",
-    "service_refusal": "string|null",
-    "quarantine_delta": "string|null",
-    "world_shape_change": "string|null"
+    "seatbelt_deny_op": null,
+    "service_refusal": null,
+    "quarantine_delta": null,
+    "world_shape_change": null
   },
   "sandbox_log_excerpt_ref": "relative/path/to/sandbox-log.txt",
   "sandbox_log_capture": {
@@ -55,7 +249,8 @@ Every witness run is normalized into:
         "predicate": "string",
         "term": "string",
         "observed_deny": true,
-        "deny_op": "string|null",
+        "deny_op": "file-read-data",
+        "observation": "deny_observed",
         "excerpt_ref": "relative/path/to/sandbox-log.txt"
       }
     ]
@@ -64,8 +259,8 @@ Every witness run is normalized into:
     "effective_path_class": "host_path|container_path|synthesized_temp_path|other_path|null",
     "paths": {
       "target_path": {
-        "raw": "string",
-        "realpath": "string|null",
+        "raw": "/path",
+        "realpath": "/private/path",
         "path_class": "string",
         "realpath_class": "string|null"
       }
@@ -74,77 +269,37 @@ Every witness run is normalized into:
 }
 ```
 
-Hard rule: “couldn’t run” is never collapsed into “denied”. `seatbelt_deny_op` is only set when a deny line is actually observed (via sandbox log capture); otherwise it remains `null` and the capture attempts record whether a deny line was observed in the window.
+Hard rule: “couldn’t run” is never collapsed into “denied”. `seatbelt_deny_op` is only set when a deny line is actually observed in captured logs; otherwise it remains `null` and the capture attempts record what was searched and what was (not) observed.
 
-`row_id` is used for artifact directory naming. If you want multiple rows that use the same `probe_id` with different `inputs.argv` (for example multiple `fs_op` variants), set distinct `row_id` values.
+### Parity classification
 
-## Lattice + profiles
+The harness computes a `parity.parity_class` for each row/node comparing **policy vs entitlement**:
 
-Entitlements are a first-class independent variable **only via XPC service targets** (not via child-process inheritance).
+- `match` — outcomes and relevant attribution fields line up
+- `mismatch_seatbelt` — `seatbelt_deny_op` differs (deny observed in one witness but not the other)
+- `mismatch_quarantine` — `quarantine_delta` differs (expected for user-selected / quarantine experiments)
+- `mismatch_world_shape` — container/world-shape differs (e.g. containerized home)
+- `mismatch_service_mediated` — service-mediated mismatch without a path-class confound (e.g. `normalized_outcome` differs)
+- `path_class_confound` — mismatch, but the effective path class differs (host vs container vs tmp), making it confounded
+- `incomparable` — witness failed or output was unparseable
 
-See:
+## Extending the harness (common edits)
 
-- `experiments/nodes/entitlement-lattice.json` for the entitlement lattice (E0–E4)
-- `experiments/nodes/entitlement-lattice-debug-jit.json` for the debug/JIT/profile lattice (E0, E5, E8; policy profile remains P0_minimal as a baseline reference)
-- `experiments/policy/` for the “attempted equivalent” `.sb` profiles (P0–P4)
+### Add a new probe to the experiment plan
 
-Quarantine Lab is the calibration anchor where parity should fail for principled reasons: quarantine metadata deltas are not a Seatbelt policy knob.
+1. Implement the probe in `xpc/InProcessProbeCore.swift` (so XPC services and the substrate share it).
+2. Add a row to a plan under `experiments/plans/`.
+3. If it’s a “permission-shaped” probe, consider setting `capture_spec.capture_sandbox_log=true`.
 
-## Build + run
+### Add a new entitlement node
 
-Build the harness + unsandboxed substrate (preferred: Makefile):
+1. Add a new node to one of the lattices under `experiments/nodes/`.
+2. Ensure the corresponding XPC service exists under `xpc/services/` and is embedded/signed into `EntitlementJail.app`.
+   - See [xpc/README.md](../xpc/README.md) and [CONTRIBUTING.md](../CONTRIBUTING.md#toy-example-adding-a-new-xpc-service).
+3. Rebuild the app (`make build`) so the service exists and Evidence is regenerated.
 
-```sh
-make build-experiments
-```
+### Add or modify a policy profile
 
-Inspection-friendly Swift build (no optimization):
-
-```sh
-SWIFT_OPT_LEVEL=-Onone make build-experiments
-```
-
-Build/sign the `.app` with embedded XPC services (preferred: Makefile; see `SIGNING.md` for identities/entitlements order):
-
-Signing, packaging, and distribution procedures are centralized in [SIGNING.md](../SIGNING.md). This README intentionally does not repeat signing commands or identity guidance; follow the signing doc to produce a runnable `EntitlementJail.app` for entitlement witness runs.
-
-Run a tri-run plan:
-
-```sh
-./experiments/bin/ej-harness run
-```
-
-Run the trimmed lattice (E0–E2):
-
-```sh
-./experiments/bin/ej-harness run --nodes experiments/nodes/entitlement-lattice-e0-e2.json
-```
-
-Run the debug/JIT lattice plan:
-
-```sh
-./experiments/bin/ej-harness run --nodes experiments/nodes/entitlement-lattice-debug-jit.json --plan experiments/plans/tri-run-debug-jit.json
-```
-
-Note: `dlopen_external` is a manual probe (requires an explicit path or `EJ_DLOPEN_PATH`), and DYLD env behavior is intentionally not exercised here.
-
-Run the parametric demo plan (shows `row_id` with multiple `fs_op` rows):
-
-```sh
-./experiments/bin/ej-harness run --plan experiments/plans/tri-run-parametric-demo.json
-```
-
-Run the smoke plan (minimal, low-side-effect):
-
-```sh
-./experiments/bin/ej-harness run --plan experiments/plans/tri-run-smoke.json
-```
-
-Artifacts land under `experiments/out/…/atlas.json` (the harness prints the absolute path it wrote).
-
-## Notes
-
-- Policy witness profiles in `experiments/policy/*.sb` use `HOME` as a profile parameter; the harness passes it automatically via `sandbox-exec -D HOME=<path> ...`.
-- Sandbox log capture is best-effort and PID-scoped: for probe runs the harness keys log searches on `ProcessName(pid)` from the JSON `details.probe_pid`/`details.service_pid` fields (falls back to `details.pid`), to avoid cross-run contamination.
-- Entitlement witness tightening: when a probe returns a permission-shaped error and no deny op is observed, the harness automatically retries sandbox log capture with a wider window and a stricter predicate (see `sandbox-log-retry.txt` when present).
-- When invoking `EntitlementJail.app` commands from a sandboxed context, write outputs under the container home (the JSON `output_dir` is authoritative). Do not assume repo paths are writable from inside the sandbox; copy artifacts out as needed.
+1. Add/edit an SBPL profile under `experiments/policy/`.
+2. Reference it from your node (`policy_profile`).
+3. Keep profiles small and explicit: the policy witness is a hypothesis knob, not “the sandbox”.

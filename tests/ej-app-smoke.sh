@@ -112,6 +112,202 @@ if deny_evidence == "not_found":
     print("note: deny evidence not found (this can happen on systems that do not persist sandbox denials in the unified log store)")
 PY
 
+step "Attach-friendly sandbox_check (pid-ready + attach-report)"
+ATTACH_DIR="${OUT_DIR}/attach"
+mkdir -p "${ATTACH_DIR}"
+ATTACH_REPORT="${ATTACH_DIR}/attach.jsonl"
+ATTACH_STDERR="${ATTACH_DIR}/run-xpc.stderr"
+ATTACH_RUN_JSON="${ATTACH_DIR}/run-xpc-sandbox-check.json"
+
+"${EJ}" run-xpc --attach 10 --hold-open 0 --attach-report "${ATTACH_REPORT}" --profile minimal sandbox_check --operation file-read-data --path /etc/hosts >"${ATTACH_RUN_JSON}" 2>"${ATTACH_STDERR}" &
+ATTACH_RUN_PID="$!"
+
+WAIT_PATH=""
+for _ in $(seq 1 200); do
+  if [[ -f "${ATTACH_REPORT}" ]]; then
+    WAIT_PATH="$(/usr/bin/python3 - "${ATTACH_REPORT}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+    try:
+        ev = json.loads(line)
+    except Exception:
+        continue
+    if ev.get("kind") == "attach_event" and ev.get("event") == "wait_ready":
+        wait_path = ev.get("wait_path") or ""
+        if wait_path:
+            print(wait_path)
+            break
+PY
+)"
+  fi
+  if [[ -n "${WAIT_PATH}" ]]; then
+    break
+  fi
+  sleep 0.05
+done
+
+if [[ -z "${WAIT_PATH}" ]]; then
+  echo "missing wait_path in attach report: ${ATTACH_REPORT}" 1>&2
+  echo "stderr:" 1>&2
+  sed -n '1,200p' "${ATTACH_STDERR}" 1>&2 || true
+  kill "${ATTACH_RUN_PID}" 2>/dev/null || true
+  wait "${ATTACH_RUN_PID}" 2>/dev/null || true
+  exit 1
+fi
+
+SERVICE_PID=""
+for _ in $(seq 1 200); do
+  if [[ -f "${ATTACH_REPORT}" ]]; then
+    SERVICE_PID="$(/usr/bin/python3 - "${ATTACH_REPORT}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+    try:
+        ev = json.loads(line)
+    except Exception:
+        continue
+    if ev.get("kind") == "attach_event" and ev.get("event") == "pid_ready":
+        pid = ev.get("pid")
+        if isinstance(pid, int) and pid > 0:
+            print(pid)
+            break
+PY
+)"
+  fi
+  if [[ -n "${SERVICE_PID}" ]]; then
+    break
+  fi
+  sleep 0.05
+done
+
+if [[ -z "${SERVICE_PID}" ]]; then
+  echo "missing pid in attach report: ${ATTACH_REPORT}" 1>&2
+  echo "stderr:" 1>&2
+  sed -n '1,200p' "${ATTACH_STDERR}" 1>&2 || true
+  kill "${ATTACH_RUN_PID}" 2>/dev/null || true
+  wait "${ATTACH_RUN_PID}" 2>/dev/null || true
+  exit 1
+fi
+
+# The FIFO is created by the service; wait briefly so the writer doesn't race with FIFO creation.
+for _ in $(seq 1 200); do
+  if [[ -p "${WAIT_PATH}" ]]; then
+    break
+  fi
+  sleep 0.05
+done
+
+printf go > "${WAIT_PATH}"
+wait "${ATTACH_RUN_PID}"
+
+/usr/bin/python3 - "${ATTACH_RUN_JSON}" "${ATTACH_REPORT}" "${ATTACH_STDERR}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+run_json_path = Path(sys.argv[1])
+attach_report_path = Path(sys.argv[2])
+stderr_path = Path(sys.argv[3])
+
+data = json.loads(run_json_path.read_text(encoding="utf-8", errors="replace"))
+result = data.get("result") or {}
+if result.get("ok") is not True:
+    raise SystemExit(f"expected run-xpc ok=true; got {result!r}")
+
+details = (data.get("data") or {}).get("details") or {}
+if details.get("probe_family") != "sandbox_check":
+    raise SystemExit(f"expected data.details.probe_family='sandbox_check'; got {details.get('probe_family')!r}")
+if not (details.get("sandbox_check_rc") or ""):
+    raise SystemExit("expected data.details.sandbox_check_rc to be present")
+
+events = []
+for line in attach_report_path.read_text(encoding="utf-8", errors="replace").splitlines():
+    try:
+        ev = json.loads(line)
+    except Exception:
+        continue
+    if ev.get("kind") == "attach_event":
+        events.append(ev)
+
+have_wait = any(ev.get("event") == "wait_ready" and (ev.get("wait_path") or "") for ev in events)
+have_pid = any(ev.get("event") == "pid_ready" and isinstance(ev.get("pid"), int) for ev in events)
+if not have_wait:
+    raise SystemExit("expected attach report to include wait_ready with wait_path")
+if not have_pid:
+    raise SystemExit("expected attach report to include pid_ready with pid")
+
+stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
+if "[client] pid-ready" not in stderr:
+    raise SystemExit("expected pid-ready status line on stderr")
+PY
+
+step "Preload dylib (instrumentation hookpoint)"
+PREFLIGHT_JSON="${EJ_PREFLIGHT_JSON:-${ROOT_DIR}/tests/out/preflight.json}"
+TEST_DYLIB="${ROOT_DIR}/tests/fixtures/TestDylib/out/testdylib.dylib"
+RUN_PRELOAD=0
+if [[ -f "${PREFLIGHT_JSON}" ]]; then
+  RUN_PRELOAD="$(/usr/bin/python3 - "${PREFLIGHT_JSON}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+try:
+    data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+except Exception:
+    print(0)
+    raise SystemExit(0)
+
+dylib_signed = ((data.get("test_dylib") or {}).get("signed") is True)
+svc = (data.get("services") or {}).get("get-task-allow") or {}
+disable_lv = ((svc.get("entitlements") or {}).get("disable_library_validation") is True)
+print(1 if (dylib_signed and disable_lv) else 0)
+PY
+)"
+fi
+
+if [[ "${RUN_PRELOAD}" != "1" ]]; then
+  echo "skip preload test: missing signed test dylib or disable-library-validation entitlement"
+else
+  PRELOAD_DIR="${OUT_DIR}/preload"
+  mkdir -p "${PRELOAD_DIR}"
+  PRELOAD_JSON="${PRELOAD_DIR}/run-xpc-preload-dylib.json"
+  "${EJ}" run-xpc --profile get-task-allow --preload-dylib "${TEST_DYLIB}" --preload-dylib-stage sandbox_check --operation file-read-data --path /etc/hosts >"${PRELOAD_JSON}"
+
+  /usr/bin/python3 - "${PRELOAD_JSON}" "${TEST_DYLIB}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+run_json_path = Path(sys.argv[1])
+dylib_path = sys.argv[2]
+
+data = json.loads(run_json_path.read_text(encoding="utf-8", errors="replace"))
+result = data.get("result") or {}
+if result.get("ok") is not True:
+    raise SystemExit(f"expected run-xpc ok=true; got {result!r}")
+
+details = (data.get("data") or {}).get("details") or {}
+if details.get("preload_dylib_outcome") != "ok":
+    raise SystemExit(f"expected data.details.preload_dylib_outcome='ok'; got {details.get('preload_dylib_outcome')!r}")
+
+preload_path = details.get("preload_dylib_path") or ""
+if not isinstance(preload_path, str) or not preload_path:
+    raise SystemExit("expected data.details.preload_dylib_path to be present")
+if not preload_path.endswith(".dylib"):
+    raise SystemExit(f"expected data.details.preload_dylib_path to end with .dylib; got {preload_path!r}")
+if not Path(preload_path).exists():
+    raise SystemExit(f"expected staged preload dylib to exist at {preload_path!r}")
+PY
+fi
+
 step "Repo --out write (run-matrix)"
 MATRIX_DIR="${OUT_DIR}/matrix-baseline"
 mkdir -p "${MATRIX_DIR}"

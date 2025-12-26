@@ -243,8 +243,11 @@ Notes:
 - `--log-path-class`/`--log-name` must be provided together and cannot be combined with an explicit `--log-stream <path>`.
 - `--log-predicate` overrides the default PID-scoped predicate for both stream and observer (advanced; use with care).
 - `--json-out` writes the probe JSON response to a file (stdout stays available for log stream output).
+- `--attach-report <path|auto|stdout|stderr>` emits machine-readable attach events (`wait_ready`, `pid_ready`) as JSONL. If you choose `stdout`, you must also set `--json-out` so the probe JSON doesn't mix with the attach report.
 - `--hold-open` keeps the service process alive after printing the JSON response.
 - `--attach <seconds>` sets up a FIFO wait and, by default, also sets `--hold-open <seconds>` (so wall time can approach `2*seconds` if you trigger near the timeout). For automation/harnesses, consider `--hold-open 0`.
+- `--preload-dylib <abs>` asks the service to `dlopen()` a dylib before running the probe. This is intended for instrumentation and executes dylib initializers by design; use it intentionally and prefer an injection-friendly profile (for example `fully_injectable`). In sandboxed services, you will usually also want `--preload-dylib-stage` so the dylib is copied into the service container before loading (otherwise the sandbox may block the file open).
+- `--preload-dylib-stage` copies the dylib into the service container `tmp` and loads that staged copy (use this when the service sandbox would block reading from your source path).
 - `--xpc-timeout-ms <n>` sets a client-side timeout; if no response arrives, the client emits a structured `probe_response` with `normalized_outcome: xpc_error`.
 
 Common probes (discoverable via `probe_catalog`):
@@ -254,6 +257,7 @@ $EJ run-xpc --profile minimal probe_catalog
 $EJ run-xpc --profile minimal capabilities_snapshot
 $EJ run-xpc --profile minimal fs_op --op stat --path-class tmp
 $EJ run-xpc --profile net_client net_op --op tcp_connect --host 127.0.0.1 --port 9
+$EJ run-xpc --profile fully_injectable --ack-risk fully_injectable sandbox_check --operation file-read-data --path /etc/hosts
 ```
 
 **Attach-friendly waits (`--attach`, `--wait-*`)**
@@ -284,6 +288,13 @@ When attach waits are in use, it also prints:
 
 These status lines go to stderr so JSON stdout stays clean for parsing.
 
+If you’re scripting around attach, `--attach-report` avoids parsing free-form status lines. It emits JSONL events (one per line), for example:
+
+```json
+{"kind":"attach_event","event":"wait_ready",...}
+{"kind":"attach_event","event":"pid_ready",...}
+```
+
 Trigger the probe by writing to the FIFO:
 
 ```sh
@@ -301,6 +312,10 @@ If you prefer controlling the wait path explicitly:
 - If you use `--wait-fifo`, pass `--wait-create` (or create the FIFO yourself) so the wait path exists.
 
 Wait metadata is recorded in `data.details` (`wait_*` fields).
+
+Note on hooking `libsystem_sandbox` (`sandbox_check`)
+
+- Many probes (notably filesystem probes like `fs_op`) perform syscalls directly and do not call `sandbox_check`. If you want `libsystem_sandbox` visibility, use the `sandbox_check` probe as a calibration point, or hook syscalls and/or rely on deny evidence capture.
 
 **Sandbox log capture (deny evidence)**
 
@@ -558,4 +573,5 @@ plutil -extract data.details.file_path raw -o - report.json
 - `run-system` runs **platform binaries only** (allowlisted to standard system prefixes). It exists for specific demonstrations; most work should use `run-xpc`.
 - `run-embedded` runs signed helper tools embedded in the app bundle. It does not run arbitrary on-disk tools by path.
 - `dlopen_external` executes dylib initializers by design. Treat it as code execution and use it intentionally.
+- `--preload-dylib` also executes dylib initializers by design; treat it as code execution and use it intentionally.
 - If you did not capture deny evidence, do not claim “sandbox denied”; keep attribution explicit.

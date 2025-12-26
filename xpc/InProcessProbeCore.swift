@@ -33,6 +33,11 @@ public func ej_probe_jit_map_jit_marker() {}
 @_optimize(none)
 public func ej_probe_jit_rwx_legacy_marker() {}
 
+@_cdecl("ej_probe_sandbox_check")
+@inline(never)
+@_optimize(none)
+public func ej_probe_sandbox_check_marker() {}
+
 public enum InProcessProbeCore {
     public static func run(_ req: RunProbeRequest) -> RunProbeResponse {
         let started = Date()
@@ -86,6 +91,87 @@ public enum InProcessProbeCore {
             }
         }
 
+        // Optional instrumentation hookpoint: preload a dylib before probe dispatch.
+        // This executes dylib initializers by design; use intentionally.
+        var preloadDetails: [String: String] = [:]
+        if let preloadPath = req.preload_dylib_path {
+            preloadDetails["preload_dylib_path"] = preloadPath
+            preloadDetails["preload_dylib_mode"] = "RTLD_NOW"
+
+            let hasDisableLibraryValidation = entitlementBool("com.apple.security.cs.disable-library-validation")
+            preloadDetails["preload_has_disable_library_validation"] = hasDisableLibraryValidation ? "true" : "false"
+
+            guard preloadPath.hasPrefix("/") else {
+                let response = badRequest("invalid preload_dylib_path (expected absolute path)")
+                let ended = Date()
+                return decorate(response, req: req, started: started, ended: ended)
+            }
+
+            guard hasDisableLibraryValidation else {
+                let refusalReason = "preload_dylib requires com.apple.security.cs.disable-library-validation"
+                let response = RunProbeResponse(
+                    rc: 1,
+                    stdout: "",
+                    stderr: "",
+                    normalized_outcome: "preload_refused",
+                    errno: nil,
+                    error: refusalReason,
+                    details: baseDetails(preloadDetails.merging([
+                        "probe_family": "preload_dylib",
+                    ], uniquingKeysWith: { cur, _ in cur })),
+                    layer_attribution: LayerAttribution(service_refusal: refusalReason),
+                    sandbox_log_excerpt_ref: nil
+                )
+                let ended = Date()
+                return decorate(response, req: req, started: started, ended: ended)
+            }
+
+            guard FileManager.default.fileExists(atPath: preloadPath) else {
+                let response = RunProbeResponse(
+                    rc: 1,
+                    stdout: "",
+                    stderr: "",
+                    normalized_outcome: "not_found",
+                    errno: Int(ENOENT),
+                    error: "file not found",
+                    details: baseDetails(preloadDetails.merging([
+                        "probe_family": "preload_dylib",
+                    ], uniquingKeysWith: { cur, _ in cur })),
+                    layer_attribution: nil,
+                    sandbox_log_excerpt_ref: nil
+                )
+                let ended = Date()
+                return decorate(response, req: req, started: started, ended: ended)
+            }
+
+            dlerror()
+            let handle = preloadPath.withCString { ptr in
+                ej_dlopen(ptr, Int32(RTLD_NOW))
+            }
+            if handle == nil {
+                let errPtr = dlerror()
+                let dlopenError = errPtr.map { String(cString: $0) } ?? "dlopen failed (no error string)"
+                preloadDetails["preload_dylib_error"] = dlopenError
+                let response = RunProbeResponse(
+                    rc: 1,
+                    stdout: "",
+                    stderr: "",
+                    normalized_outcome: "dlopen_failed",
+                    errno: nil,
+                    error: dlopenError,
+                    details: baseDetails(preloadDetails.merging([
+                        "probe_family": "preload_dylib",
+                    ], uniquingKeysWith: { cur, _ in cur })),
+                    layer_attribution: nil,
+                    sandbox_log_excerpt_ref: nil
+                )
+                let ended = Date()
+                return decorate(response, req: req, started: started, ended: ended)
+            }
+
+            preloadDetails["preload_dylib_outcome"] = "ok"
+        }
+
         switch req.probe_id {
         case "probe_catalog":
             response = probeCatalog()
@@ -115,6 +201,8 @@ public enum InProcessProbeCore {
             response = probeBookmarkRoundtrip(argv: req.argv)
         case "capabilities_snapshot":
             response = probeCapabilitiesSnapshot()
+        case "sandbox_check":
+            response = probeSandboxCheck(argv: req.argv)
         case "userdefaults_op":
             response = probeUserDefaultsOp(argv: req.argv)
         case "fs_xattr":
@@ -124,18 +212,23 @@ public enum InProcessProbeCore {
         default:
             response = unknownProbeResponse(req.probe_id)
         }
-        if !waitDetails.isEmpty {
+
+        if !waitDetails.isEmpty || !preloadDetails.isEmpty {
             var details = response.details ?? [:]
             for (k, v) in waitDetails {
                 details[k] = v
             }
+            for (k, v) in preloadDetails {
+                details[k] = v
+            }
             response.details = details
         }
+
         let ended = Date()
         return decorate(response, req: req, started: started, ended: ended)
     }
 
-	    // MARK: - Common metadata
+    // MARK: - Common metadata
 
     private static func decorate(_ response: RunProbeResponse, req: RunProbeRequest, started: Date, ended: Date) -> RunProbeResponse {
         var response = response
@@ -513,6 +606,28 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
             ]
         ),
         ProbeSpec(
+            probe_id: "sandbox_check",
+            summary: "call sandbox_check() in libsystem_sandbox (hook calibration)",
+            usage: "sandbox_check --operation <sandbox-op> [--path <abs>] [--repeat <n>]",
+            required_args: [
+                "--operation <sandbox-op>"
+            ],
+            optional_args: [
+                "--path <abs>",
+                "--repeat <n> (default: 1)"
+            ],
+            examples: [
+                "sandbox_check --operation file-read-data",
+                "sandbox_check --operation file-read-data --path /etc/hosts",
+                "sandbox_check --operation mach-lookup --repeat 10"
+            ],
+            entitlement_hints: ["none (observer / instrumentation target)"],
+            notes: [
+                "This does not perform the operation; it only calls sandbox_check() so attach/hook tooling can observe libsystem_sandbox activity.",
+                "If --path is provided, the probe passes a guessed filter type for a path argument; treat the return code as informational, not authoritative."
+            ]
+        ),
+        ProbeSpec(
             probe_id: "userdefaults_op",
             summary: "read/write/remove/sync a UserDefaults key",
             usage: "userdefaults_op --op <read|write|remove|sync> [--key <k>] [--value <v>] [--suite <suite>]",
@@ -585,6 +700,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
         TraceSymbolSpec(probe_id: "dlopen_external", symbols: ["ej_probe_dlopen_external"]),
         TraceSymbolSpec(probe_id: "jit_map_jit", symbols: ["ej_probe_jit_map_jit"]),
         TraceSymbolSpec(probe_id: "jit_rwx_legacy", symbols: ["ej_probe_jit_rwx_legacy"]),
+        TraceSymbolSpec(probe_id: "sandbox_check", symbols: ["ej_probe_sandbox_check"]),
     ]
 
     private static func probeSpec(for probeId: String) -> ProbeSpec? {
@@ -2652,23 +2768,23 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	            .appendingPathComponent("\(bundleId).plist", isDirectory: false)
 	            .path
 
-		        let details = baseDetails([
-		            "probe_family": "capabilities_snapshot",
-		            "has_app_sandbox": entitlementBool("com.apple.security.app-sandbox") ? "true" : "false",
-		            "has_get_task_allow": entitlementBool("com.apple.security.get-task-allow") ? "true" : "false",
-		            "has_disable_library_validation": entitlementBool("com.apple.security.cs.disable-library-validation") ? "true" : "false",
-		            "has_allow_dyld_env": entitlementBool("com.apple.security.cs.allow-dyld-environment-variables") ? "true" : "false",
-		            "has_allow_jit": entitlementBool("com.apple.security.cs.allow-jit") ? "true" : "false",
-		            "has_allow_unsigned_exec_mem": entitlementBool("com.apple.security.cs.allow-unsigned-executable-memory") ? "true" : "false",
-		            "has_network_client": entitlementBool("com.apple.security.network.client") ? "true" : "false",
-		            "has_downloads_rw": entitlementBool("com.apple.security.files.downloads.read-write") ? "true" : "false",
-		            "has_bookmarks_app_scope": entitlementBool("com.apple.security.files.bookmarks.app-scope") ? "true" : "false",
-		            "has_user_selected_read_only": entitlementBool("com.apple.security.files.user-selected.read-only") ? "true" : "false",
-		            "has_user_selected_read_write": entitlementBool("com.apple.security.files.user-selected.read-write") ? "true" : "false",
-		            "has_user_selected_executable": entitlementBool("com.apple.security.files.user-selected.executable") ? "true" : "false",
-		            "downloads_dir": FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path ?? "",
-		            "desktop_dir": FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first?.path ?? "",
-		            "documents_dir": FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "",
+	        let details = baseDetails([
+	            "probe_family": "capabilities_snapshot",
+	            "has_app_sandbox": entitlementBool("com.apple.security.app-sandbox") ? "true" : "false",
+	            "has_get_task_allow": entitlementBool("com.apple.security.get-task-allow") ? "true" : "false",
+	            "has_disable_library_validation": entitlementBool("com.apple.security.cs.disable-library-validation") ? "true" : "false",
+	            "has_allow_dyld_env": entitlementBool("com.apple.security.cs.allow-dyld-environment-variables") ? "true" : "false",
+	            "has_allow_jit": entitlementBool("com.apple.security.cs.allow-jit") ? "true" : "false",
+	            "has_allow_unsigned_exec_mem": entitlementBool("com.apple.security.cs.allow-unsigned-executable-memory") ? "true" : "false",
+	            "has_network_client": entitlementBool("com.apple.security.network.client") ? "true" : "false",
+	            "has_downloads_rw": entitlementBool("com.apple.security.files.downloads.read-write") ? "true" : "false",
+	            "has_bookmarks_app_scope": entitlementBool("com.apple.security.files.bookmarks.app-scope") ? "true" : "false",
+	            "has_user_selected_read_only": entitlementBool("com.apple.security.files.user-selected.read-only") ? "true" : "false",
+	            "has_user_selected_read_write": entitlementBool("com.apple.security.files.user-selected.read-write") ? "true" : "false",
+	            "has_user_selected_executable": entitlementBool("com.apple.security.files.user-selected.executable") ? "true" : "false",
+	            "downloads_dir": FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path ?? "",
+	            "desktop_dir": FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first?.path ?? "",
+	            "documents_dir": FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "",
 	            "app_support_dir": FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.path ?? "",
 	            "caches_dir": FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.path ?? "",
 	            "prefs_path_guess": prefsPath,
@@ -2687,6 +2803,102 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	            error: nil,
 	            details: details,
 	            layer_attribution: LayerAttribution(world_shape_change: worldShapeChange),
+	            sandbox_log_excerpt_ref: nil
+	        )
+	    }
+
+	    // MARK: - sandbox_check (libsystem_sandbox callsite)
+
+	    private typealias SandboxCheckNoArgFn = @convention(c) (pid_t, UnsafePointer<CChar>, Int32) -> Int32
+	    private typealias SandboxCheckPathFn = @convention(c) (pid_t, UnsafePointer<CChar>, Int32, UnsafePointer<CChar>) -> Int32
+
+	    private static func resolveSandboxCheckSymbol() -> UnsafeMutableRawPointer? {
+	        // dlfcn's RTLD_DEFAULT is (void*)-2 on Darwin; use it directly.
+	        let rtldDefault = UnsafeMutableRawPointer(bitPattern: -2)
+	        return "sandbox_check".withCString { sym in
+	            dlsym(rtldDefault, sym)
+	        }
+	    }
+
+	    private static func probeSandboxCheck(argv: [String]) -> RunProbeResponse {
+	        ej_probe_sandbox_check_marker()
+	        let args = Argv(argv)
+
+	        guard let operation = args.value("--operation"), !operation.isEmpty else {
+	            return badRequest("missing --operation <sandbox-op>")
+	        }
+
+	        let path = args.value("--path")
+	        let repeatCount = max(1, min(200, args.intValue("--repeat") ?? 1))
+
+	        guard let symbol = resolveSandboxCheckSymbol() else {
+	            return RunProbeResponse(
+	                rc: 1,
+	                stdout: "",
+	                stderr: "",
+	                normalized_outcome: "symbol_missing",
+	                errno: nil,
+	                error: "sandbox_check symbol not found via dlsym(RTLD_DEFAULT, \"sandbox_check\")",
+	                details: baseDetails([
+	                    "probe_family": "sandbox_check",
+	                    "sandbox_check_operation": operation,
+	                    "sandbox_check_path": path ?? "",
+	                ]),
+	                layer_attribution: nil,
+	                sandbox_log_excerpt_ref: nil
+	            )
+	        }
+
+	        var details = baseDetails([
+	            "probe_family": "sandbox_check",
+	            "sandbox_check_operation": operation,
+	            "sandbox_check_path": path ?? "",
+	            "sandbox_check_repeat": "\(repeatCount)",
+	        ])
+
+	        var lastRc: Int32 = -1
+	        var samples: [String] = []
+
+	        for i in 0..<repeatCount {
+	            let rc: Int32 = operation.withCString { opPtr in
+	                if let path, !path.isEmpty {
+	                    // Best-effort: assume the traditional "path" filter type is 1.
+	                    let fn = unsafeBitCast(symbol, to: SandboxCheckPathFn.self)
+	                    return path.withCString { pathPtr in
+	                        fn(getpid(), opPtr, 1, pathPtr)
+	                    }
+	                }
+	                let fn = unsafeBitCast(symbol, to: SandboxCheckNoArgFn.self)
+	                return fn(getpid(), opPtr, 0)
+	            }
+	            lastRc = rc
+	            if samples.count < 25 {
+	                samples.append("\(i):\(rc)")
+	            }
+	        }
+
+	        details["sandbox_check_rc"] = "\(lastRc)"
+	        details["sandbox_check_rc_samples"] = samples.joined(separator: " ")
+	        details["sandbox_check_filter"] = (path?.isEmpty == false) ? "path(guessed_type=1)" : "none(type=0)"
+
+	        let outcome: String
+	        if lastRc == 0 {
+	            outcome = "allow"
+	        } else if lastRc == 1 {
+	            outcome = "deny"
+	        } else {
+	            outcome = "rc_nonstandard"
+	        }
+
+	        return RunProbeResponse(
+	            rc: 0,
+	            stdout: "",
+	            stderr: "",
+	            normalized_outcome: outcome,
+	            errno: nil,
+	            error: nil,
+	            details: details,
+	            layer_attribution: nil,
 	            sandbox_log_excerpt_ref: nil
 	        )
 	    }

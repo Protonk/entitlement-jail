@@ -1,178 +1,157 @@
-# XPC subsystem (architecture + extension manual)
+# `xpc/` (Swift XPC subsystem: build + targets)
 
-This document is the authoritative reference for the XPC-based execution surfaces in this repo: how the XPC client helpers and XPC services fit together, and how to add new XPC services as research targets.
+This is developer documentation for the Swift code under `xpc/`: the shared XPC wire types, the embedded XPC client helpers, and the XPC services that act as the repo’s “entitlements as a variable” targets.
 
-## Why XPC exists in this repo
+This document is intentionally build/implementation-focused and avoids duplicating CLI flag documentation.
 
-`EntitlementJail.app` ships as a host-side Rust CLI launcher plus a zoo of sandboxed XPC services. In the default build, the launcher is **plain-signed (unsandboxed host-side)** so it can perform observer tasks like log capture and copying artifacts into repo paths. The experimental variable lives in the XPC services: each `.xpc` is a separately signed target with its own entitlement profile.
+For usage/behavior contracts, see:
 
-For entitlements-as-a-variable research, child-process sandbox inheritance is restrictive and brittle, and Apple’s guidance is to prefer XPC services for helper-like functionality (see [Apple Developer: Enabling App Sandbox](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html)).
+- User guide: [EntitlementJail.md](../EntitlementJail.md)
+- CLI contract: [runner/README.md](../runner/README.md)
+- Signing/build procedure: [SIGNING.md](../SIGNING.md)
+- Contribution guide (includes a toy “add a service” example): [CONTRIBUTING.md](../CONTRIBUTING.md)
 
-XPC gives you:
+## What lives in `xpc/`
 
-- A separate signed target per experiment (`.xpc`), each with its own entitlements.
-- A launchd-managed process boundary that avoids common `process-exec*` failure modes associated with staged binaries.
+- `ProbeAPI.swift`
+  - NSXPC exported protocols (`ProbeServiceProtocol`, `QuarantineLabProtocol`)
+  - Codable request/response types (JSON-over-`Data`) used by both clients and services
+- `InProcessProbeCore.swift`
+  - The in-process probe implementations (dispatched by `probe_id`)
+  - The safety gates around potentially destructive filesystem operations
+  - Stable `ej_*` trace marker symbols used by external tooling
+- `client/main.swift` → builds the embedded `xpc-probe-client`
+- `quarantine-client/main.swift` → builds the embedded `xpc-quarantine-client`
+- `services/<ServiceName>/…`
+  - One directory per XPC service target: `Info.plist`, `Entitlements.plist`, `main.swift`
 
-## Components
+## How it builds into `EntitlementJail.app`
 
-### `ProbeAPI.swift`: shared protocol + types
+`xpc/` is built and embedded by [build-macos.sh](../build-macos.sh) when `BUILD_XPC=1` (default).
 
-`ProbeAPI.swift` defines:
+The build script finds `swiftc` via `xcrun` (Xcode Command Line Tools are required).
 
-- The NSXPC exported protocols:
-  - `ProbeServiceProtocol` (`runProbe(_:withReply:)`)
-  - `QuarantineLabProtocol` (`writeArtifact(_:withReply:)`)
-- Codable request/response types for a JSON-over-XPC wire format:
-  - `RunProbeRequest` / `RunProbeResponse`
-  - `QuarantineWriteRequest` / `QuarantineWriteResponse`
-  - Supporting types like `LayerAttribution` and `QuarantineXattrParsed`
+### Outputs (bundle layout contract)
 
-Both requests and responses are serialized as JSON bytes (`Data`) rather than passing rich Objective‑C objects over XPC. This keeps the interface inspectable and stable, and makes it easy for callers to treat the service output as a structured research record.
+The build script produces:
 
-`RunProbeResponse` carries correlation metadata (for example `correlation_id`, `probe_id`, `argv`), service identity/build fields, and timing/thread hints (`started_at_iso8601`, `ended_at_iso8601`, `thread_id`) when available. The XPC client wraps responses in the uniform JSON envelope described in `runner/README.md` and may annotate log capture fields (`data.log_capture_*`, `data.log_observer_*`, `data.deny_evidence`) when `--log-stream` or `--observe` is used.
-
-`RunProbeRequest` supports an optional `wait_spec` block to block **before** probe execution (used by `run-xpc --wait-*` / `--attach`).
-
-### Client helpers (why the main binary delegates)
-
-The Rust launcher does not speak NSXPC directly. Instead it runs embedded Swift helper executables (small, inspectable wrappers around `NSXPCConnection`):
-
-- `xpc/client/main.swift` → builds `Contents/MacOS/xpc-probe-client` (must live under `Contents/MacOS` so `Bundle.main` resolves to `EntitlementJail.app`)
-- `xpc/quarantine-client/main.swift` → builds `Contents/MacOS/xpc-quarantine-client` (same reason)
-
-The Rust launcher’s `run-xpc` / `quarantine-lab` commands simply invoke these helpers (see [runner/README.md](../runner/README.md)).
-
-Client helper behavior (both follow the same pattern):
-
-- Connect via `NSXPCConnection(serviceName: <bundle-id>)`.
-- Send a JSON request as `Data`.
-- Print the JSON response to stdout.
-- Exit with the response `rc` (best-effort decode; falls back to exit code `1` on decode errors).
-
-### Services (the experimental targets)
-
-Services live under `xpc/services/<ServiceName>/` and are embedded into the app as:
-
+- `EntitlementJail.app/Contents/MacOS/xpc-probe-client`
+- `EntitlementJail.app/Contents/MacOS/xpc-quarantine-client`
 - `EntitlementJail.app/Contents/XPCServices/<ServiceName>.xpc`
+  - `…/<ServiceName>.xpc/Contents/MacOS/<ServiceName>` (the service executable)
 
-Each service is its own research target:
+The client helpers must live under `Contents/MacOS` so `Bundle.main` resolves to `EntitlementJail.app` (XPC lookup and path resolution depend on having the correct bundle context).
 
-- `Info.plist` defines the service bundle id and executable.
-- `Entitlements.plist` is the *experimental variable*.
-- `main.swift` implements the exported protocol and returns JSON responses.
+### What `build-macos.sh` assumes about services
 
-Current services:
+Service discovery/embedding is directory-driven:
 
-- `ProbeService_minimal`: runs built-in probes **in-process** and returns `{rc, normalized_outcome, details, ...}`.
-- `ProbeService_net_client`: identical code to `ProbeService_minimal`, but with `com.apple.security.network.client`.
-- `ProbeService_downloads_rw`: identical code to `ProbeService_minimal`, but with `com.apple.security.files.downloads.read-write`.
-- `ProbeService_user_selected_executable`: identical code to `ProbeService_minimal`, but with `com.apple.security.files.user-selected.executable`.
-- `ProbeService_bookmarks_app_scope`: identical code to `ProbeService_minimal`, but with `com.apple.security.files.bookmarks.app-scope` (enables `mach-lookup` to `com.apple.scopedbookmarksagent.xpc`, used by security-scoped bookmark creation/resolution).
-- `ProbeService_get-task-allow`: identical code to `ProbeService_minimal`, but with `com.apple.security.get-task-allow`.
-- `ProbeService_fully_injectable`: identical code to `ProbeService_minimal`, but with `com.apple.security.get-task-allow` + `com.apple.security.cs.disable-library-validation` + `com.apple.security.cs.allow-dyld-environment-variables` + `com.apple.security.cs.allow-jit` + `com.apple.security.cs.allow-unsigned-executable-memory`.
-- `QuarantineLab_default`: writes/opens/copies artifacts and reports `com.apple.quarantine` deltas.
-- `QuarantineLab_net_client`: identical code to `QuarantineLab_default`, but with `com.apple.security.network.client`.
-- `QuarantineLab_downloads_rw`: identical code to `QuarantineLab_default`, but with `com.apple.security.files.downloads.read-write`.
-- `QuarantineLab_user_selected_executable`: identical code to `QuarantineLab_default`, but with `com.apple.security.files.user-selected.executable`.
-- `QuarantineLab_bookmarks_app_scope`: identical code to `QuarantineLab_default`, but with `com.apple.security.files.bookmarks.app-scope`.
+- Every directory under `xpc/services/*` is treated as a service named `<ServiceName>`.
+- The service bundle is written to `Contents/XPCServices/<ServiceName>.xpc`.
+- The service executable is named exactly `<ServiceName>` and is placed at `…/<ServiceName>.xpc/Contents/MacOS/<ServiceName>`.
+- Each service directory must contain: `Info.plist`, `Entitlements.plist`, `main.swift`.
 
-Built-in probe ids (in-process):
+If you change naming/layout here, you also need to update the build script, Evidence generation, and any docs/tests that assume the bundle layout.
 
-- `probe_catalog`
-- `world_shape`
-- `network_tcp_connect` (`--host <ipv4> --port <1..65535>`)
-- `downloads_rw` (`[--name <file-name>]`)
-- `fs_op` (parameterized filesystem op; see `--op` help in `experiments/bin/witness-substrate`)
-- `fs_op_wait` (fs_op with a wait trigger; see `--wait-fifo`/`--wait-exists` help in `experiments/bin/witness-substrate`)
-- `net_op` (parameterized network op; see `--op` help in `experiments/bin/witness-substrate`)
-- `dlopen_external` (`--path <abs>` or `EJ_DLOPEN_PATH`)
-- `jit_map_jit` (`[--size <bytes>]`)
-- `jit_rwx_legacy` (`[--size <bytes>]`)
-- `bookmark_op` (filesystem op gated by an input bookmark token)
-- `bookmark_make` (best-effort bookmark generator; security-scoped bookmark creation requires ScopedBookmarksAgent IPC, which is denied unless the target has bookmarks or user-selected read-only/read-write entitlements)
-- `bookmark_roundtrip` (make + resolve + run a bookmark-scoped fs op in one call)
-- `capabilities_snapshot` (observer: entitlements + resolved standard directories)
-- `userdefaults_op` (UserDefaults read/write/remove + inferred prefs path)
-- `fs_xattr` (get/list/set/remove xattrs; xattr writes are refused outside harness paths unless explicitly allowed)
-- `fs_coordinated_op` (NSFileCoordinator mediated read/write; best-effort and environment-dependent)
+Build composition is shared-source based:
 
-Notes:
+- Client helpers are compiled from `ProbeAPI.swift` + their `main.swift`.
+- Every XPC service is compiled from `ProbeAPI.swift` + `InProcessProbeCore.swift` + `services/<ServiceName>/main.swift`.
 
-- `probe_catalog` outputs a JSON catalog in `result.stdout`; use `<probe-id> --help` for per-probe usage (help text is returned in JSON `result.stdout`).
-- `probe_catalog` includes `trace_symbols`, mapping probe ids to stable `ej_*` marker symbols for external tooling.
-- `dlopen_external` executes dylib initializers; treat it as code execution.
-- `run-xpc` supports pre-run waits for attach workflows (`--wait-fifo`/`--wait-exists` or `--attach <seconds>`); wait metadata is recorded in `data.details` (`wait_*` keys).
-- When a wait is configured, the client emits a `wait-ready` line to stderr with the resolved wait path.
-- `--wait-create` tells the service to create the FIFO path before waiting (only valid with `--wait-fifo`).
+### Signing (what matters for XPC work)
+
+- Each XPC service is signed with the entitlements in its own `xpc/services/<ServiceName>/Entitlements.plist`.
+- Signing is “inside-out”: sign nested code first (clients/services/tools), then sign the outer `.app` last.
+
+All signing procedure lives in [SIGNING.md](../SIGNING.md).
+
+### Useful build knobs while iterating
+
+`build-macos.sh` respects:
+
+- `EJ_INSPECTION=1` (default): builds Swift with `-Onone -g` and Rust with frame pointers + debuginfo (easier to inspect).
+- `SWIFT_MODULE_CACHE` (default `./.tmp/swift-module-cache`): should be writable even in sandboxed harnesses.
+- `SWIFT_OPT_LEVEL`, `SWIFT_DEBUG_FLAGS`: forwarded to `swiftc`.
+
+## Runtime wiring (who talks to whom)
+
+- `EntitlementJail.app/Contents/MacOS/entitlement-jail` (Rust launcher) does not speak NSXPC directly.
+- For `run-xpc` / `quarantine-lab`, it invokes the embedded Swift client helpers:
+  - `xpc-probe-client` opens an `NSXPCConnection(serviceName: <bundle-id>)` and calls `ProbeServiceProtocol`.
+  - `xpc-quarantine-client` does the same for `QuarantineLabProtocol`.
+- Services decode JSON request bytes, perform work, and reply with JSON response bytes.
+
+CLI flag semantics and JSON envelope details are defined in [runner/README.md](../runner/README.md).
+
+## Targets in `xpc/services/` (three buckets)
+
+The services fall into two service families (plus one “helper” bucket that is part of the XPC subsystem but not an XPC service).
+
+### 1) Probe services (`ProbeService_*`)
+
+All `ProbeService_*` targets are intended to share the *same* probe behavior. They should differ only in `Entitlements.plist`.
+
+- `ProbeService_minimal` — App Sandbox only (baseline)
+- `ProbeService_net_client` — `com.apple.security.network.client`
+- `ProbeService_downloads_rw` — `com.apple.security.files.downloads.read-write`
+- `ProbeService_user_selected_executable` — `com.apple.security.files.user-selected.executable`
+- `ProbeService_bookmarks_app_scope` — `com.apple.security.files.bookmarks.app-scope` (scoped bookmarks agent access)
+- `ProbeService_get-task-allow` — `com.apple.security.get-task-allow`
+- `ProbeService_fully_injectable` — debugging/injection-friendly entitlement set (high concern; should require explicit acknowledgement via the repo’s risk gating)
+
+### 2) Quarantine Lab services (`QuarantineLab_*`)
+
+These targets exist to observe quarantine/Gatekeeper-related metadata deltas without turning them into Seatbelt attribution claims. Like probe services, they should differ only in `Entitlements.plist`.
+
+- `QuarantineLab_default` — App Sandbox only (baseline)
+- `QuarantineLab_net_client` — `com.apple.security.network.client`
+- `QuarantineLab_downloads_rw` — `com.apple.security.files.downloads.read-write`
+- `QuarantineLab_user_selected_executable` — `com.apple.security.files.user-selected.executable`
+- `QuarantineLab_bookmarks_app_scope` — `com.apple.security.files.bookmarks.app-scope`
+
+User-facing `quarantine-lab` workflows are documented in [EntitlementJail.md](../EntitlementJail.md).
+
+If you modify Quarantine Lab behavior, apply the same change across the whole `QuarantineLab_*` family so entitlements remain the primary variable.
+
+### 3) Embedded client helpers (built from `xpc/`)
+
+These are not XPC services, but they are part of the XPC subsystem and are required for the Rust launcher’s XPC commands.
+
+- `xpc-probe-client` (from `xpc/client/main.swift`): wraps NSXPC calls + optional observer/log capture, prints a JSON envelope to stdout, exits with the probe `rc`.
+- `xpc-quarantine-client` (from `xpc/quarantine-client/main.swift`): wraps NSXPC calls for Quarantine Lab, prints a JSON envelope, exits with the lab `rc`.
+
+Tip: set `EJ_XPC_CLIENT_DEBUG=1` to have the clients print `Bundle.main` debugging info to stderr (useful when diagnosing “wrong bundle context” problems).
+
+## Probe execution model (what a ProbeService is allowed to do)
+
+Probe services are *not* a generic “run arbitrary code/path” facility. The constraints are intentional and are part of the research design.
+
+- The caller provides a `probe_id` (an identifier), not a path to execute.
+- Services should reject empty ids and any id containing path separators.
+- Probes run **in-process** inside the XPC service (no staging into containers, no `exec by path`).
+- Filesystem probes are safe-by-default: potentially destructive direct-path operations are gated to harness paths unless explicitly overridden.
+
+The reference dispatch and safety gates live in `InProcessProbeCore.swift`.
 
 ## Trace markers (`ej_*`)
 
-Key probes call stable, C-callable marker functions such as `ej_probe_fs_op` and `ej_probe_dlopen_external`. These symbols are present in the XPC service Mach‑O and are invoked at the start of probe execution, making them easy targets for `dtrace`, `frida`, and `otool`.
+Some probes call stable, C-callable marker functions such as `ej_probe_fs_op`. These symbols exist in the service Mach‑O and make it easy for external tools to locate probe boundaries.
 
-Use `probe_catalog` to discover the symbol name for a given probe id (`trace_symbols`).
+The probe catalog includes a `trace_symbols` mapping; see [runner/README.md](../runner/README.md) / [EntitlementJail.md](../EntitlementJail.md) for how to request it.
 
-## Inspection-friendly builds
+## Adding a new XPC service (development workflow)
 
-Inspection-friendly builds are the default (symbols + frame pointers + reduced Swift optimization). Set `EJ_INSPECTION=0` to build an optimized release. This does not change entitlements or runtime behavior, only build flags.
+This repo’s preferred way to vary entitlements is “add a new `.xpc` target”.
 
-## Safe probe resolution (no traversal, no container staging)
+See [CONTRIBUTING.md](../CONTRIBUTING.md#toy-example-adding-a-new-xpc-service) for a concrete, copy/paste “toy example” of adding a service.
 
-XPC services that act as entitlement research targets must not accept arbitrary filesystem paths for execution.
+Checklist for new services:
 
-The reference policy in `ProbeService_*/main.swift` is:
-
-- The caller passes a `probe_id` that is treated as an *identifier*, not a path.
-- The service rejects empty ids and any id containing `/` or `\\` patterns.
-- The service dispatches to a built-in, in-process probe implementation (no external exec).
-
-This is deliberate: it prevents path traversal and avoids reintroducing “stage into container then exec by path” patterns that are commonly blocked (and are easy to misattribute as “sandbox denied” without evidence).
-
-## Inheritance helpers vs XPC services
-
-This repo supports both inheritance helpers (`run-embedded`) and XPC services (`run-xpc`), but they have different constraints.
-
-- XPC services are the Apple-preferred structure for helper-like functionality, and are the recommended way to make entitlements a first-class experimental variable (see [Apple Developer: Enabling App Sandbox](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html)).
-- Inheritance helpers exist for narrower demonstrations, but their signing and entitlement constraints are easy to get wrong; treat `SIGNING.md` as the single source of truth if you touch that surface.
-
-Signing and distribution procedures live in [SIGNING.md](../SIGNING.md).
-
-## Adding a new XPC service (research target)
-
-1. Create a new directory under `xpc/services/<ServiceName>/`.
-2. Add:
-   - `Info.plist` (unique `CFBundleIdentifier`, matching `CFBundleExecutable`)
-   - `Entitlements.plist` (start with `com.apple.security.app-sandbox = true`, then add the entitlement(s) you want to study)
-   - `main.swift` (implement an exported NSXPC protocol, usually one from `ProbeAPI.swift`)
-3. Ensure your service does not accept arbitrary paths for execution. Follow the safe probe resolution policy above.
-4. Build and embed the app following `SIGNING.md`.
-
-The build script discovers services by enumerating `xpc/services/*` and will embed each service bundle it finds.
-
-## Quarantine Lab matrix (what varies)
-
-Quarantine Lab exists to keep quarantine/Gatekeeper observations separate from Seatbelt claims.
-
-Services:
-
-- `QuarantineLab_default`: App Sandbox only.
-- `QuarantineLab_net_client`: App Sandbox + `com.apple.security.network.client`.
-- `QuarantineLab_downloads_rw`: App Sandbox + `com.apple.security.files.downloads.read-write`.
-- `QuarantineLab_user_selected_executable`: App Sandbox + `com.apple.security.files.user-selected.executable`.
-- `QuarantineLab_bookmarks_app_scope`: App Sandbox + `com.apple.security.files.bookmarks.app-scope`.
-
-Operations (`--operation`):
-
-- `create_new`: write a new artifact (default).
-- `open_only`: open/read an existing path (or the derived output path) and report xattr delta.
-- `open_existing_save`: read an existing path and save a copy to a new output path.
-
-Payload classes (`<payload-class>`):
-
-- `shell_script` (`.sh`, default executable)
-- `command_file` (`.command`, default executable)
-- `text` (`.txt`, not executable)
-- `webarchive_like` (`.webarchive`-shaped payload; intended for writing/quarantine experiments, not WebArchive correctness)
-
-Selection annotation (`--selection`):
-
-- The “selection mechanism” field is metadata only. It does not grant access and does not change authorization; it exists to prevent “user selected it therefore it can execute” claims from sneaking in without an explicit, testable mechanism.
+1. Create `xpc/services/<ServiceName>/` containing:
+   - `Info.plist` (unique `CFBundleIdentifier`, and `CFBundleExecutable == <ServiceName>`)
+   - `Entitlements.plist` (start from App Sandbox; add only the variable you want to study)
+   - `main.swift` (keep it small; implement a protocol from `ProbeAPI.swift`)
+2. Keep behavior identical across services in the same family:
+   - If this is a new ProbeService variant, don’t fork probe logic in the wrapper — keep the change in entitlements.
+3. Rebuild with signing (`make build`), so Evidence (`profiles.json`, entitlements extraction) stays accurate.
+4. If you introduce “high concern” entitlements, update the risk classifier in [`tests/build-evidence.py`](../tests/build-evidence.py) so the CLI’s risk gating remains correct.

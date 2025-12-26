@@ -3,7 +3,7 @@ import Darwin
 
 private func printUsage() {
     let exe = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "xpc-probe-client"
-    fputs("usage: \(exe) [--log-stream <path|auto|stdout>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--observe] [--observer-duration <seconds>] [--observer-format <json|jsonl>] [--observer-output <path|auto>] [--observer-follow] [--json-out <path>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] [--xpc-timeout-ms <n>] <xpc-service-bundle-id> <probe-id> [probe-args...]\n", stderr)
+    fputs("usage: \(exe) [--log-stream <path|auto|stdout>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--observe] [--observer-duration <seconds>] [--observer-format <json|jsonl>] [--observer-output <path|auto>] [--observer-follow] [--attach-report <path|auto|stdout|stderr>] [--preload-dylib <abs>] [--preload-dylib-stage] [--json-out <path>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] [--xpc-timeout-ms <n>] <xpc-service-bundle-id> <probe-id> [probe-args...]\n", stderr)
 }
 
 if ProcessInfo.processInfo.environment["EJ_XPC_CLIENT_DEBUG"] == "1" {
@@ -60,6 +60,52 @@ private struct ProbeData: Encodable {
 private struct DecodeFailureData: Encodable {
     var raw_response: String?
     var decode_error: String
+}
+
+private struct AttachEvent: Encodable {
+    var schema_version: Int
+    var kind: String
+    var generated_at_unix_ms: UInt64
+    var event: String
+    var service_bundle_id: String
+    var probe_id: String
+    var correlation_id: String?
+    var wait_mode: String?
+    var wait_path: String?
+    var wait_path_class: String?
+    var wait_name: String?
+    var pid: Int?
+    var process_name: String?
+
+    init(
+        schema_version: Int = 1,
+        kind: String = "attach_event",
+        generated_at_unix_ms: UInt64,
+        event: String,
+        service_bundle_id: String,
+        probe_id: String,
+        correlation_id: String? = nil,
+        wait_mode: String? = nil,
+        wait_path: String? = nil,
+        wait_path_class: String? = nil,
+        wait_name: String? = nil,
+        pid: Int? = nil,
+        process_name: String? = nil
+    ) {
+        self.schema_version = schema_version
+        self.kind = kind
+        self.generated_at_unix_ms = generated_at_unix_ms
+        self.event = event
+        self.service_bundle_id = service_bundle_id
+        self.probe_id = probe_id
+        self.correlation_id = correlation_id
+        self.wait_mode = wait_mode
+        self.wait_path = wait_path
+        self.wait_path_class = wait_path_class
+        self.wait_name = wait_name
+        self.pid = pid
+        self.process_name = process_name
+    }
 }
 
 private struct ProcessRun {
@@ -283,6 +329,32 @@ private func writeFile(path: String, contents: String, label: String) -> String?
     }
 }
 
+private func appendLine(path: String, line: String, label: String) -> String? {
+    let url = URL(fileURLWithPath: path)
+    let parent = url.deletingLastPathComponent()
+    if !parent.path.isEmpty && parent.path != "." {
+        try? FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true, attributes: nil)
+    }
+    if !FileManager.default.fileExists(atPath: path) {
+        _ = FileManager.default.createFile(atPath: path, contents: nil, attributes: nil)
+    }
+    do {
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        handle.seekToEndOfFile()
+        if let data = (line + "\n").data(using: .utf8) {
+            handle.write(data)
+        }
+        return nil
+    } catch {
+        fputs("failed to append \(label): \(error)\n", stderr)
+        let home = NSHomeDirectory()
+        let tmp = NSTemporaryDirectory()
+        fputs("hint: choose a path under \(home) or \(tmp)\n", stderr)
+        return "write_failed: \(error)"
+    }
+}
+
 private func emitProbeJSON(_ json: String, jsonOutPath: String?, logStreamUsesStdout: Bool) {
     if let jsonOutPath {
         if writeFile(path: jsonOutPath, contents: json, label: "probe JSON output") != nil {
@@ -472,6 +544,20 @@ private func waitForConnectionPid(_ connection: NSXPCConnection, timeout: TimeIn
         }
     }
     return nil
+}
+
+private func pgrepNewestPid(processName: String) -> String? {
+    guard !processName.isEmpty else { return nil }
+    let tool = "/usr/bin/pgrep"
+    guard FileManager.default.isExecutableFile(atPath: tool) else { return nil }
+    let run = runCommand([tool, "-x", "-n", processName])
+    guard run.rc == 0 else { return nil }
+    let stdout = String(data: run.stdout, encoding: .utf8) ?? ""
+    let pid = stdout
+        .split(whereSeparator: \.isNewline)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .first { !$0.isEmpty }
+    return pid
 }
 
 private func parseIso8601(_ value: String?) -> Date? {
@@ -1121,6 +1207,9 @@ var logPath: String?
 var logPredicate: String?
 var logPathClass: String?
 var logName: String?
+var attachReport: String?
+var preloadDylibPath: String?
+var preloadDylibStage: Bool = false
 var jsonOutPath: String?
 var observe: Bool = false
 var observerFormat: String?
@@ -1179,6 +1268,35 @@ parseLoop: while idx < args.count {
         }
         jsonOutPath = args[idx + 1]
         idx += 2
+    case "--attach-report":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --attach-report\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        if attachReport != nil {
+            fputs("--attach-report specified multiple times\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        attachReport = args[idx + 1]
+        idx += 2
+    case "--preload-dylib":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --preload-dylib\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        if preloadDylibPath != nil {
+            fputs("--preload-dylib specified multiple times\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        preloadDylibPath = args[idx + 1]
+        idx += 2
+    case "--preload-dylib-stage":
+        preloadDylibStage = true
+        idx += 1
     case "--log-path-class":
         guard idx + 1 < args.count else {
             fputs("missing value for --log-path-class\n", stderr)
@@ -1459,6 +1577,44 @@ if correlationId == nil {
     correlationId = UUID().uuidString
 }
 
+if preloadDylibStage && preloadDylibPath == nil {
+    fputs("--preload-dylib-stage requires --preload-dylib\n", stderr)
+    printUsage()
+    exit(2)
+}
+
+if let preloadDylibPath, !preloadDylibPath.hasPrefix("/") {
+    fputs("--preload-dylib path must be absolute\n", stderr)
+    printUsage()
+    exit(2)
+}
+
+let resolvedPreloadDylibPath: String? = {
+    guard let preloadDylibPath else { return nil }
+    guard preloadDylibStage else { return preloadDylibPath }
+    let seed = correlationId ?? UUID().uuidString
+    let candidate = "ej-preload-\(seed).dylib"
+    let stageName = isSinglePathComponent(candidate) ? candidate : "ej-preload-\(UUID().uuidString).dylib"
+    guard let stagedPath = resolveContainerPath(bundleId: serviceName, pathClass: "tmp", name: stageName) else {
+        fputs("failed to resolve preload staging path under service container\n", stderr)
+        exit(2)
+    }
+    let dstURL = URL(fileURLWithPath: stagedPath)
+    let parent = dstURL.deletingLastPathComponent()
+    do {
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true, attributes: nil)
+        if FileManager.default.fileExists(atPath: stagedPath) {
+            try FileManager.default.removeItem(at: dstURL)
+        }
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: preloadDylibPath), to: dstURL)
+        fputs("[client] preload-dylib staged_path=\(stagedPath)\n", stderr)
+        return stagedPath
+    } catch {
+        fputs("failed to stage preload dylib: \(error)\n", stderr)
+        exit(2)
+    }
+}()
+
 let resolvedLogPath: String? = {
     if let logPath {
         if logPath == "auto" {
@@ -1480,6 +1636,25 @@ if logPathClass != nil && resolvedLogPath == nil {
 let logSpec = resolvedLogPath.map { LogCaptureSpec(path: $0, predicate_override: logPredicate) }
 let logStreamUsesStdout = resolvedLogPath == "stdout" || resolvedLogPath == "-"
 let observerExtension = (observerFormat == "jsonl") ? "jsonl" : "json"
+
+let attachReportOutput: String? = {
+    guard let attachReport else { return nil }
+    if attachReport == "auto" {
+        return autoLogPath(kind: "attach-report", serviceName: serviceName, probeId: probeId, correlationId: correlationId, fileExtension: "jsonl")
+    }
+    return attachReport
+}()
+
+if let attachReportOutput, (attachReportOutput == "stdout" || attachReportOutput == "-"), jsonOutPath == nil {
+    fputs("--attach-report stdout requires --json-out to avoid mixing output streams\n", stderr)
+    printUsage()
+    exit(2)
+}
+if let attachReportOutput, (attachReportOutput == "stdout" || attachReportOutput == "-"), logStreamUsesStdout {
+    fputs("--attach-report stdout cannot be combined with --log-stream stdout\n", stderr)
+    printUsage()
+    exit(2)
+}
 
 let observerOutputPath: String? = {
     if let observerOutput {
@@ -1510,6 +1685,28 @@ let observerOutputPath: String? = {
 }()
 
 let shouldObserve = observerRequested || logSpec != nil
+
+private func emitAttachEvent(_ event: AttachEvent) {
+    guard let attachReportOutput else { return }
+    do {
+        let encoded = try encodeJSON(event)
+        guard let json = String(data: encoded, encoding: .utf8), !json.isEmpty else { return }
+        if attachReportOutput == "stderr" {
+            fputs("\(json)\n", stderr)
+            fflush(stderr)
+        } else if attachReportOutput == "stdout" || attachReportOutput == "-" {
+            print(json)
+        } else {
+            _ = appendLine(path: attachReportOutput, line: json, label: "attach report")
+        }
+    } catch {
+        fputs("failed to encode attach report: \(error)\n", stderr)
+    }
+}
+
+if let attachReportOutput, attachReportOutput != "stderr", attachReportOutput != "stdout", attachReportOutput != "-" {
+    fputs("[client] attach-report path=\(attachReportOutput)\n", stderr)
+}
 
 if let attachSeconds {
     if holdOpenSeconds == nil {
@@ -1609,8 +1806,27 @@ if let waitMode {
     })
     if let waitPathForPrint {
         fputs("[client] wait-ready mode=\(waitMode) wait_path=\(waitPathForPrint)\n", stderr)
+        emitAttachEvent(AttachEvent(
+            generated_at_unix_ms: UInt64(Date().timeIntervalSince1970 * 1000.0),
+            event: "wait_ready",
+            service_bundle_id: serviceName,
+            probe_id: probeId,
+            correlation_id: correlationId,
+            wait_mode: waitMode,
+            wait_path: waitPathForPrint
+        ))
     } else if let waitPathClass, let waitName {
         fputs("[client] wait-ready mode=\(waitMode) wait_path_class=\(waitPathClass) wait_name=\(waitName)\n", stderr)
+        emitAttachEvent(AttachEvent(
+            generated_at_unix_ms: UInt64(Date().timeIntervalSince1970 * 1000.0),
+            event: "wait_ready",
+            service_bundle_id: serviceName,
+            probe_id: probeId,
+            correlation_id: correlationId,
+            wait_mode: waitMode,
+            wait_path_class: waitPathClass,
+            wait_name: waitName
+        ))
     }
 } else if probeId == "fs_op_wait" {
     var i = 0
@@ -1620,6 +1836,15 @@ if let waitMode {
             let mode = (flag == "--wait-fifo") ? "fifo" : "exists"
             let path = probeArgs[i + 1]
             fputs("[client] wait-ready mode=\(mode) wait_path=\(path)\n", stderr)
+            emitAttachEvent(AttachEvent(
+                generated_at_unix_ms: UInt64(Date().timeIntervalSince1970 * 1000.0),
+                event: "wait_ready",
+                service_bundle_id: serviceName,
+                probe_id: probeId,
+                correlation_id: correlationId,
+                wait_mode: mode,
+                wait_path: path
+            ))
             break
         }
         i += 1
@@ -1633,6 +1858,7 @@ let request = RunProbeRequest(
     probe_id: probeId,
     argv: probeArgs,
     expected_outcome: expectedOutcome,
+    preload_dylib_path: resolvedPreloadDylibPath,
     env_overrides: nil,
     wait_spec: waitSpec
 )
@@ -1650,15 +1876,27 @@ connection.resume()
 let processNameHint = serviceNameHint(from: serviceName)
 var pidHint = connectionPidHint(connection)
 
-let attachRequested = attachSeconds != nil || waitMode != nil
-if attachRequested && pidHint == nil {
-    pidHint = waitForConnectionPid(connection, timeout: 1.0)
-}
-if attachRequested, let pid = pidHint {
+let attachRequested = attachSeconds != nil || waitMode != nil || probeId == "fs_op_wait"
+var didEmitPidReady = false
+func emitPidReadyOnce(pid: String) {
+    if didEmitPidReady { return }
+    didEmitPidReady = true
     let corr = correlationId ?? ""
     let corrField = corr.isEmpty ? "" : " correlation_id=\(corr)"
     fputs("[client] pid-ready pid=\(pid) process_name=\(processNameHint)\(corrField)\n", stderr)
     fflush(stderr)
+    emitAttachEvent(AttachEvent(
+        generated_at_unix_ms: UInt64(Date().timeIntervalSince1970 * 1000.0),
+        event: "pid_ready",
+        service_bundle_id: serviceName,
+        probe_id: probeId,
+        correlation_id: correlationId,
+        pid: Int(pid),
+        process_name: processNameHint
+    ))
+}
+if attachRequested, let pid = pidHint {
+    emitPidReadyOnce(pid: pid)
 }
 
 let semaphore = DispatchSemaphore(value: 0)
@@ -2071,6 +2309,29 @@ proxy.runProbe(requestData) { responseData in
         Thread.sleep(forTimeInterval: hold)
     }
     semaphore.signal()
+}
+
+if attachRequested && !didEmitPidReady {
+    let deadline = Date().addingTimeInterval(5.0)
+    var attempts = 0
+    while Date() < deadline {
+        if let pid = connectionPidHint(connection) {
+            pidHint = pid
+            emitPidReadyOnce(pid: pid)
+            break
+        }
+        attempts += 1
+        if attempts % 4 == 0, let pid = pgrepNewestPid(processName: processNameHint) {
+            pidHint = pid
+            emitPidReadyOnce(pid: pid)
+            break
+        }
+        emitLock.lock()
+        let stop = didEmitFailure || responseReceived
+        emitLock.unlock()
+        if stop { break }
+        Thread.sleep(forTimeInterval: 0.05)
+    }
 }
 
 _ = semaphore.wait(timeout: .distantFuture)

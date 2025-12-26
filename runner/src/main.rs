@@ -17,7 +17,7 @@ fn print_usage() {
 usage:
   entitlement-jail run-system <absolute-platform-binary> [args...]
   entitlement-jail run-embedded <tool-name> [args...]
-  entitlement-jail run-xpc [--ack-risk <id|bundle-id>] [--log-stream <path|auto|stdout>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--observe] [--observer-duration <seconds>] [--observer-format <json|jsonl>] [--observer-output <path|auto>] [--observer-follow] [--json-out <path>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] [--xpc-timeout-ms <n>] (--profile <id> | <xpc-service-bundle-id>) <probe-id> [probe-args...]
+  entitlement-jail run-xpc [--ack-risk <id|bundle-id>] [--log-stream <path|auto|stdout>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--observe] [--observer-duration <seconds>] [--observer-format <json|jsonl>] [--observer-output <path|auto>] [--observer-follow] [--attach-report <path|auto|stdout|stderr>] [--preload-dylib <abs>] [--preload-dylib-stage] [--json-out <path>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] [--xpc-timeout-ms <n>] (--profile <id> | <xpc-service-bundle-id>) <probe-id> [probe-args...]
   entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
   entitlement-jail verify-evidence
   entitlement-jail inspect-macho <service-id|main|path>
@@ -1658,6 +1658,8 @@ fn main() {
                     | Some("--log-path-class")
                     | Some("--log-name")
                     | Some("--log-predicate")
+                    | Some("--attach-report")
+                    | Some("--preload-dylib")
                     | Some("--json-out")
                     | Some("--observer-duration")
                     | Some("--observer-format")
@@ -1682,7 +1684,7 @@ fn main() {
                         }
                         idx += 2;
                     }
-                    Some("--observe") | Some("--observer-follow") => {
+                    Some("--observe") | Some("--observer-follow") | Some("--preload-dylib-stage") => {
                         idx += 1;
                     }
                     Some("--wait-create") => {
@@ -1748,6 +1750,8 @@ fn main() {
                         | Some("--log-path-class")
                         | Some("--log-name")
                         | Some("--log-predicate")
+                        | Some("--attach-report")
+                        | Some("--preload-dylib")
                         | Some("--json-out")
                         | Some("--observer-duration")
                         | Some("--observer-format")
@@ -1769,7 +1773,8 @@ fn main() {
                         }
                         Some("--wait-create")
                         | Some("--observe")
-                        | Some("--observer-follow") => {
+                        | Some("--observer-follow")
+                        | Some("--preload-dylib-stage") => {
                             insert_idx += 1;
                         }
                         _ => break,
@@ -1784,6 +1789,8 @@ fn main() {
                         | Some("--log-path-class")
                         | Some("--log-name")
                         | Some("--log-predicate")
+                        | Some("--attach-report")
+                        | Some("--preload-dylib")
                         | Some("--json-out")
                         | Some("--observer-duration")
                         | Some("--observer-format")
@@ -1805,7 +1812,8 @@ fn main() {
                         }
                         Some("--wait-create")
                         | Some("--observe")
-                        | Some("--observer-follow") => {
+                        | Some("--observer-follow")
+                        | Some("--preload-dylib-stage") => {
                             insert_idx += 1;
                         }
                         _ => break,
@@ -1843,6 +1851,8 @@ fn main() {
                         | Some("--log-path-class")
                         | Some("--log-name")
                         | Some("--log-predicate")
+                        | Some("--attach-report")
+                        | Some("--preload-dylib")
                         | Some("--json-out")
                         | Some("--observer-duration")
                         | Some("--observer-format")
@@ -1864,7 +1874,8 @@ fn main() {
                         }
                         Some("--wait-create")
                         | Some("--observe")
-                        | Some("--observer-follow") => {
+                        | Some("--observer-follow")
+                        | Some("--preload-dylib-stage") => {
                             insert_idx += 1;
                         }
                         _ => break,

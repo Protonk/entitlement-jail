@@ -33,6 +33,7 @@ private func printUsage() {
           bookmark_make         --path <abs> [--no-security-scope] [--read-only] [--allow-missing]
           bookmark_roundtrip    --path <abs> [--op <fs_op-op>] [--relative <rel>] [--no-security-scope] [--read-only] [--allow-missing] [--allow-unsafe-path]
           capabilities_snapshot
+          sandbox_check         --operation <sandbox-op> [--path <abs>] [--repeat <n>]
           userdefaults_op       --op <read|write|remove|sync> [--key <k>] [--value <v>] [--suite <suite>]
           fs_xattr              --op <get|list|set|remove> --path <abs> [--name <xattr>] [--value <v>] [--allow-write] [--allow-unsafe-path]
           fs_coordinated_op     --op <read|write> (--path <abs> | --path-class <...>) [--allow-unsafe-path]
