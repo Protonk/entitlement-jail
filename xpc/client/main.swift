@@ -3,7 +3,7 @@ import Darwin
 
 private func printUsage() {
     let exe = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "xpc-probe-client"
-    fputs("usage: \(exe) [--log-stream <path|auto|stdout>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--observe] [--observer-duration <seconds>] [--observer-format <json|jsonl>] [--observer-output <path|auto>] [--observer-follow] [--json-out <path>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]\n", stderr)
+    fputs("usage: \(exe) [--log-stream <path|auto|stdout>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--observe] [--observer-duration <seconds>] [--observer-format <json|jsonl>] [--observer-output <path|auto>] [--observer-follow] [--json-out <path>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] [--xpc-timeout-ms <n>] <xpc-service-bundle-id> <probe-id> [probe-args...]\n", stderr)
 }
 
 if ProcessInfo.processInfo.environment["EJ_XPC_CLIENT_DEBUG"] == "1" {
@@ -1140,6 +1140,7 @@ var waitTimeoutMs: Int?
 var waitIntervalMs: Int?
 var waitCreate: Bool?
 var attachSeconds: TimeInterval?
+var xpcTimeoutMs: Int?
 
 var idx = 1
 parseLoop: while idx < args.count {
@@ -1353,6 +1354,19 @@ parseLoop: while idx < args.count {
             exit(2)
         }
         waitIntervalMs = v
+        idx += 2
+    case "--xpc-timeout-ms":
+        guard idx + 1 < args.count else {
+            fputs("missing value for --xpc-timeout-ms\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        guard let v = Int(args[idx + 1]), v >= 0 else {
+            fputs("invalid value for --xpc-timeout-ms (expected >= 0)\n", stderr)
+            printUsage()
+            exit(2)
+        }
+        xpcTimeoutMs = v
         idx += 2
     case "--wait-create":
         waitCreate = true
@@ -1634,25 +1648,172 @@ let connection = NSXPCConnection(serviceName: serviceName)
 connection.remoteObjectInterface = NSXPCInterface(with: ProbeServiceProtocol.self)
 connection.resume()
 let processNameHint = serviceNameHint(from: serviceName)
-let pidHint = connectionPidHint(connection)
+var pidHint = connectionPidHint(connection)
+
+let attachRequested = attachSeconds != nil || waitMode != nil
+if attachRequested && pidHint == nil {
+    pidHint = waitForConnectionPid(connection, timeout: 1.0)
+}
+if attachRequested, let pid = pidHint {
+    let corr = correlationId ?? ""
+    let corrField = corr.isEmpty ? "" : " correlation_id=\(corr)"
+    fputs("[client] pid-ready pid=\(pid) process_name=\(processNameHint)\(corrField)\n", stderr)
+    fflush(stderr)
+}
 
 let semaphore = DispatchSemaphore(value: 0)
 var exitCode: Int32 = 1
-
-guard
-    let proxy = connection.remoteObjectProxyWithErrorHandler({ err in
-        fputs("xpc connection error: \(err)\n", stderr)
-        semaphore.signal()
-    }) as? ProbeServiceProtocol
-else {
-    fputs("failed to create xpc proxy\n", stderr)
-    exit(1)
-}
 
 private var logStream: LogStreamHandle?
 private var logStreamError: String?
 private var logStreamPredicate: String?
 private var observerStreamHandle: ObserverStreamHandle?
+private var timeoutTimer: DispatchSourceTimer?
+
+let emitLock = NSLock()
+var didEmitFailure = false
+var responseReceived = false
+
+func emitFailureOnce(stage: String, error: String) {
+    emitLock.lock()
+    if didEmitFailure || responseReceived {
+        emitLock.unlock()
+        return
+    }
+    didEmitFailure = true
+    emitLock.unlock()
+
+    if let timer = timeoutTimer {
+        timer.cancel()
+        timeoutTimer = nil
+    }
+
+    if let stream = logStream, stream.process.isRunning {
+        _ = stopLogStream(stream)
+    }
+
+    var logObserverSummary: ObserverSummary?
+    if let handle = observerStreamHandle {
+        logObserverSummary = finishSandboxLogObserverStream(
+            handle: handle,
+            observerFollow: observerFollow == true,
+            observerFormat: observerFormat
+        )
+    }
+
+    var details: [String: String] = [
+        "probe_family": "xpc_error",
+        "xpc_error_stage": stage,
+        "xpc_error": error,
+        "service_bundle_id": serviceName,
+    ]
+    if let pidHint, !pidHint.isEmpty {
+        details["pid"] = pidHint
+        details["service_pid"] = pidHint
+        details["probe_pid"] = pidHint
+        details["pid_source"] = "xpc_connection"
+    }
+    if !processNameHint.isEmpty {
+        details["process_name"] = processNameHint
+        details["process_name_source"] = "service_name_hint"
+    }
+    if let correlationId, !correlationId.isEmpty {
+        details["correlation_id"] = correlationId
+    }
+
+    let logCapturePredicate: String? = {
+        if let pred = logStreamPredicate {
+            return pred
+        }
+        return logSpec?.predicate_override
+    }()
+
+    let data = ProbeData(
+        plan_id: planId,
+        row_id: rowId,
+        correlation_id: correlationId,
+        probe_id: probeId,
+        argv: probeArgs,
+        expected_outcome: expectedOutcome,
+        service_bundle_id: serviceName,
+        service_name: nil,
+        service_version: nil,
+        service_build: nil,
+        started_at_iso8601: nil,
+        ended_at_iso8601: nil,
+        thread_id: nil,
+        details: details,
+        layer_attribution: nil,
+        sandbox_log_excerpt_ref: nil,
+        log_capture_status: logSpec == nil ? "not_requested" : "requested_failed",
+        log_capture_path: logSpec?.path,
+        log_capture_error: logSpec == nil ? nil : error,
+        log_capture_predicate: logCapturePredicate,
+        log_capture_observed_lines: nil,
+        log_capture_observed_deny: nil,
+        log_observer_status: shouldObserve ? (logObserverSummary?.status ?? "requested_failed") : "not_requested",
+        log_observer_error: shouldObserve ? (logObserverSummary?.error ?? error) : nil,
+        log_observer_path: logObserverSummary?.path ?? observerOutputPath,
+        log_observer_predicate: logObserverSummary?.predicate,
+        log_observer_start: logObserverSummary?.start,
+        log_observer_end: logObserverSummary?.end,
+        log_observer_last: logObserverSummary?.last,
+        log_observer_observed_lines: logObserverSummary?.observedLines,
+        log_observer_observed_deny: logObserverSummary?.observedDeny,
+        log_observer_deny_lines: logObserverSummary?.denyLines,
+        log_observer_report: logObserverSummary?.report,
+        deny_evidence: (logSpec != nil || shouldObserve) ? "log_error" : "not_captured"
+    )
+
+    let result = JsonResult(
+        ok: false,
+        rc: 1,
+        exit_code: nil,
+        normalized_outcome: "xpc_error",
+        errno: nil,
+        error: error,
+        stderr: error,
+        stdout: ""
+    )
+    let envelope = JsonEnvelope(
+        kind: "probe_response",
+        generated_at_unix_ms: UInt64(Date().timeIntervalSince1970 * 1000.0),
+        result: result,
+        data: data
+    )
+
+    do {
+        let data = try encodeJSON(envelope)
+        if let json = String(data: data, encoding: .utf8) {
+            emitProbeJSON(json, jsonOutPath: jsonOutPath, logStreamUsesStdout: logStreamUsesStdout)
+        } else {
+            fputs("failed to encode response JSON\n", stderr)
+        }
+    } catch {
+        fputs("failed to encode response JSON: \(error)\n", stderr)
+    }
+
+    exitCode = 1
+    semaphore.signal()
+}
+
+connection.invalidationHandler = {
+    emitFailureOnce(stage: "connection_invalidated", error: "xpc connection invalidated")
+}
+connection.interruptionHandler = {
+    emitFailureOnce(stage: "connection_interrupted", error: "xpc connection interrupted")
+}
+
+guard
+    let proxy = connection.remoteObjectProxyWithErrorHandler({ err in
+        emitFailureOnce(stage: "connection_error", error: "\(err)")
+    }) as? ProbeServiceProtocol
+else {
+    emitFailureOnce(stage: "proxy_error", error: "failed to create xpc proxy")
+    _ = semaphore.wait(timeout: .now() + .milliseconds(50))
+    connection.invalidate()
+    exit(exitCode)
+}
 if let spec = logSpec {
     let predicate = spec.predicate_override ?? streamSandboxPredicate(processName: processNameHint, pid: pidHint)
     logStreamPredicate = predicate
@@ -1681,8 +1842,29 @@ if observerStreamRequested {
     Thread.sleep(forTimeInterval: 0.1)
 }
 
+if let timeoutMs = xpcTimeoutMs, timeoutMs > 0 {
+    let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInitiated))
+    timer.schedule(deadline: .now() + .milliseconds(timeoutMs))
+    timer.setEventHandler {
+        emitFailureOnce(stage: "timeout", error: "xpc timeout after \(timeoutMs)ms")
+    }
+    timer.resume()
+    timeoutTimer = timer
+}
+
 let clientStarted = Date()
 proxy.runProbe(requestData) { responseData in
+    emitLock.lock()
+    if didEmitFailure {
+        emitLock.unlock()
+        return
+    }
+    responseReceived = true
+    emitLock.unlock()
+    if let timer = timeoutTimer {
+        timer.cancel()
+        timeoutTimer = nil
+    }
     let clientEnded = Date()
     let rawJson = String(data: responseData, encoding: .utf8)
     do {

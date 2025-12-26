@@ -167,11 +167,8 @@ else:
 if not services:
     services = {
         "minimal": service_record("minimal", "ProbeService_minimal", "probe"),
-        "debuggable": service_record("debuggable", "ProbeService_debuggable", "probe"),
+        "get-task-allow": service_record("get-task-allow", "ProbeService_get-task-allow", "probe"),
         "fully_injectable": service_record("fully_injectable", "ProbeService_fully_injectable", "probe"),
-        "plugin_host_relaxed": service_record("plugin_host_relaxed", "ProbeService_plugin_host_relaxed", "probe"),
-        "jit_map_jit": service_record("jit_map_jit", "ProbeService_jit_map_jit", "probe"),
-        "jit_rwx_legacy": service_record("jit_rwx_legacy", "ProbeService_jit_rwx_legacy", "probe"),
         "net_client": service_record("net_client", "ProbeService_net_client", "probe"),
     }
 

@@ -72,7 +72,7 @@ $EJ run-xpc --profile minimal fs_xattr --op set --path "$FILE_PATH" --name user.
 Make a service easier to attach to (lldb / dtrace / Frida) by holding it open:
 
 ```sh
-$EJ run-xpc --attach 60 --profile debuggable probe_catalog
+$EJ run-xpc --attach 60 --profile get-task-allow probe_catalog
 ```
 
 ## Concepts
@@ -201,7 +201,12 @@ This is about **guardrails**, not morality: Tier 2 profiles intentionally carry 
 
 **Profiles you’ll likely see**
 
-Use `list-profiles` as the source of truth. Some common ids include: `minimal`, `net_client`, `downloads_rw`, `bookmarks_app_scope`, `debuggable`, and `fully_injectable`.
+Use `list-profiles` as the source of truth. Some common ids include: `minimal`, `net_client`, `downloads_rw`, `bookmarks_app_scope`, `get-task-allow`, and `fully_injectable`.
+
+For debugging/injection, the two profiles to know are:
+
+- `get-task-allow`: App Sandbox + `com.apple.security.get-task-allow` + `com.apple.security.cs.disable-library-validation` (Tier 1).
+- `fully_injectable`: `get-task-allow` + `disable-library-validation` + `allow-dyld-environment-variables` + `allow-jit` + `allow-unsigned-executable-memory` (Tier 2).
 
 There are also Quarantine Lab profiles (kind `quarantine`) such as `quarantine_default`, `quarantine_net_client`, `quarantine_downloads_rw`, `quarantine_user_selected_executable`, and `quarantine_bookmarks_app_scope`.
 
@@ -219,7 +224,7 @@ $EJ run-xpc [--ack-risk <id|bundle-id>]
             [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>]
             [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>]
             [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create]
-            [--attach <seconds>] [--hold-open <seconds>]
+            [--attach <seconds>] [--hold-open <seconds>] [--xpc-timeout-ms <n>]
             (--profile <id> | <xpc-service-bundle-id>) <probe-id> [probe-args...]
 ```
 
@@ -240,6 +245,7 @@ Notes:
 - `--json-out` writes the probe JSON response to a file (stdout stays available for log stream output).
 - `--hold-open` keeps the service process alive after printing the JSON response.
 - `--attach <seconds>` sets up a FIFO wait and, by default, also sets `--hold-open <seconds>` (so wall time can approach `2*seconds` if you trigger near the timeout). For automation/harnesses, consider `--hold-open 0`.
+- `--xpc-timeout-ms <n>` sets a client-side timeout; if no response arrives, the client emits a structured `probe_response` with `normalized_outcome: xpc_error`.
 
 Common probes (discoverable via `probe_catalog`):
 
@@ -260,8 +266,8 @@ Many XPC services start and exit quickly. For external tooling (lldb/dtrace/Frid
 `--attach <seconds>` is the ergonomic path:
 
 ```sh
-$EJ run-xpc --attach 60 --profile debuggable probe_catalog
-$EJ run-xpc --attach 5 --hold-open 0 --profile debuggable probe_catalog
+$EJ run-xpc --attach 60 --profile get-task-allow probe_catalog
+$EJ run-xpc --attach 5 --hold-open 0 --profile get-task-allow probe_catalog
 ```
 
 The client prints a line like:
@@ -269,6 +275,14 @@ The client prints a line like:
 ```
 [client] wait-ready mode=fifo wait_path=/.../wait-ready.fifo
 ```
+
+When attach waits are in use, it also prints:
+
+```
+[client] pid-ready pid=<pid> process_name=<name> [correlation_id=<id>]
+```
+
+These status lines go to stderr so JSON stdout stays clean for parsing.
 
 Trigger the probe by writing to the FIFO:
 
@@ -389,7 +403,7 @@ $EJ run-xpc --profile minimal fs_xattr --op set --path "$FILE_PATH" --name user.
 Usage:
 
 ```sh
-$EJ run-matrix --group <baseline|debug|inject|jit> [--out <dir>] [--ack-risk <id|bundle-id>] <probe-id> [probe-args...]
+$EJ run-matrix --group <baseline|debug|inject> [--out <dir>] [--ack-risk <id|bundle-id>] <probe-id> [probe-args...]
 ```
 
 Examples:
@@ -404,9 +418,8 @@ Tier 2 profiles are skipped unless you pass `--ack-risk`.
 Groups (current build; use `list-profiles` as the source of truth):
 
 - `baseline`: `minimal`
-- `debug`: `minimal`, `debuggable`
-- `inject`: `minimal`, `plugin_host_relaxed`, `dyld_env_enabled`, `fully_injectable` (Tier 2 requires `--ack-risk`)
-- `jit`: `minimal`, `jit_map_jit`, `jit_rwx_legacy` (Tier 2 requires `--ack-risk`)
+- `debug`: `minimal`, `get-task-allow`
+- `inject`: `minimal`, `fully_injectable` (Tier 2 requires `--ack-risk`)
 
 Default output directory (per group, overwritten each run; see `data.output_dir`):
 

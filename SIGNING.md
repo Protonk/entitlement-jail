@@ -45,12 +45,8 @@ codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeServ
 codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_net_client/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_net_client.xpc"
 codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_downloads_rw/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_downloads_rw.xpc"
 codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_user_selected_executable/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_user_selected_executable.xpc"
-codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_debuggable/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_debuggable.xpc"
-codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_plugin_host_relaxed/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_plugin_host_relaxed.xpc"
-codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_dyld_env_enabled/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_dyld_env_enabled.xpc"
+codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_get-task-allow/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_get-task-allow.xpc"
 codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_fully_injectable/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_fully_injectable.xpc"
-codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_jit_map_jit/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_jit_map_jit.xpc"
-codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_jit_rwx_legacy/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_jit_rwx_legacy.xpc"
 
 codesign -f --options runtime --timestamp --entitlements "$APP_ENT" -s "$ID" "$APP"
 

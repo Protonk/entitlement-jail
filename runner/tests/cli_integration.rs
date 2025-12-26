@@ -625,15 +625,15 @@ fn cli_profiles_and_risk_gate() {
 
     if let Some(preflight) = preflight.as_ref() {
         let app_signed = preflight_bool(preflight, &["app", "signed"]) == Some(true);
-        let debuggable_entitled = preflight_bool(
+        let get_task_allow_entitled = preflight_bool(
             preflight,
-            &["services", "debuggable", "entitlements", "get_task_allow"],
+            &["services", "get-task-allow", "entitlements", "get_task_allow"],
         ) == Some(true);
         let inspector_signed = preflight_bool(preflight, &["inspector", "signed"]) == Some(true);
         let inspector_debugger = preflight_bool(preflight, &["inspector", "cs_debugger"]) == Some(true);
         let inspector_path = preflight_str(preflight, &["inspector", "path"]).unwrap_or_default();
 
-        if !(app_signed && debuggable_entitled && inspector_signed && inspector_debugger) {
+        if !(app_signed && get_task_allow_entitled && inspector_signed && inspector_debugger) {
             eprintln!("skip attach test: preflight indicates signatures/entitlements are not ready");
         } else {
             let inspector_bin = PathBuf::from(inspector_path);
@@ -644,7 +644,7 @@ fn cli_profiles_and_risk_gate() {
             let hold_args = [
                 "run-xpc",
                 "--profile",
-                "debuggable",
+                "get-task-allow",
                 "--hold-open",
                 "8",
                 "probe_catalog",
@@ -652,7 +652,7 @@ fn cli_profiles_and_risk_gate() {
             let hold = spawn_run_xpc_hold(&bin, &hold_args);
             let pid = extract_pid(&hold.json).unwrap_or_else(|| {
                 panic!(
-                    "missing pid in debuggable run-xpc response: {:?}",
+                    "missing pid in get-task-allow run-xpc response: {:?}",
                     hold.json
                 )
             });
@@ -667,13 +667,13 @@ fn cli_profiles_and_risk_gate() {
                     .and_then(|v| v.get("ok"))
                     .and_then(|v| v.as_bool()),
                 Some(true),
-                "ej-inspector refused debuggable pid: {}",
+                "ej-inspector refused get-task-allow pid: {}",
                 String::from_utf8_lossy(&inspector_out.stderr)
             );
             let hold_res = finish_hold(hold);
             assert!(
                 hold_res.status.success(),
-                "debuggable run-xpc failed: {}",
+                "get-task-allow run-xpc failed: {}",
                 hold_res.stderr
             );
 
@@ -723,7 +723,7 @@ fn cli_profiles_and_risk_gate() {
             let dylib_path = preflight_str(preflight, &["test_dylib", "path"]).unwrap_or_default();
             let relax_ok = preflight_bool(
                 preflight,
-                &["services", "plugin_host_relaxed", "entitlements", "disable_library_validation"],
+                &["services", "fully_injectable", "entitlements", "disable_library_validation"],
             ) == Some(true);
             if !(dylib_ready && relax_ok) {
                 eprintln!("skip dlopen test: missing signed test dylib or entitlement");
@@ -735,7 +735,9 @@ fn cli_profiles_and_risk_gate() {
                     &[
                         "run-xpc",
                         "--profile",
-                        "plugin_host_relaxed",
+                        "fully_injectable",
+                        "--ack-risk",
+                        "fully_injectable",
                         "dlopen_external",
                         "--path",
                         dylib.to_str().unwrap_or(""),
@@ -762,16 +764,31 @@ fn cli_profiles_and_risk_gate() {
 
         let jit_ok = preflight_bool(
             preflight,
-            &["services", "jit_map_jit", "entitlements", "allow_jit"],
+            &["services", "fully_injectable", "entitlements", "allow_jit"],
         ) == Some(true)
             && preflight_bool(
                 preflight,
-                &["services", "jit_rwx_legacy", "entitlements", "allow_unsigned_executable_memory"],
+                &[
+                    "services",
+                    "fully_injectable",
+                    "entitlements",
+                    "allow_unsigned_executable_memory",
+                ],
             ) == Some(true);
         if !jit_ok {
             eprintln!("skip jit tests: missing jit entitlements");
         } else {
-            let jit_map_out = run_ej(&bin, &["run-xpc", "--profile", "jit_map_jit", "jit_map_jit"]);
+            let jit_map_out = run_ej(
+                &bin,
+                &[
+                    "run-xpc",
+                    "--profile",
+                    "fully_injectable",
+                    "--ack-risk",
+                    "fully_injectable",
+                    "jit_map_jit",
+                ],
+            );
             assert!(
                 jit_map_out.status.success(),
                 "jit_map_jit failed: {}",
@@ -787,8 +804,17 @@ fn cli_profiles_and_risk_gate() {
                 "jit_map_jit did not succeed"
             );
 
-            let jit_rwx_out =
-                run_ej(&bin, &["run-xpc", "--profile", "jit_rwx_legacy", "jit_rwx_legacy"]);
+            let jit_rwx_out = run_ej(
+                &bin,
+                &[
+                    "run-xpc",
+                    "--profile",
+                    "fully_injectable",
+                    "--ack-risk",
+                    "fully_injectable",
+                    "jit_rwx_legacy",
+                ],
+            );
             assert!(
                 jit_rwx_out.status.success(),
                 "jit_rwx_legacy failed: {}",

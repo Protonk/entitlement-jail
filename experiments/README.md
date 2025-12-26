@@ -85,7 +85,7 @@ Entitlements are a first-class independent variable **only via XPC service targe
 See:
 
 - `experiments/nodes/entitlement-lattice.json` for the entitlement lattice (E0–E4)
-- `experiments/nodes/entitlement-lattice-debug-jit.json` for the debug/JIT/profile lattice (E0, E5–E10; policy profile remains P0_minimal as a baseline reference)
+- `experiments/nodes/entitlement-lattice-debug-jit.json` for the debug/JIT/profile lattice (E0, E5, E8; policy profile remains P0_minimal as a baseline reference)
 - `experiments/policy/` for the “attempted equivalent” `.sb` profiles (P0–P4)
 
 Quarantine Lab is the calibration anchor where parity should fail for principled reasons: quarantine metadata deltas are not a Seatbelt policy knob.

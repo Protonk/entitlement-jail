@@ -17,7 +17,7 @@ fn print_usage() {
 usage:
   entitlement-jail run-system <absolute-platform-binary> [args...]
   entitlement-jail run-embedded <tool-name> [args...]
-  entitlement-jail run-xpc [--ack-risk <id|bundle-id>] [--log-stream <path|auto|stdout>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--observe] [--observer-duration <seconds>] [--observer-format <json|jsonl>] [--observer-output <path|auto>] [--observer-follow] [--json-out <path>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] (--profile <id> | <xpc-service-bundle-id>) <probe-id> [probe-args...]
+  entitlement-jail run-xpc [--ack-risk <id|bundle-id>] [--log-stream <path|auto|stdout>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--observe] [--observer-duration <seconds>] [--observer-format <json|jsonl>] [--observer-output <path|auto>] [--observer-follow] [--json-out <path>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] [--xpc-timeout-ms <n>] (--profile <id> | <xpc-service-bundle-id>) <probe-id> [probe-args...]
   entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
   entitlement-jail verify-evidence
   entitlement-jail inspect-macho <service-id|main|path>
@@ -325,9 +325,8 @@ fn build_static_capabilities(profile: &profiles::ProfileEntry) -> ServiceCapabil
 fn matrix_groups() -> Vec<(&'static str, &'static [&'static str])> {
     vec![
         ("baseline", &["minimal"]),
-        ("debug", &["minimal", "debuggable"]),
-        ("inject", &["minimal", "plugin_host_relaxed", "dyld_env_enabled", "fully_injectable"]),
-        ("jit", &["minimal", "jit_map_jit", "jit_rwx_legacy"]),
+        ("debug", &["minimal", "get-task-allow"]),
+        ("inject", &["minimal", "fully_injectable"]),
     ]
 }
 
@@ -1673,6 +1672,7 @@ fn main() {
                     | Some("--wait-name")
                     | Some("--wait-timeout-ms")
                     | Some("--wait-interval-ms")
+                    | Some("--xpc-timeout-ms")
                     | Some("--attach")
                     | Some("--hold-open") => {
                         if idx + 1 >= args.len() {
@@ -1762,6 +1762,7 @@ fn main() {
                         | Some("--wait-name")
                         | Some("--wait-timeout-ms")
                         | Some("--wait-interval-ms")
+                        | Some("--xpc-timeout-ms")
                         | Some("--attach")
                         | Some("--hold-open") => {
                             insert_idx += 2;
@@ -1797,6 +1798,7 @@ fn main() {
                         | Some("--wait-name")
                         | Some("--wait-timeout-ms")
                         | Some("--wait-interval-ms")
+                        | Some("--xpc-timeout-ms")
                         | Some("--attach")
                         | Some("--hold-open") => {
                             insert_idx += 2;
@@ -1855,6 +1857,7 @@ fn main() {
                         | Some("--wait-name")
                         | Some("--wait-timeout-ms")
                         | Some("--wait-interval-ms")
+                        | Some("--xpc-timeout-ms")
                         | Some("--attach")
                         | Some("--hold-open") => {
                             insert_idx += 2;

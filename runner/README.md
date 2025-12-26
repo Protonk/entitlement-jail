@@ -24,7 +24,7 @@ Usage:
 ```sh
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-system <absolute-platform-binary> [args...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-embedded <tool-name> [args...]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc [--profile <id>] [--ack-risk <id|bundle-id>] [--log-stream <path|auto|stdout>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--observe] [--observer-duration <seconds>] [--observer-format <json|jsonl>] [--observer-output <path|auto>] [--observer-follow] [--json-out <path>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc [--profile <id>] [--ack-risk <id|bundle-id>] [--log-stream <path|auto|stdout>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--observe] [--observer-duration <seconds>] [--observer-format <json|jsonl>] [--observer-output <path|auto>] [--observer-follow] [--json-out <path>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] [--xpc-timeout-ms <n>] <xpc-service-bundle-id> <probe-id> [probe-args...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail verify-evidence
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail inspect-macho <service-id|main|path>
@@ -141,7 +141,7 @@ Helper location (important):
 
 Invocation:
 
-- `run-xpc [--log-stream <path|auto|stdout>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--observe] [--observer-duration <seconds>] [--observer-format <json|jsonl>] [--observer-output <path|auto>] [--observer-follow] [--json-out <path>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] <xpc-service-bundle-id> <probe-id> [probe-args...]`
+- `run-xpc [--log-stream <path|auto|stdout>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--observe] [--observer-duration <seconds>] [--observer-format <json|jsonl>] [--observer-output <path|auto>] [--observer-follow] [--json-out <path>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>] [--wait-path-class <class>] [--wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] [--xpc-timeout-ms <n>] <xpc-service-bundle-id> <probe-id> [probe-args...]`
 - Example service bundle id: `com.yourteam.entitlement-jail.ProbeService_minimal`
 
 Built-in probe ids (in-process):
@@ -188,9 +188,10 @@ Notes:
 - Log/observer flags (`--log-*`, `--observe`, `--observer-*`, `--json-out`) must appear before `<xpc-service-bundle-id>`.
 - `--log-predicate` overrides the default PID-scoped predicate for both stream and observer (pass a full predicate string).
 - `--attach <seconds>` is a convenience for attach workflows: it sets a pre-run wait using a FIFO under the service’s container `tmp` plus a matching `--hold-open` (unless you set `--hold-open` explicitly).
+- `--xpc-timeout-ms <n>` sets a client-side timeout; if no response arrives, the client emits a structured `probe_response` with `normalized_outcome: xpc_error`.
 - `--wait-fifo`/`--wait-exists` block **before** probe execution; the wait outcome is recorded in `data.details` (`wait_*` keys).
 - `--wait-create` tells the service to create the FIFO path before waiting (only valid with `--wait-fifo`).
-- When a wait is configured, the client prints a `wait-ready` line to stderr with the resolved wait path (use that FIFO or file path to trigger).
+- When a wait is configured, the client prints a `wait-ready` line to stderr with the resolved wait path (use that FIFO or file path to trigger). When attach waits are in use, it also prints a `pid-ready` line once the service PID is known.
 
 ### Attach cheat-sheet
 
@@ -222,7 +223,7 @@ Example (dlopen_external):
 
 ```sh
 EJ_DLOPEN_PATH="$PWD/tests/fixtures/TestDylib/out/testdylib.dylib" \
-  ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc com.yourteam.entitlement-jail.ProbeService_plugin_host_relaxed dlopen_external
+  ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-xpc --ack-risk fully_injectable com.yourteam.entitlement-jail.ProbeService_fully_injectable dlopen_external
 ```
 
 ## Profiles and health checks
@@ -273,9 +274,8 @@ Run the same probe across a predefined group and emit a compare table plus JSON 
 Groups:
 
 - `baseline`: `minimal`
-- `debug`: `minimal`, `debuggable`
-- `inject`: `minimal`, `plugin_host_relaxed`, `dyld_env_enabled`, `fully_injectable`
-- `jit`: `minimal`, `jit_map_jit`, `jit_rwx_legacy`
+- `debug`: `minimal`, `get-task-allow`
+- `inject`: `minimal`, `fully_injectable`
 
 Example:
 

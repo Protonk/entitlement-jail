@@ -162,7 +162,7 @@ def tags_for_profile(service_name: str, entitlements: Dict[str, Any]) -> list[st
     if entitlements.get("com.apple.security.files.bookmarks.app-scope") is True:
         tags.append("bookmarks_app_scope")
     if entitlements.get("com.apple.security.get-task-allow") is True:
-        tags.append("debuggable")
+        tags.append("get_task_allow")
     if entitlements.get("com.apple.security.cs.disable-library-validation") is True:
         tags.append("disable_library_validation")
     if entitlements.get("com.apple.security.cs.allow-dyld-environment-variables") is True:

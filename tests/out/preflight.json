@@ -35,22 +35,6 @@
       "sign_error": null,
       "signed": true
     },
-    "debuggable": {
-      "bundle_id": "com.yourteam.entitlement-jail.ProbeService_debuggable",
-      "entitlements": {
-        "app_sandbox": true,
-        "disable_library_validation": true,
-        "get_task_allow": true
-      },
-      "entitlements_error": null,
-      "exists": true,
-      "kind": "probe",
-      "path": "/Users/achyland/Desktop/entitlement-jail/EntitlementJail.app/Contents/XPCServices/ProbeService_debuggable.xpc/Contents/MacOS/ProbeService_debuggable",
-      "profile_id": "debuggable",
-      "service_name": "ProbeService_debuggable",
-      "sign_error": null,
-      "signed": true
-    },
     "downloads_rw": {
       "bundle_id": "com.yourteam.entitlement-jail.ProbeService_downloads_rw",
       "entitlements": {
@@ -63,21 +47,6 @@
       "path": "/Users/achyland/Desktop/entitlement-jail/EntitlementJail.app/Contents/XPCServices/ProbeService_downloads_rw.xpc/Contents/MacOS/ProbeService_downloads_rw",
       "profile_id": "downloads_rw",
       "service_name": "ProbeService_downloads_rw",
-      "sign_error": null,
-      "signed": true
-    },
-    "dyld_env_enabled": {
-      "bundle_id": "com.yourteam.entitlement-jail.ProbeService_dyld_env_enabled",
-      "entitlements": {
-        "allow_dyld_environment_variables": true,
-        "app_sandbox": true
-      },
-      "entitlements_error": null,
-      "exists": true,
-      "kind": "probe",
-      "path": "/Users/achyland/Desktop/entitlement-jail/EntitlementJail.app/Contents/XPCServices/ProbeService_dyld_env_enabled.xpc/Contents/MacOS/ProbeService_dyld_env_enabled",
-      "profile_id": "dyld_env_enabled",
-      "service_name": "ProbeService_dyld_env_enabled",
       "sign_error": null,
       "signed": true
     },
@@ -100,33 +69,19 @@
       "sign_error": null,
       "signed": true
     },
-    "jit_map_jit": {
-      "bundle_id": "com.yourteam.entitlement-jail.ProbeService_jit_map_jit",
+    "get-task-allow": {
+      "bundle_id": "com.yourteam.entitlement-jail.ProbeService_get-task-allow",
       "entitlements": {
-        "allow_jit": true,
-        "app_sandbox": true
+        "app_sandbox": true,
+        "disable_library_validation": true,
+        "get_task_allow": true
       },
       "entitlements_error": null,
       "exists": true,
       "kind": "probe",
-      "path": "/Users/achyland/Desktop/entitlement-jail/EntitlementJail.app/Contents/XPCServices/ProbeService_jit_map_jit.xpc/Contents/MacOS/ProbeService_jit_map_jit",
-      "profile_id": "jit_map_jit",
-      "service_name": "ProbeService_jit_map_jit",
-      "sign_error": null,
-      "signed": true
-    },
-    "jit_rwx_legacy": {
-      "bundle_id": "com.yourteam.entitlement-jail.ProbeService_jit_rwx_legacy",
-      "entitlements": {
-        "allow_unsigned_executable_memory": true,
-        "app_sandbox": true
-      },
-      "entitlements_error": null,
-      "exists": true,
-      "kind": "probe",
-      "path": "/Users/achyland/Desktop/entitlement-jail/EntitlementJail.app/Contents/XPCServices/ProbeService_jit_rwx_legacy.xpc/Contents/MacOS/ProbeService_jit_rwx_legacy",
-      "profile_id": "jit_rwx_legacy",
-      "service_name": "ProbeService_jit_rwx_legacy",
+      "path": "/Users/achyland/Desktop/entitlement-jail/EntitlementJail.app/Contents/XPCServices/ProbeService_get-task-allow.xpc/Contents/MacOS/ProbeService_get-task-allow",
+      "profile_id": "get-task-allow",
+      "service_name": "ProbeService_get-task-allow",
       "sign_error": null,
       "signed": true
     },
@@ -156,21 +111,6 @@
       "path": "/Users/achyland/Desktop/entitlement-jail/EntitlementJail.app/Contents/XPCServices/ProbeService_net_client.xpc/Contents/MacOS/ProbeService_net_client",
       "profile_id": "net_client",
       "service_name": "ProbeService_net_client",
-      "sign_error": null,
-      "signed": true
-    },
-    "plugin_host_relaxed": {
-      "bundle_id": "com.yourteam.entitlement-jail.ProbeService_plugin_host_relaxed",
-      "entitlements": {
-        "app_sandbox": true,
-        "disable_library_validation": true
-      },
-      "entitlements_error": null,
-      "exists": true,
-      "kind": "probe",
-      "path": "/Users/achyland/Desktop/entitlement-jail/EntitlementJail.app/Contents/XPCServices/ProbeService_plugin_host_relaxed.xpc/Contents/MacOS/ProbeService_plugin_host_relaxed",
-      "profile_id": "plugin_host_relaxed",
-      "service_name": "ProbeService_plugin_host_relaxed",
       "sign_error": null,
       "signed": true
     },

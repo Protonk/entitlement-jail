@@ -7,34 +7,14 @@
       "xpc_quarantine_service_bundle_id": "com.yourteam.entitlement-jail.QuarantineLab_default"
     },
     {
-      "node_id": "E5_debuggable",
+      "node_id": "E5_get_task_allow",
       "policy_profile": "experiments/policy/P0_minimal.sb",
-      "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_debuggable"
-    },
-    {
-      "node_id": "E6_plugin_host_relaxed",
-      "policy_profile": "experiments/policy/P0_minimal.sb",
-      "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_plugin_host_relaxed"
-    },
-    {
-      "node_id": "E7_dyld_env_enabled",
-      "policy_profile": "experiments/policy/P0_minimal.sb",
-      "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_dyld_env_enabled"
+      "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_get-task-allow"
     },
     {
       "node_id": "E8_fully_injectable",
       "policy_profile": "experiments/policy/P0_minimal.sb",
       "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_fully_injectable"
-    },
-    {
-      "node_id": "E9_jit_map_jit",
-      "policy_profile": "experiments/policy/P0_minimal.sb",
-      "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_jit_map_jit"
-    },
-    {
-      "node_id": "E10_jit_rwx_legacy",
-      "policy_profile": "experiments/policy/P0_minimal.sb",
-      "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_jit_rwx_legacy"
     }
   ]
 }

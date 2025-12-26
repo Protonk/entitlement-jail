@@ -68,12 +68,8 @@ Current services:
 - `ProbeService_downloads_rw`: identical code to `ProbeService_minimal`, but with `com.apple.security.files.downloads.read-write`.
 - `ProbeService_user_selected_executable`: identical code to `ProbeService_minimal`, but with `com.apple.security.files.user-selected.executable`.
 - `ProbeService_bookmarks_app_scope`: identical code to `ProbeService_minimal`, but with `com.apple.security.files.bookmarks.app-scope` (enables `mach-lookup` to `com.apple.scopedbookmarksagent.xpc`, used by security-scoped bookmark creation/resolution).
-- `ProbeService_debuggable`: identical code to `ProbeService_minimal`, but with `com.apple.security.get-task-allow`.
-- `ProbeService_plugin_host_relaxed`: identical code to `ProbeService_minimal`, but with `com.apple.security.cs.disable-library-validation`.
-- `ProbeService_dyld_env_enabled`: identical code to `ProbeService_minimal`, but with `com.apple.security.cs.allow-dyld-environment-variables`.
+- `ProbeService_get-task-allow`: identical code to `ProbeService_minimal`, but with `com.apple.security.get-task-allow`.
 - `ProbeService_fully_injectable`: identical code to `ProbeService_minimal`, but with `com.apple.security.get-task-allow` + `com.apple.security.cs.disable-library-validation` + `com.apple.security.cs.allow-dyld-environment-variables` + `com.apple.security.cs.allow-jit` + `com.apple.security.cs.allow-unsigned-executable-memory`.
-- `ProbeService_jit_map_jit`: identical code to `ProbeService_minimal`, but with `com.apple.security.cs.allow-jit`.
-- `ProbeService_jit_rwx_legacy`: identical code to `ProbeService_minimal`, but with `com.apple.security.cs.allow-unsigned-executable-memory`.
 - `QuarantineLab_default`: writes/opens/copies artifacts and reports `com.apple.quarantine` deltas.
 - `QuarantineLab_net_client`: identical code to `QuarantineLab_default`, but with `com.apple.security.network.client`.
 - `QuarantineLab_downloads_rw`: identical code to `QuarantineLab_default`, but with `com.apple.security.files.downloads.read-write`.
