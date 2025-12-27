@@ -9,7 +9,7 @@ EntitlementJail is a macOS research/teaching repo that’s intentionally biased 
 
 ## The Product Shape
 
-The intended distribution artifact is only the set of:
+Distribution artifacts are only:
 
 - `EntitlementJail.app` (the bundle) + [`EntitlementJail.md`](EntitlementJail.md) (the user guide)
 
@@ -18,8 +18,6 @@ Inside the bundle:
 - `Contents/MacOS/entitlement-jail` — the host-side launcher (Rust; plain-signed; not sandboxed).
 - `Contents/XPCServices/*.xpc` — the process zoo (Swift; sandboxed; entitlements vary per-service).
 - `Contents/Resources/Evidence/*` — signed “static evidence” for inspection (entitlements, hashes, profiles, trace symbols).
-
-The user guide is written deliberately as the only window (outside of CLI `--help`) into intent for the end user.
 
 ## The Core Model (Profiles → Sessions → Probes → Witnesses)
 
@@ -30,16 +28,17 @@ Most work in EntitlementJail has the same shape:
 3. Run one or more **probes** (by `probe_id`) inside the service.
 4. Read the resulting **witness record** (JSON). If you need deny evidence, collect it separately with `sandbox-log-observer`.
 
-The “unit of variation” is a whole separately-signed, launchd-managed service — not a transient child process that inherits a grab bag of state.
+The “unit of variation” is a whole separately-signed, launchd-managed service — not a transient child process that inherits a grab bag of state. If you want a 3-witness comparison (baseline vs `sandbox-exec` vs XPC), the tri-run harness lives under `experiments/` and produces a mismatch atlas.
 
-If you want a 3-witness comparison (baseline vs `sandbox-exec` vs XPC), the tri-run harness lives under [`experiments/`](experiments/) (see [`experiments/README.md`](experiments/README.md)) and produces a mismatch atlas.
+## Where To Learn
 
-## Where To Start (Documents)
+If you're...
+- using the built artifact: [`EntitlementJail.md`](EntitlementJail.md)
+- orienting yourself in the repo: [`AGENTS.md`](AGENTS.md)
+- contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- signing/distributing: [`SIGNING.md`](SIGNING.md)
+- changing...
+  - CLI behavior/output contracts: [`runner/README.md`](runner/README.md)
+  - XPC services, probes, or session semantics: [`xpc/README.md`](xpc/README.md)
+  - the tri-run experiment harness: [`experiments/README.md`](experiments/README.md)
 
-- If you’re using the built artifact: [`EntitlementJail.md`](EntitlementJail.md)
-- If you’re contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
-- If you’re changing signing/distribution: [`SIGNING.md`](SIGNING.md)
-- If you’re changing CLI behavior/output contracts: [`runner/README.md`](runner/README.md)
-- If you’re changing XPC services, probes, or session semantics: [`xpc/README.md`](xpc/README.md)
-- If you’re changing the tri-run experiment harness: [`experiments/README.md`](experiments/README.md)
-- If you’re trying to orient yourself in the repo (layout + invariants): [`AGENTS.md`](AGENTS.md)
