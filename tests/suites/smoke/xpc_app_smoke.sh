@@ -1,33 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EJ="${EJ_BIN:-${ROOT_DIR}/EntitlementJail.app/Contents/MacOS/entitlement-jail}"
-OUT_DIR="${EJ_APP_SMOKE_OUT_DIR:-${ROOT_DIR}/tests/out/app-smoke}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+source "${ROOT_DIR}/tests/lib/testlib.sh"
 
 CURRENT_STEP=""
 
+test_begin "smoke" "xpc.app_smoke"
+
 fail() {
-  echo "FAIL: ${CURRENT_STEP}" 1>&2
+  test_fail "${CURRENT_STEP:-xpc app smoke failed}"
 }
 
 trap fail ERR
 
 step() {
   CURRENT_STEP="$1"
-  echo "==> ${CURRENT_STEP}"
+  test_step "$1" "${2:-$1}"
 }
 
+EJ="${EJ_BIN:-${ROOT_DIR}/EntitlementJail.app/Contents/MacOS/entitlement-jail}"
+OUT_DIR="${EJ_TEST_ARTIFACTS}"
+
 if [[ ! -x "${EJ}" ]]; then
-  echo "ERROR: missing or non-executable EntitlementJail launcher at: ${EJ}" 1>&2
-  echo "hint: run \`make build\` first, or set EJ_BIN to the launcher path" 1>&2
-  exit 2
+  test_fail "missing or non-executable EntitlementJail launcher at: ${EJ}"
 fi
 
 rm -rf "${OUT_DIR}"
 mkdir -p "${OUT_DIR}"
 
-step "xpc run (minimal capabilities_snapshot)"
+step "xpc_run_minimal_capabilities" "xpc run (minimal capabilities_snapshot)"
 CAP_JSON="${OUT_DIR}/xpc-run-minimal-capabilities.json"
 "${EJ}" xpc run --profile minimal capabilities_snapshot >"${CAP_JSON}"
 
@@ -49,11 +51,11 @@ if details.get("probe_family") != "capabilities_snapshot":
     raise SystemExit(f"expected data.details.probe_family='capabilities_snapshot'; got {details.get('probe_family')!r}")
 PY
 
-step "xpc run (denial-shaped minimal net_op)"
+step "xpc_run_minimal_net_op" "xpc run (denial-shaped minimal net_op)"
 NET_JSON="${OUT_DIR}/xpc-run-minimal-net-op.json"
 NET_EXIT=0
 "${EJ}" xpc run --profile minimal net_op --op tcp_connect --host 127.0.0.1 --port 9 >"${NET_JSON}" || NET_EXIT="$?"
-echo "xpc run exit_code=${NET_EXIT} (expected: 1 for denial-shaped probe)"
+test_step "net_op_exit_code" "xpc run exit_code=${NET_EXIT} (expected: 1 for denial-shaped probe)"
 
 /usr/bin/python3 - "${NET_JSON}" "${NET_EXIT}" <<'PY'
 import json
@@ -79,7 +81,7 @@ if errno not in (1, 13):
     raise SystemExit(f"expected errno in (EPERM=1, EACCES=13); got {errno!r}")
 PY
 
-step "Repo --out write (run-matrix baseline)"
+step "run_matrix_baseline" "repo --out write (run-matrix baseline)"
 MATRIX_DIR="${OUT_DIR}/matrix-baseline"
 mkdir -p "${MATRIX_DIR}"
 echo "sentinel" >"${MATRIX_DIR}/sentinel.txt"
@@ -117,5 +119,4 @@ if profiles != ["minimal"]:
     raise SystemExit(f"expected data.profiles=['minimal']; got {profiles!r}")
 PY
 
-echo "OK: ${OUT_DIR}"
-
+test_pass "smoke artifacts written" "{\"out_dir\":\"${OUT_DIR}\"}"

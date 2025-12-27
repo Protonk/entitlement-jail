@@ -27,7 +27,7 @@ Preferred options, in roughly increasing integration cost:
 
 - **Rust unit tests** for pure logic (JSON envelopes, parsing, path policy helpers).
 - **CLI integration tests** in `runner/tests/cli_integration.rs` (expects a built `EntitlementJail.app` or `EJ_BIN_PATH`).
-- **Smoke scripts** in `tests/` (`tests/ej-*.sh`) for end-to-end “does the bundle basically work”.
+- **Smoke scripts** in `tests/suites/smoke/` for end-to-end “does the bundle basically work”.
 
 If you can’t write a durable automated test, add a small smokeable workflow to docs (a command that produces a witness JSON) so reviewers have a consistent way to verify your change.
 

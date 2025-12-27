@@ -118,6 +118,7 @@ pub fn write_envelope<T: Serialize>(
 mod tests {
     use super::*;
     use serde::Serialize;
+    use serde_json::json;
 
     #[derive(Serialize)]
     struct Dummy {
@@ -134,6 +135,47 @@ mod tests {
         assert!(!text.contains('\n'));
         let parsed: serde_json::Value = serde_json::from_str(&text).expect("parse");
         assert_eq!(parsed["kind"], "dummy");
+        assert_eq!(parsed["schema_version"], SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn envelope_keys_are_sorted() {
+        let payload = json!({
+            "z": "last",
+            "m": "middle",
+            "a": "first"
+        });
+        let text =
+            render_envelope_compact("dummy", JsonResult::from_ok(true), &payload).expect("render");
+
+        let keys = [
+            "\"data\"",
+            "\"generated_at_unix_ms\"",
+            "\"kind\"",
+            "\"result\"",
+            "\"schema_version\"",
+        ];
+        let mut last = 0usize;
+        for key in keys {
+            let idx = text
+                .find(key)
+                .unwrap_or_else(|| panic!("missing key {key} in {text}"));
+            assert!(
+                idx >= last,
+                "expected key order to be sorted; {key} appeared before previous key"
+            );
+            last = idx;
+        }
+
+        let a_idx = text.find("\"a\"").expect("missing nested key a");
+        let m_idx = text.find("\"m\"").expect("missing nested key m");
+        let z_idx = text.find("\"z\"").expect("missing nested key z");
+        assert!(
+            a_idx < m_idx && m_idx < z_idx,
+            "expected nested keys to be sorted in data object"
+        );
+
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("parse");
         assert_eq!(parsed["schema_version"], SCHEMA_VERSION);
     }
 }

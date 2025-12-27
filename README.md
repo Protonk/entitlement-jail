@@ -23,7 +23,7 @@ Inside the bundle:
 - `Contents/XPCServices/*.xpc` — the process zoo (Swift; sandboxed; entitlements vary per-service).
 - `Contents/Resources/Evidence/*` — signed “static evidence” for inspection (entitlements, hashes, profiles, trace symbols).
 
-The user guide is written deliberately as the only window (outside of CLI `--help`) into intent for the end user. 
+The user guide is written deliberately as the only window (outside of CLI `--help`) into intent for the end user.
 
 ## The Core Model (Profiles → Sessions → Probes → Witnesses)
 

@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+source "${ROOT_DIR}/tests/lib/testlib.sh"
+
 OUT_PATH=""
+CURRENT_STEP=""
 
 usage() {
   cat <<'EOF'
 usage:
-  tests/preflight.sh [--out <path>]
+  tests/suites/preflight/preflight.sh [--out <path>]
 
 notes:
   - emits a JSON report used by integration tests to decide what to skip
@@ -33,8 +36,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+test_begin "preflight" "codesign.preflight"
+
+fail() {
+  test_fail "${CURRENT_STEP:-preflight failed}"
+}
+
+trap fail ERR
+
+step() {
+  CURRENT_STEP="$1"
+  test_step "$1" "${2:-$1}"
+}
+
 if [[ -z "${OUT_PATH}" ]]; then
-  OUT_PATH="${ROOT_DIR}/tests/out/preflight.json"
+  OUT_PATH="${EJ_TEST_ARTIFACTS}/preflight.json"
 fi
 
 mkdir -p "$(dirname "${OUT_PATH}")"
@@ -42,6 +58,8 @@ mkdir -p "$(dirname "${OUT_PATH}")"
 APP_PATH="${ROOT_DIR}/EntitlementJail.app"
 INSPECTOR_PATH="${EJ_INSPECTOR_BIN:-${ROOT_DIR}/runner/target/debug/ej-inspector}"
 DYLIB_PATH="${ROOT_DIR}/tests/fixtures/TestDylib/out/testdylib.dylib"
+
+step "codesign_inspection" "inspect codesign metadata"
 
 /usr/bin/python3 - "${OUT_PATH}" "${APP_PATH}" "${INSPECTOR_PATH}" "${DYLIB_PATH}" <<'PY'
 import json
@@ -217,4 +235,4 @@ with open(out_path, "w", encoding="utf-8") as fh:
     json.dump(report, fh, indent=2, sort_keys=True)
 PY
 
-echo "Preflight: ${OUT_PATH}"
+test_pass "preflight report written" "{\"out_path\":\"${OUT_PATH}\"}"

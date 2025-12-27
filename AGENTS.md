@@ -16,9 +16,9 @@ Pick the thing you’re changing:
 
 Pick the thing that’s failing:
 
-- **Build/sign/packaging failure** → `build-macos.sh`, then `SIGNING.md`, then `tests/preflight.sh`
+- **Build/sign/packaging failure** → `build-macos.sh`, then `SIGNING.md`, then `tests/run.sh --suite preflight`
 - **XPC service won’t launch / replies malformed** → `xpc/services/*/main.swift`, `xpc/ProbeAPI.swift`, `xpc/InProcessProbeCore.swift`
-- **JSON output changed / tests flaky** → `runner/src/json_contract.rs` (envelope + key ordering), `runner/tests/cli_integration.rs`, `tests/ej-*.sh`
+- **JSON output changed / tests flaky** → `runner/src/json_contract.rs` (envelope + key ordering), `runner/tests/cli_integration.rs`, `tests/suites/smoke/*.sh`
 - **Profiles/risk tiers look wrong** → `tests/build-evidence.py` (generates `profiles.json` and risk tiers)
 
 ## Repo layout (mental model)
@@ -49,7 +49,7 @@ If you change names/paths here, expect downstream breakage (tests, docs, evidenc
 Preferred build entrypoints:
 
 - `make build` → runs `./build-macos.sh`
-- `make test` → runs `tests/preflight.sh` + Rust tests + smoke scripts (these will execute the CLI)
+- `make test` → runs `tests/run.sh --all` (preflight, Rust unit/integration, smoke scripts; these will execute the CLI)
 
 Key build facts worth knowing before you touch anything:
 
@@ -157,10 +157,10 @@ The reference patterns live in `xpc/InProcessProbeCore.swift`.
 
 ## Testing notes (what runs what)
 
-- `tests/preflight.sh` is intentionally “observer style”: it inspects signatures/entitlements and emits `tests/out/preflight.json`.
+- `tests/suites/preflight/preflight.sh` is intentionally “observer style”: it inspects signatures/entitlements and emits a JSON report under `tests/out/<run_id>/suites/preflight/...`.
   - Integration tests use it to decide what to skip via `EJ_PREFLIGHT_JSON`.
 - `runner/tests/cli_integration.rs` expects a built `EntitlementJail.app` unless you set `EJ_BIN_PATH`.
-- Smoke scripts (`tests/ej-*.sh`) write under `experiments/out/...` and `tests/out/...` and overwrite prior runs.
+- Smoke scripts (`tests/suites/smoke/*.sh`) write under `tests/out/<run_id>/suites/smoke/...` and overwrite prior runs within that run directory.
 
 ## Safety defaults (for agents)
 

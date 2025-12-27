@@ -1,33 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EJ="${EJ_BIN:-${ROOT_DIR}/EntitlementJail.app/Contents/MacOS/entitlement-jail}"
-OBSERVER="${EJ%/*}/sandbox-log-observer"
-OUT_DIR="${EJ_OBSERVER_SMOKE_OUT_DIR:-${ROOT_DIR}/tests/out/observer-smoke}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+source "${ROOT_DIR}/tests/lib/testlib.sh"
 
 CURRENT_STEP=""
 
+test_begin "smoke" "observer.basic"
+
 fail() {
-  echo "FAIL: ${CURRENT_STEP}" 1>&2
+  test_fail "${CURRENT_STEP:-observer smoke failed}"
 }
 
 trap fail ERR
 
 step() {
   CURRENT_STEP="$1"
-  echo "==> ${CURRENT_STEP}"
+  test_step "$1" "${2:-$1}"
 }
 
+EJ="${EJ_BIN:-${ROOT_DIR}/EntitlementJail.app/Contents/MacOS/entitlement-jail}"
+OBSERVER="${EJ%/*}/sandbox-log-observer"
+OUT_DIR="${EJ_TEST_ARTIFACTS}"
+
 if [[ ! -x "${EJ}" ]]; then
-  echo "ERROR: missing or non-executable EntitlementJail launcher at: ${EJ}" 1>&2
-  echo "hint: run \`make build\` first, or set EJ_BIN to the launcher path" 1>&2
-  exit 2
+  test_fail "missing or non-executable EntitlementJail launcher at: ${EJ}"
 fi
 
 if [[ ! -x "${OBSERVER}" ]]; then
-  echo "ERROR: missing or non-executable sandbox-log-observer at: ${OBSERVER}" 1>&2
-  exit 2
+  test_fail "missing or non-executable sandbox-log-observer at: ${OBSERVER}"
 fi
 
 rm -rf "${OUT_DIR}"
@@ -40,7 +41,7 @@ print(uuid.uuid4())
 PY
 }
 
-step "sandbox-log-observer JSON (show)"
+step "observer_json_show" "sandbox-log-observer JSON (show)"
 TOKEN="$(uuid)"
 /usr/bin/logger "ej-observer-test deny ${TOKEN}"
 sleep 0.5
@@ -76,7 +77,7 @@ if not any(token in line for line in deny_lines):
     raise SystemExit("expected deny_lines to include the emitted token")
 PY
 
-step "sandbox-log-observer JSONL (stream)"
+step "observer_jsonl_stream" "sandbox-log-observer JSONL (stream)"
 TOKEN_STREAM="$(uuid)"
 JSONL_PATH="${OUT_DIR}/observer-stream.jsonl"
 "${OBSERVER}" \
@@ -136,4 +137,4 @@ if not matching:
     raise SystemExit("expected at least one deny event containing the token")
 PY
 
-echo "OK: ${OUT_DIR}"
+test_pass "smoke artifacts written" "{\"out_dir\":\"${OUT_DIR}\"}"

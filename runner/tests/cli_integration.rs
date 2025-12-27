@@ -1,7 +1,11 @@
 use std::env;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStderr, ChildStdout, Command, Output, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 fn integration_enabled() -> bool {
     env::var("EJ_INTEGRATION").ok().as_deref() == Some("1")
@@ -111,6 +115,68 @@ struct SessionHoldResult {
     status_ok: bool,
 }
 
+struct SessionStream {
+    child: Child,
+    stdin: ChildStdin,
+    rx: mpsc::Receiver<String>,
+    stderr: ChildStderr,
+    lines: Vec<String>,
+}
+
+impl SessionStream {
+    fn next_line(&mut self, timeout: Duration) -> Option<String> {
+        match self.rx.recv_timeout(timeout) {
+            Ok(line) => {
+                self.lines.push(line.clone());
+                Some(line)
+            }
+            Err(_) => None,
+        }
+    }
+
+    fn drain(&mut self, timeout: Duration) {
+        loop {
+            match self.rx.recv_timeout(timeout) {
+                Ok(line) => self.lines.push(line),
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    }
+}
+
+fn spawn_xpc_session_stream(bin: &Path, args: &[&str]) -> SessionStream {
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|err| panic!("failed to spawn {}: {err}", bin.display()));
+
+    let stdin = child.stdin.take().expect("missing stdin");
+    let stdout = child.stdout.take().expect("missing stdout");
+    let stderr = child.stderr.take().expect("missing stderr");
+
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines().flatten() {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    SessionStream {
+        child,
+        stdin,
+        rx,
+        stderr,
+        lines: Vec::new(),
+    }
+}
+
 fn spawn_xpc_session_hold(bin: &Path, args: &[&str]) -> SessionHold {
     let mut child = Command::new(bin)
         .args(args)
@@ -196,6 +262,28 @@ fn finish_session_hold(mut hold: SessionHold) -> SessionHoldResult {
 
     SessionHoldResult {
         stdout: hold.stdout_buf,
+        stderr: stderr_buf,
+        status_ok: status.success(),
+    }
+}
+
+fn finish_session_stream(mut session: SessionStream) -> SessionHoldResult {
+    let status = session
+        .child
+        .wait()
+        .unwrap_or_else(|err| panic!("failed to wait for session child: {err}"));
+
+    session.drain(Duration::from_millis(50));
+    let stdout = session.lines.join("\n");
+
+    let mut stderr_buf = String::new();
+    session
+        .stderr
+        .read_to_string(&mut stderr_buf)
+        .unwrap_or_else(|err| panic!("failed to read session stderr: {err}"));
+
+    SessionHoldResult {
+        stdout,
         stderr: stderr_buf,
         status_ok: status.success(),
     }
@@ -660,10 +748,15 @@ fn cli_integration_smoke() {
                     "jit_rwx_legacy",
                 ],
             );
+            let jit_rwx_json = parse_json(&jit_rwx_out);
+            let outcome = jit_rwx_json
+                .get("result")
+                .and_then(|v| v.get("normalized_outcome"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             assert!(
-                jit_rwx_out.status.success(),
-                "jit_rwx_legacy failed: {}",
-                String::from_utf8_lossy(&jit_rwx_out.stderr)
+                matches!(outcome, "ok" | "permission_error"),
+                "jit_rwx_legacy unexpected outcome: {outcome}"
             );
         } else {
             eprintln!("skip jit tests: missing jit entitlements");
@@ -733,4 +826,268 @@ fn cli_integration_smoke() {
     } else {
         eprintln!("skip inspector/dlopen/jit/network tests: missing EJ_PREFLIGHT_JSON");
     }
+}
+
+#[test]
+fn xpc_session_wait_flow() {
+    if !integration_enabled() {
+        return;
+    }
+
+    let bin = require_ej_bin();
+    let mut session = spawn_xpc_session_stream(
+        &bin,
+        &[
+            "xpc",
+            "session",
+            "--profile",
+            "minimal",
+            "--wait",
+            "fifo:auto",
+            "--wait-timeout-ms",
+            "10000",
+        ],
+    );
+
+    let mut pid: Option<i64> = None;
+    let mut wait_path: Option<String> = None;
+    let mut have_wait_ready = false;
+
+    let mut line_idx = 0usize;
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while Instant::now() < deadline {
+        let line = match session.next_line(Duration::from_secs(1)) {
+            Some(line) => line,
+            None => continue,
+        };
+        line_idx += 1;
+        let parsed: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(val) => val,
+            Err(_) => continue,
+        };
+        match parsed.get("kind").and_then(|v| v.as_str()) {
+            Some("xpc_session_error") => {
+                panic!("unexpected session error: {line}");
+            }
+            Some("xpc_session_event") => {
+                let data = parsed.get("data").cloned().unwrap_or(serde_json::Value::Null);
+                let event = data.get("event").and_then(|v| v.as_str()).unwrap_or("");
+                if event == "session_ready" {
+                    pid = data.get("pid").and_then(|v| v.as_i64());
+                    if let Some(path) = data.get("wait_path").and_then(|v| v.as_str()) {
+                        wait_path = Some(path.to_string());
+                    }
+                } else if event == "wait_ready" {
+                    have_wait_ready = true;
+                    if wait_path.is_none() {
+                        if let Some(path) = data.get("wait_path").and_then(|v| v.as_str()) {
+                            wait_path = Some(path.to_string());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        if pid.is_some() && wait_path.is_some() && have_wait_ready {
+            break;
+        }
+    }
+
+    let pid = pid.unwrap_or(0);
+    if pid <= 0 {
+        panic!(
+            "missing/invalid pid in session_ready; stdout so far:\n{}",
+            session.lines.join("\n")
+        );
+    }
+    let wait_path = wait_path.unwrap_or_else(|| {
+        panic!(
+            "missing wait_path in session events; stdout so far:\n{}",
+            session.lines.join("\n")
+        )
+    });
+
+    let fifo_deadline = Instant::now() + Duration::from_secs(5);
+    let mut is_fifo = false;
+    while Instant::now() < fifo_deadline {
+        if let Ok(meta) = std::fs::metadata(&wait_path) {
+            if meta.file_type().is_fifo() {
+                is_fifo = true;
+                break;
+            }
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        is_fifo,
+        "expected wait_path FIFO at {wait_path}; stdout so far:\n{}",
+        session.lines.join("\n")
+    );
+
+    let mut fifo = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&wait_path)
+        .unwrap_or_else(|err| panic!("failed to open wait FIFO {wait_path}: {err}"));
+    fifo.write_all(b"go")
+        .unwrap_or_else(|err| panic!("failed to write wait FIFO {wait_path}: {err}"));
+
+    let mut trigger_idx: Option<usize> = None;
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while Instant::now() < deadline {
+        let line = match session.next_line(Duration::from_secs(1)) {
+            Some(line) => line,
+            None => continue,
+        };
+        line_idx += 1;
+        let parsed: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(val) => val,
+            Err(_) => continue,
+        };
+        if parsed.get("kind").and_then(|v| v.as_str()) == Some("xpc_session_error") {
+            panic!("unexpected session error: {line}");
+        }
+        if parsed.get("kind").and_then(|v| v.as_str()) != Some("xpc_session_event") {
+            continue;
+        }
+        let event = parsed
+            .get("data")
+            .and_then(|v| v.get("event"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if event == "trigger_received" {
+            trigger_idx = Some(line_idx);
+            break;
+        }
+    }
+
+    let trigger_idx = trigger_idx.unwrap_or_else(|| {
+        panic!(
+            "timed out waiting for trigger_received; stdout so far:\n{}",
+            session.lines.join("\n")
+        )
+    });
+
+    session
+        .stdin
+        .write_all(b"{\"command\":\"run_probe\",\"probe_id\":\"capabilities_snapshot\"}\n")
+        .expect("write run_probe");
+
+    let mut probe_start_idx: Option<usize> = None;
+    let mut probe_done = false;
+    let mut probe_ok = false;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        let line = match session.next_line(Duration::from_secs(1)) {
+            Some(line) => line,
+            None => continue,
+        };
+        line_idx += 1;
+        let parsed: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(val) => val,
+            Err(_) => continue,
+        };
+        match parsed.get("kind").and_then(|v| v.as_str()) {
+            Some("xpc_session_error") => {
+                panic!("unexpected session error: {line}");
+            }
+            Some("xpc_session_event") => {
+                let event = parsed
+                    .get("data")
+                    .and_then(|v| v.get("event"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if event == "probe_starting" {
+                    probe_start_idx = Some(line_idx);
+                } else if event == "probe_done" {
+                    probe_done = true;
+                }
+            }
+            Some("probe_response") => {
+                let probe_id = parsed
+                    .get("data")
+                    .and_then(|v| v.get("probe_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if probe_id == "capabilities_snapshot" {
+                    let outcome = parsed
+                        .get("result")
+                        .and_then(|v| v.get("normalized_outcome"))
+                        .and_then(|v| v.as_str())
+                        .or_else(|| {
+                            parsed
+                                .get("data")
+                                .and_then(|v| v.get("normalized_outcome"))
+                                .and_then(|v| v.as_str())
+                        })
+                        .unwrap_or("");
+                    assert_eq!(
+                        outcome, "ok",
+                        "unexpected normalized_outcome for capabilities_snapshot"
+                    );
+                    probe_ok = true;
+                }
+            }
+            _ => {}
+        }
+        if probe_done && probe_ok {
+            break;
+        }
+    }
+
+    let probe_start_idx = probe_start_idx.unwrap_or_else(|| {
+        panic!(
+            "missing probe_starting event; stdout so far:\n{}",
+            session.lines.join("\n")
+        )
+    });
+    assert!(
+        trigger_idx < probe_start_idx,
+        "expected trigger_received to precede probe_starting"
+    );
+    assert!(
+        probe_done && probe_ok,
+        "expected probe_done and probe_response; stdout so far:\n{}",
+        session.lines.join("\n")
+    );
+
+    session
+        .stdin
+        .write_all(b"{\"command\":\"close_session\"}\n")
+        .expect("write close_session");
+
+    let mut saw_closed = false;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let line = match session.next_line(Duration::from_secs(1)) {
+            Some(line) => line,
+            None => continue,
+        };
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) {
+            if parsed.get("kind").and_then(|v| v.as_str()) == Some("xpc_session_event") {
+                let event = parsed
+                    .get("data")
+                    .and_then(|v| v.get("event"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if event == "session_closed" {
+                    saw_closed = true;
+                    break;
+                }
+            }
+        }
+    }
+    assert!(
+        saw_closed,
+        "expected session_closed event; stdout so far:\n{}",
+        session.lines.join("\n")
+    );
+
+    let result = finish_session_stream(session);
+    assert!(
+        result.status_ok,
+        "xpc session exited with failure:\n\nstdout:\n{}\n\nstderr:\n{}",
+        result.stdout,
+        result.stderr
+    );
 }

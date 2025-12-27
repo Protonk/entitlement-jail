@@ -1,27 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EJ="${EJ_BIN:-${ROOT_DIR}/EntitlementJail.app/Contents/MacOS/entitlement-jail}"
-OUT_DIR="${EJ_SESSION_SMOKE_OUT_DIR:-${ROOT_DIR}/tests/out/session-smoke}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+source "${ROOT_DIR}/tests/lib/testlib.sh"
 
 CURRENT_STEP=""
 
+test_begin "smoke" "xpc.session_smoke"
+
 fail() {
-  echo "FAIL: ${CURRENT_STEP}" 1>&2
+  test_fail "${CURRENT_STEP:-xpc session smoke failed}"
 }
 
 trap fail ERR
 
 step() {
   CURRENT_STEP="$1"
-  echo "==> ${CURRENT_STEP}"
+  test_step "$1" "${2:-$1}"
 }
 
+EJ="${EJ_BIN:-${ROOT_DIR}/EntitlementJail.app/Contents/MacOS/entitlement-jail}"
+OUT_DIR="${EJ_TEST_ARTIFACTS}"
+
 if [[ ! -x "${EJ}" ]]; then
-  echo "ERROR: missing or non-executable EntitlementJail launcher at: ${EJ}" 1>&2
-  echo "hint: run \`make build\` first, or set EJ_BIN to the launcher path" 1>&2
-  exit 2
+  test_fail "missing or non-executable EntitlementJail launcher at: ${EJ}"
 fi
 
 rm -rf "${OUT_DIR}"
@@ -34,7 +36,7 @@ mkfifo "${CONTROL_FIFO}"
 SESSION_JSONL="${OUT_DIR}/session.jsonl"
 SESSION_STDERR="${OUT_DIR}/session.stderr"
 
-step "Open session (attach wait)"
+step "open_session" "open session (attach wait)"
 exec 3<> "${CONTROL_FIFO}"
 
 "${EJ}" xpc session --profile fully_injectable --ack-risk fully_injectable --wait fifo:auto --wait-timeout-ms 10000 0<&3 >"${SESSION_JSONL}" 2>"${SESSION_STDERR}" &
@@ -105,7 +107,7 @@ print(wait_path)
 PY
 )"
 
-step "Trigger wait FIFO"
+step "trigger_wait_fifo" "trigger wait FIFO"
 # Wait for FIFO creation (the service creates it).
 for _ in $(seq 1 200); do
   if [[ -p "${WAIT_PATH}" ]]; then
@@ -115,12 +117,10 @@ for _ in $(seq 1 200); do
 done
 
 if [[ ! -p "${WAIT_PATH}" ]]; then
-  echo "expected wait_path to be a FIFO, got: ${WAIT_PATH}" 1>&2
-  echo "stderr:" 1>&2
   sed -n '1,200p' "${SESSION_STDERR}" 1>&2 || true
   kill "${SESSION_PID}" 2>/dev/null || true
   wait "${SESSION_PID}" 2>/dev/null || true
-  exit 1
+  test_fail "expected wait_path to be a FIFO" "{\"wait_path\":\"${WAIT_PATH}\"}"
 fi
 
 printf go > "${WAIT_PATH}"
@@ -151,7 +151,7 @@ while time.time() < deadline:
 raise SystemExit("timed out waiting for trigger_received event")
 PY
 
-step "Run two probes inside the session"
+step "run_probes" "run two probes inside the session"
 printf '%s\n' '{"command":"run_probe","probe_id":"sandbox_check","argv":["--operation","file-read-data","--path","/etc/hosts"]}' >&3
 printf '%s\n' '{"command":"run_probe","probe_id":"capabilities_snapshot"}' >&3
 
@@ -206,10 +206,10 @@ if len(set(service_pids)) != 1:
     raise SystemExit(f"expected a stable service pid across probes; saw {sorted(set(service_pids))!r}")
 PY
 
-step "Close session"
+step "close_session" "close session"
 printf '%s\n' '{"command":"close_session"}' >&3
 exec 3>&-
 
 wait "${SESSION_PID}"
 
-echo "OK: ${OUT_DIR}"
+test_pass "smoke artifacts written" "{\"out_dir\":\"${OUT_DIR}\"}"
