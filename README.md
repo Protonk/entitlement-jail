@@ -2,6 +2,8 @@
 
 EntitlementJail is a macOS research/teaching repo that’s intentionally biased toward producing **witness records** (structured outcome descriptions) without quietly upgrading those outcomes into stronger claims about *why* they happened. Missing files, signing validity, quarantine/Gatekeeper, launchd/XPC behavior, filesystem permissions, and Seatbelt/App Sandbox can all produce similar-looking symptoms. This repo tries to keep those layers explicit and keep the output contract stable enough for downstream tooling.
 
+## Commitments
+
 - **Entitlements as a real experimental variable**: the “thing you run” isn’t one binary; it’s an app bundle that embeds many separately signed executables. The core research targets are launchd-managed XPC services, each signed with a distinct entitlement profile.
 - **Outcomes first; attribution second**: probes emit outcomes (rc/errno/paths/timing) as JSON envelopes. If you want deny evidence, use an explicit outside-the-sandbox witness (`sandbox-log-observer`) rather than baking attribution into every probe.
 - **Deterministic attachment**: `xpc session` exposes a deliberate, lifecycle-aware service session surface (PID, readiness events, and a wait barrier) so debuggers/tracers can attach without racing startup.
@@ -9,18 +11,17 @@ EntitlementJail is a macOS research/teaching repo that’s intentionally biased 
 
 ## The Product Shape
 
-Distribution artifacts are only:
-
-- `EntitlementJail.app` (the bundle) + [`EntitlementJail.md`](EntitlementJail.md) (the user guide)
+Distribution artifacts are only: `EntitlementJail.app` (the bundle) + `EntitlementJail.md` (the user guide)
 
 Inside the bundle:
-
 - `Contents/MacOS/entitlement-jail` — the host-side launcher (Rust; plain-signed; not sandboxed).
 - `Contents/XPCServices/*.xpc` — the process zoo (Swift; sandboxed; entitlements vary per-service).
 - `Contents/Resources/Evidence/*` — signed “static evidence” for inspection (entitlements, hashes, profiles, trace symbols).
 
-## The Core Model (Profiles → Sessions → Probes → Witnesses)
+The user guide, [`EntitlementJail.md`](EntitlementJail.md), is an intentionally narrow window into the intent and scope of the application. End users see use, CLI, and important bundle information and nothing more.
 
+## The Core Model
+>Profiles → Sessions → Probes → Witnesses
 Most work in EntitlementJail has the same shape:
 
 1. Pick a **profile** (an embedded XPC service signed with a specific entitlement set).
@@ -33,10 +34,10 @@ The “unit of variation” is a whole separately-signed, launchd-managed servic
 ## Where To Learn
 
 If you're...
-- using the built artifact: [`EntitlementJail.md`](EntitlementJail.md)
 - orienting yourself in the repo: [`AGENTS.md`](AGENTS.md)
 - contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 - signing/distributing: [`SIGNING.md`](SIGNING.md)
+- testing: [`tests/README.md`](tests/README.md)
 - changing...
   - CLI behavior/output contracts: [`runner/README.md`](runner/README.md)
   - XPC services, probes, or session semantics: [`xpc/README.md`](xpc/README.md)
