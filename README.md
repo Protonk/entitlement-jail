@@ -22,6 +22,7 @@ The user guide, [`EntitlementJail.md`](EntitlementJail.md), is an intentionally 
 
 ## The Core Model
 >Profiles → Sessions → Probes → Witnesses
+
 Most work in EntitlementJail has the same shape:
 
 1. Pick a **profile** (an embedded XPC service signed with a specific entitlement set).
