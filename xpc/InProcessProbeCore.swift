@@ -38,6 +38,11 @@ public func ej_probe_jit_rwx_legacy_marker() {}
 @_optimize(none)
 public func ej_probe_sandbox_check_marker() {}
 
+@_cdecl("ej_probe_sandbox_extension")
+@inline(never)
+@_optimize(none)
+public func ej_probe_sandbox_extension_marker() {}
+
 public enum InProcessProbeCore {
     public static func run(_ req: RunProbeRequest) -> RunProbeResponse {
         let started = Date()
@@ -98,6 +103,8 @@ public enum InProcessProbeCore {
             response = probeCapabilitiesSnapshot()
         case "sandbox_check":
             response = probeSandboxCheck(argv: req.argv)
+        case "sandbox_extension":
+            response = probeSandboxExtension(argv: req.argv)
         case "userdefaults_op":
             response = probeUserDefaultsOp(argv: req.argv)
         case "fs_xattr":
@@ -511,6 +518,41 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
             ]
         ),
         ProbeSpec(
+            probe_id: "sandbox_extension",
+            summary: "issue/consume/release sandbox file extensions",
+            usage: """
+sandbox_extension --op issue_file --class <extension-class>
+                 (--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches>)
+                 [--target <base|harness_dir|run_dir|specimen_file>] [--name <filename>]
+                 [--flags <int>] [--allow-unsafe-path]
+sandbox_extension --op consume --token <token>
+sandbox_extension --op release --token <token>
+""",
+            required_args: [
+                "--op <issue_file|consume|release>"
+            ],
+            optional_args: [
+                "--class <extension-class> (required for issue_file)",
+                "--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches> (required for issue_file)",
+                "--target <base|harness_dir|run_dir|specimen_file> (default: specimen_file)",
+                "--name <filename>",
+                "--flags <int> (default: 0)",
+                "--allow-unsafe-path",
+                "--token <token> (required for consume/release)"
+            ],
+            examples: [
+                "sandbox_extension --op issue_file --class com.apple.app-sandbox.read --path /etc/hosts --allow-unsafe-path",
+                "sandbox_extension --op consume --token <token>"
+            ],
+            entitlement_hints: [
+                "com.apple.security.temporary-exception.sbpl (allow file-issue-extension for extension class)"
+            ],
+            notes: [
+                "issue_file returns the token in stdout.",
+                "Direct-path issuance outside */entitlement-jail-harness/* is refused unless you pass --allow-unsafe-path."
+            ]
+        ),
+        ProbeSpec(
             probe_id: "userdefaults_op",
             summary: "read/write/remove/sync a UserDefaults key",
             usage: "userdefaults_op --op <read|write|remove|sync> [--key <k>] [--value <v>] [--suite <suite>]",
@@ -584,6 +626,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
         TraceSymbolSpec(probe_id: "jit_map_jit", symbols: ["ej_probe_jit_map_jit"]),
         TraceSymbolSpec(probe_id: "jit_rwx_legacy", symbols: ["ej_probe_jit_rwx_legacy"]),
         TraceSymbolSpec(probe_id: "sandbox_check", symbols: ["ej_probe_sandbox_check"]),
+        TraceSymbolSpec(probe_id: "sandbox_extension", symbols: ["ej_probe_sandbox_extension"]),
     ]
 
     private static func probeSpec(for probeId: String) -> ProbeSpec? {
@@ -2624,6 +2667,209 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	            details: details,
 	            layer_attribution: nil
 	        )
+	    }
+
+	    // MARK: - sandbox_extension (issue/consume/release)
+
+	    private enum SandboxExtensionOp: String, CaseIterable {
+	        case issue_file
+	        case consume
+	        case release
+	    }
+
+	    private typealias SandboxExtensionIssueFileFn = @convention(c) (UnsafePointer<CChar>, UnsafePointer<CChar>, Int32) -> UnsafeMutablePointer<CChar>?
+	    private typealias SandboxExtensionConsumeFn = @convention(c) (UnsafePointer<CChar>) -> Int32
+	    private typealias SandboxExtensionReleaseFn = @convention(c) (UnsafePointer<CChar>) -> Int32
+	    private typealias SandboxExtensionFreeFn = @convention(c) (UnsafeMutablePointer<CChar>?) -> Void
+
+	    private static func resolveSandboxExtensionSymbol(_ name: String) -> UnsafeMutableRawPointer? {
+	        let rtldDefault = UnsafeMutableRawPointer(bitPattern: -2)
+	        return name.withCString { sym in
+	            dlsym(rtldDefault, sym)
+	        }
+	    }
+
+	    private static func probeSandboxExtension(argv: [String]) -> RunProbeResponse {
+	        ej_probe_sandbox_extension_marker()
+	        let args = Argv(argv)
+	        let expectedOps = SandboxExtensionOp.allCases.map(\.rawValue).joined(separator: "|")
+	        guard let opStr = args.value("--op"), let op = SandboxExtensionOp(rawValue: opStr) else {
+	            return badRequest("missing/invalid --op (expected: \(expectedOps))")
+	        }
+
+	        var details = baseDetails([
+	            "probe_family": "sandbox_extension",
+	            "op": op.rawValue,
+	        ])
+
+	        switch op {
+	        case .issue_file:
+	            guard let extClass = args.value("--class"), !extClass.isEmpty else {
+	                return badRequest("missing --class <extension-class>")
+	            }
+
+	            let allowUnsafe = args.has("--allow-unsafe-path") || args.has("--unsafe-path")
+	            let directPath = args.value("--path")
+	            let pathClass = args.value("--path-class")
+	            if (directPath == nil) == (pathClass == nil) {
+	                return badRequest("provide exactly one of --path or --path-class")
+	            }
+
+	            if args.has("--flags"), args.intValue("--flags") == nil {
+	                return badRequest("invalid --flags (expected integer)")
+	            }
+	            let flags = Int32(args.intValue("--flags") ?? 0)
+
+	            let targetStr = args.value("--target")
+	            let target: FsTarget = targetStr.flatMap { FsTarget(rawValue: $0) } ?? .specimen_file
+
+	            let (resolvedTarget, resolveErr) = resolveFsTarget(
+	                directPath: directPath,
+	                pathClass: pathClass,
+	                target: target,
+	                requestedName: args.value("--name")
+	            )
+	            if let resolveErr { return resolveErr }
+	            guard let resolvedTarget else {
+	                return badRequest("internal: failed to resolve target path")
+	            }
+
+	            let targetPath = resolvedTarget.path
+	            details["extension_class"] = extClass
+	            details["path_mode"] = (directPath != nil) ? "direct_path" : "path_class"
+	            details["path_class"] = pathClass ?? ""
+	            details["target"] = target.rawValue
+	            details["file_path"] = targetPath
+	            details["base_dir"] = resolvedTarget.baseDir ?? ""
+	            details["harness_dir"] = resolvedTarget.harnessDir ?? ""
+	            details["run_dir"] = resolvedTarget.runDir ?? ""
+	            details["flags"] = "\(flags)"
+	            details["allow_unsafe_path"] = allowUnsafe ? "true" : "false"
+
+	            if directPath != nil, !allowUnsafe, !isSafeWritePath(targetPath) {
+	                return RunProbeResponse(
+	                    rc: 2,
+	                    stdout: "",
+	                    stderr: "",
+	                    normalized_outcome: "bad_request",
+	                    errno: nil,
+	                    error: "refusing to issue extension for non-harness path (use --path-class <...> or a path under */entitlement-jail-harness/*; use --allow-unsafe-path to override)",
+	                    details: details,
+	                    layer_attribution: nil
+	                )
+	            }
+
+	            guard let issueSym = resolveSandboxExtensionSymbol("sandbox_extension_issue_file") else {
+	                return RunProbeResponse(
+	                    rc: 1,
+	                    stdout: "",
+	                    stderr: "",
+	                    normalized_outcome: "symbol_missing",
+	                    errno: nil,
+	                    error: "sandbox_extension_issue_file symbol not found via dlsym(RTLD_DEFAULT, \"sandbox_extension_issue_file\")",
+	                    details: details,
+	                    layer_attribution: nil
+	                )
+	            }
+
+	            let issueFn = unsafeBitCast(issueSym, to: SandboxExtensionIssueFileFn.self)
+	            let tokenPtr = extClass.withCString { classPtr in
+	                targetPath.withCString { pathPtr in
+	                    issueFn(classPtr, pathPtr, flags)
+	                }
+	            }
+
+	            guard let tokenPtr else {
+	                let e = errno
+	                let outcome = (e == EPERM || e == EACCES) ? "permission_error" : "issue_failed"
+	                return RunProbeResponse(
+	                    rc: 1,
+	                    stdout: "",
+	                    stderr: "",
+	                    normalized_outcome: outcome,
+	                    errno: Int(e),
+	                    error: String(cString: strerror(e)),
+	                    details: details,
+	                    layer_attribution: nil
+	                )
+	            }
+
+	            let token = String(cString: tokenPtr)
+	            details["token_len"] = "\(token.utf8.count)"
+
+	            if let freeSym = resolveSandboxExtensionSymbol("sandbox_extension_free") {
+	                let freeFn = unsafeBitCast(freeSym, to: SandboxExtensionFreeFn.self)
+	                freeFn(tokenPtr)
+	            } else {
+	                free(UnsafeMutableRawPointer(tokenPtr))
+	            }
+
+	            return RunProbeResponse(
+	                rc: 0,
+	                stdout: token,
+	                stderr: "",
+	                normalized_outcome: "ok",
+	                errno: nil,
+	                error: nil,
+	                details: details,
+	                layer_attribution: nil
+	            )
+
+	        case .consume, .release:
+	            guard let token = args.value("--token"), !token.isEmpty else {
+	                return badRequest("missing --token <token>")
+	            }
+	            details["token_len"] = "\(token.utf8.count)"
+
+	            let symbolName = (op == .consume) ? "sandbox_extension_consume" : "sandbox_extension_release"
+	            guard let sym = resolveSandboxExtensionSymbol(symbolName) else {
+	                return RunProbeResponse(
+	                    rc: 1,
+	                    stdout: "",
+	                    stderr: "",
+	                    normalized_outcome: "symbol_missing",
+	                    errno: nil,
+	                    error: "\(symbolName) symbol not found via dlsym(RTLD_DEFAULT, \"\(symbolName)\")",
+	                    details: details,
+	                    layer_attribution: nil
+	                )
+	            }
+
+	            let rc: Int32 = token.withCString { tokenPtr in
+	                if op == .consume {
+	                    let fn = unsafeBitCast(sym, to: SandboxExtensionConsumeFn.self)
+	                    return fn(tokenPtr)
+	                }
+	                let fn = unsafeBitCast(sym, to: SandboxExtensionReleaseFn.self)
+	                return fn(tokenPtr)
+	            }
+
+	            if rc != 0 {
+	                let e = errno
+	                let outcome = (e == EPERM || e == EACCES) ? "permission_error" : (op == .consume ? "consume_failed" : "release_failed")
+	                return RunProbeResponse(
+	                    rc: 1,
+	                    stdout: "",
+	                    stderr: "",
+	                    normalized_outcome: outcome,
+	                    errno: Int(e),
+	                    error: String(cString: strerror(e)),
+	                    details: details,
+	                    layer_attribution: nil
+	                )
+	            }
+
+	            return RunProbeResponse(
+	                rc: 0,
+	                stdout: "",
+	                stderr: "",
+	                normalized_outcome: "ok",
+	                errno: nil,
+	                error: nil,
+	                details: details,
+	                layer_attribution: nil
+	            )
+	        }
 	    }
 
 	    // MARK: - userdefaults_op (containerization + API mediation)

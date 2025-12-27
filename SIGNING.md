@@ -47,6 +47,7 @@ codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeServ
 codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_user_selected_executable/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_user_selected_executable.xpc"
 codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_get-task-allow/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_get-task-allow.xpc"
 codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_fully_injectable/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_fully_injectable.xpc"
+codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_fully_injectable_extensions/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_fully_injectable_extensions.xpc"
 
 codesign -f --options runtime --timestamp --entitlements "$APP_ENT" -s "$ID" "$APP"
 

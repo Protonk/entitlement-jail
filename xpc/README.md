@@ -125,6 +125,7 @@ All `ProbeService_*` targets are intended to share the *same* probe behavior. Th
 - `ProbeService_bookmarks_app_scope` — `com.apple.security.files.bookmarks.app-scope` (scoped bookmarks agent access)
 - `ProbeService_get-task-allow` — `com.apple.security.get-task-allow`
 - `ProbeService_fully_injectable` — debugging/injection-friendly entitlement set (high concern; should require explicit acknowledgement via the repo’s risk gating)
+- `ProbeService_fully_injectable_extensions` — `fully_injectable` + `com.apple.security.temporary-exception.sbpl` for `file-issue-extension` (high concern; extension issuance)
 
 ### 2) Quarantine Lab services (`QuarantineLab_*`)
 

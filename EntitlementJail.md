@@ -25,6 +25,7 @@ This guide assumes you have only `EntitlementJail.app` and this file (`Entitleme
 - Run one probe (one-shot): `xpc run --profile <id> <probe-id> [probe-args...]`
 - Deterministic debugger attach + multiple probes: `xpc session --profile fully_injectable ...`
 - Compare across profiles: `run-matrix --group <...> <probe-id> [probe-args...]`
+- Sandbox extension flow: `sandbox_extension` (issue/consume/release)
 - Evidence bundle: `bundle-evidence` (plus `verify-evidence`, `inspect-macho`)
 - Quarantine/Gatekeeper deltas (no execution): `quarantine-lab`
 - Deny evidence (outside the sandbox boundary): `EntitlementJail.app/Contents/MacOS/sandbox-log-observer`
@@ -122,12 +123,13 @@ This is about guardrails, not morality: Tier 2 profiles intentionally carry enti
 
 **Profiles you’ll likely see**
 
-Use `list-profiles` as the source of truth. Some common ids include: `minimal`, `net_client`, `downloads_rw`, `bookmarks_app_scope`, `get-task-allow`, and `fully_injectable`.
+Use `list-profiles` as the source of truth. Some common ids include: `minimal`, `net_client`, `downloads_rw`, `bookmarks_app_scope`, `get-task-allow`, `fully_injectable`, and `fully_injectable_extensions`.
 
 For debugging/injection, the two profiles to know are:
 
 - `get-task-allow`: App Sandbox + `com.apple.security.get-task-allow` + `com.apple.security.cs.disable-library-validation` (Tier 1).
 - `fully_injectable`: `get-task-allow` + `disable-library-validation` + `allow-dyld-environment-variables` + `allow-jit` + `allow-unsigned-executable-memory` (Tier 2).
+- `fully_injectable_extensions`: `fully_injectable` + `com.apple.security.temporary-exception.sbpl` for `file-issue-extension` (Tier 2).
 
 There are also Quarantine Lab profiles (kind `quarantine`) such as `quarantine_default`, `quarantine_net_client`, `quarantine_downloads_rw`, `quarantine_user_selected_executable`, and `quarantine_bookmarks_app_scope`.
 
@@ -158,7 +160,33 @@ $EJ xpc run --profile minimal capabilities_snapshot
 $EJ xpc run --profile minimal fs_op --op stat --path-class tmp
 $EJ xpc run --profile net_client net_op --op tcp_connect --host 127.0.0.1 --port 9
 $EJ xpc run --profile fully_injectable --ack-risk fully_injectable sandbox_check --operation file-read-data --path /etc/hosts
+$EJ xpc run --profile fully_injectable_extensions --ack-risk fully_injectable_extensions sandbox_extension --op issue_file --class com.apple.app-sandbox.read --path /etc/hosts --allow-unsafe-path
 ```
+
+### Sandbox extension flow (issue -> consume -> release)
+
+`sandbox_extension` uses the private sandbox extension SPI to issue/consume/release file extensions. Issuance requires a profile that allows `file-issue-extension` (see `fully_injectable_extensions`), and the issued token is returned in `data.stdout`.
+
+Example: issue a read extension for a harness file, consume it in `minimal`, then re-run the read:
+
+```sh
+$EJ xpc run --profile fully_injectable_extensions --ack-risk fully_injectable_extensions fs_op --op create --path-class tmp --target specimen_file --name ej_extension.txt > /tmp/ej_issue_file.json
+FILE_PATH=$(plutil -extract data.details.file_path raw -o - /tmp/ej_issue_file.json)
+
+$EJ xpc run --profile fully_injectable_extensions --ack-risk fully_injectable_extensions sandbox_extension \
+  --op issue_file --class com.apple.app-sandbox.read --path "$FILE_PATH" > /tmp/ej_issue_token.json
+TOKEN=$(plutil -extract data.stdout raw -o - /tmp/ej_issue_token.json)
+
+$EJ xpc run --profile minimal fs_op --op open_read --path "$FILE_PATH"
+$EJ xpc run --profile minimal sandbox_extension --op consume --token "$TOKEN"
+$EJ xpc run --profile minimal fs_op --op open_read --path "$FILE_PATH"
+$EJ xpc run --profile minimal sandbox_extension --op release --token "$TOKEN"
+```
+
+Notes:
+
+- If you want to issue extensions for a non-harness path, pass `--allow-unsafe-path` to `sandbox_extension --op issue_file`.
+- For read/write testing, issue `com.apple.app-sandbox.read-write` and use a write op (for example `fs_op --op open_write`) after consuming the token.
 
 ### Deterministic debugger attach (`xpc session`)
 

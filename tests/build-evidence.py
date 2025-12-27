@@ -171,26 +171,31 @@ def tags_for_profile(service_name: str, entitlements: Dict[str, Any]) -> list[st
         tags.append("jit")
     if entitlements.get("com.apple.security.cs.allow-unsigned-executable-memory") is True:
         tags.append("rwx_legacy")
+    if entitlements.get("com.apple.security.temporary-exception.sbpl"):
+        tags.append("temporary_exception_sbpl")
     return sorted(set(tags))
 
 
 def risk_for_entitlements(entitlements: Dict[str, Any]) -> Tuple[int, list[str]]:
-    reasons: list[str] = []
+    tier2_reasons: list[str] = []
+    if entitlements.get("com.apple.security.temporary-exception.sbpl"):
+        tier2_reasons.append("temporary_exception_sbpl")
     if entitlements.get("com.apple.security.cs.allow-dyld-environment-variables") is True:
-        reasons.append("allow_dyld_env")
+        tier2_reasons.append("allow_dyld_env")
     if entitlements.get("com.apple.security.cs.allow-jit") is True:
-        reasons.append("allow_jit")
+        tier2_reasons.append("allow_jit")
     if entitlements.get("com.apple.security.cs.allow-unsigned-executable-memory") is True:
-        reasons.append("allow_unsigned_exec_mem")
-    if reasons:
-        return 2, reasons
+        tier2_reasons.append("allow_unsigned_exec_mem")
+    if tier2_reasons:
+        return 2, tier2_reasons
 
+    tier1_reasons: list[str] = []
     if entitlements.get("com.apple.security.get-task-allow") is True:
-        reasons.append("get_task_allow")
+        tier1_reasons.append("get_task_allow")
     if entitlements.get("com.apple.security.cs.disable-library-validation") is True:
-        reasons.append("disable_library_validation")
-    if reasons:
-        return 1, reasons
+        tier1_reasons.append("disable_library_validation")
+    if tier1_reasons:
+        return 1, tier1_reasons
 
     return 0, []
 
