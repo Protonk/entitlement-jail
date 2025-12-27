@@ -157,10 +157,10 @@ The reference patterns live in `xpc/InProcessProbeCore.swift`.
 
 ## Testing notes (what runs what)
 
-- `tests/suites/preflight/preflight.sh` is intentionally “observer style”: it inspects signatures/entitlements and emits a JSON report under `tests/out/<run_id>/suites/preflight/...`.
+- `tests/suites/preflight/preflight.sh` is intentionally “observer style”: it inspects signatures/entitlements and emits a JSON report under `tests/out/suites/preflight/...` (the test runner overwrites `tests/out/` each run).
   - Integration tests use it to decide what to skip via `EJ_PREFLIGHT_JSON`.
 - `runner/tests/cli_integration.rs` expects a built `EntitlementJail.app` unless you set `EJ_BIN_PATH`.
-- Smoke scripts (`tests/suites/smoke/*.sh`) write under `tests/out/<run_id>/suites/smoke/...` and overwrite prior runs within that run directory.
+- Smoke scripts (`tests/suites/smoke/*.sh`) write under `tests/out/suites/smoke/...` (the test runner overwrites `tests/out/` each run).
 
 ## Safety defaults (for agents)
 

@@ -7,8 +7,54 @@ source "${ROOT_DIR}/tests/lib/testlib.sh"
 testlib_init
 
 RUN_START_MS="$(now_ms)"
-RUN_OUT="${EJ_TEST_OUT_DIR}"
+RUN_OUT_RAW="${EJ_TEST_OUT_DIR}"
+RUN_OUT="$(
+  EJ_TEST_ROOT="${ROOT_DIR}" \
+  EJ_TEST_OUT_RAW="${RUN_OUT_RAW}" \
+  /usr/bin/python3 - <<'PY'
+import os
+import os.path
+
+root = os.environ["EJ_TEST_ROOT"]
+raw = os.environ["EJ_TEST_OUT_RAW"]
+
+if os.path.isabs(raw):
+    out = os.path.normpath(raw)
+else:
+    out = os.path.normpath(os.path.join(root, raw))
+
+print(os.path.abspath(out))
+PY
+)"
 RUN_JSON="${RUN_OUT}/run.json"
+
+if [[ -z "${RUN_OUT}" ]]; then
+  echo "ERROR: EJ_TEST_OUT_DIR resolved to an empty path" 1>&2
+  exit 2
+fi
+if [[ "${RUN_OUT}" == "/" ]]; then
+  echo "ERROR: refusing to use '/' as EJ_TEST_OUT_DIR" 1>&2
+  exit 2
+fi
+
+DEFAULT_OUT="${ROOT_DIR}/tests/out"
+case "${RUN_OUT}" in
+  "${DEFAULT_OUT}"| "${DEFAULT_OUT}/"*)
+    ;;
+  *)
+    echo "ERROR: EJ_TEST_OUT_DIR must be within ${DEFAULT_OUT} (got: ${RUN_OUT})" 1>&2
+    exit 2
+    ;;
+esac
+
+EJ_TEST_OUT_DIR="${RUN_OUT}"
+EJ_TEST_EVENTS="${EJ_TEST_OUT_DIR}/events.jsonl"
+export EJ_TEST_OUT_DIR EJ_TEST_EVENTS
+
+# This repo's test loops are designed to be agent-friendly: overwrite the prior run
+# so external tooling can just read stable paths under tests/out/.
+rm -rf "${RUN_OUT}"
+mkdir -p "${RUN_OUT}"
 
 suites=()
 

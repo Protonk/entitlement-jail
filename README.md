@@ -1,10 +1,6 @@
 # EntitlementJail
 
-EntitlementJail is a macOS research/teaching repo that’s intentionally biased toward producing **witness records** (structured outcome descriptions) without quietly upgrading those outcomes into stronger claims about *why* they happened.
-
-## What This Repo Optimizes For
-
-It’s most useful when you treat a “permission-shaped failure” as a *routing problem*: missing files, signing validity, quarantine/Gatekeeper, launchd/XPC behavior, filesystem permissions, and Seatbelt/App Sandbox can all produce similar-looking symptoms. This repo tries to keep those layers explicit and keep the output contract stable enough for downstream tooling.
+EntitlementJail is a macOS research/teaching repo that’s intentionally biased toward producing **witness records** (structured outcome descriptions) without quietly upgrading those outcomes into stronger claims about *why* they happened. Missing files, signing validity, quarantine/Gatekeeper, launchd/XPC behavior, filesystem permissions, and Seatbelt/App Sandbox can all produce similar-looking symptoms. This repo tries to keep those layers explicit and keep the output contract stable enough for downstream tooling.
 
 - **Entitlements as a real experimental variable**: the “thing you run” isn’t one binary; it’s an app bundle that embeds many separately signed executables. The core research targets are launchd-managed XPC services, each signed with a distinct entitlement profile.
 - **Outcomes first; attribution second**: probes emit outcomes (rc/errno/paths/timing) as JSON envelopes. If you want deny evidence, use an explicit outside-the-sandbox witness (`sandbox-log-observer`) rather than baking attribution into every probe.

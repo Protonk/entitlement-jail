@@ -34,7 +34,7 @@ testlib_init() {
     export EJ_TEST_RUN_ID
   fi
   if [[ -z "${EJ_TEST_OUT_DIR:-}" ]]; then
-    EJ_TEST_OUT_DIR="${root}/tests/out/${EJ_TEST_RUN_ID}"
+    EJ_TEST_OUT_DIR="${root}/tests/out"
     export EJ_TEST_OUT_DIR
   fi
   if [[ -z "${EJ_TEST_EVENTS:-}" ]]; then
