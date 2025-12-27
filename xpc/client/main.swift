@@ -1,2342 +1,807 @@
 import Foundation
-import Darwin
 
-private func printUsage() {
-    let exe = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "xpc-probe-client"
-    fputs("usage: \(exe) [--log-stream <path|auto|stdout>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--observe] [--observer-duration <seconds>] [--observer-format <json|jsonl>] [--observer-output <path|auto>] [--observer-follow] [--attach-report <path|auto|stdout|stderr>] [--preload-dylib <abs>] [--preload-dylib-stage] [--json-out <path>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] [--xpc-timeout-ms <n>] <xpc-service-bundle-id> <probe-id> [probe-args...]\n", stderr)
+private func nowUnixMs() -> UInt64 {
+    UInt64(Date().timeIntervalSince1970 * 1000.0)
 }
 
-if ProcessInfo.processInfo.environment["EJ_XPC_CLIENT_DEBUG"] == "1" {
-    let exePath = CommandLine.arguments.first ?? "<unknown>"
-    let bundlePath = Bundle.main.bundleURL.path
-    let bundleId = Bundle.main.bundleIdentifier ?? "<nil>"
-    fputs("debug: exe=\(exePath)\n", stderr)
-    fputs("debug: Bundle.main.bundlePath=\(bundlePath)\n", stderr)
-    fputs("debug: Bundle.main.bundleIdentifier=\(bundleId)\n", stderr)
+private final class LockedStdout {
+    private let lock = NSLock()
+    private let out = FileHandle.standardOutput
+
+    func writeLine(_ line: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let data = (line + "\n").data(using: .utf8) {
+            out.write(data)
+        }
+    }
+
+    func writeDataLine(_ data: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        out.write(data)
+        out.write(Data("\n".utf8))
+    }
 }
 
-struct LogCaptureSpec {
-    var path: String
-    var predicate_override: String?
+private final class SessionEventSink: NSObject, SessionEventSinkProtocol {
+    private let stdout: LockedStdout
+
+    init(stdout: LockedStdout) {
+        self.stdout = stdout
+    }
+
+    func emitEvent(_ event: Data) {
+        stdout.writeDataLine(event)
+    }
 }
 
-private struct ProbeData: Encodable {
+private final class DiscardingSessionEventSink: NSObject, SessionEventSinkProtocol {
+    func emitEvent(_ event: Data) {}
+}
+
+private func usage() -> String {
+    """
+    usage:
+      xpc-probe-client run [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] <xpc-service-bundle-id> <probe-id> [probe-args...]
+      xpc-probe-client session [--plan-id <id>] [--correlation-id <id>] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>] <xpc-service-bundle-id>
+
+    notes:
+      - session mode reads JSONL commands from stdin and emits JSONL to stdout.
+      - valid stdin commands:
+          {"command":"run_probe","probe_id":"capabilities_snapshot","argv":[],"row_id":"...","correlation_id":"..."}
+          {"command":"keepalive"}
+          {"command":"close_session"}
+    """
+}
+
+private func die(_ message: String, code: Int32) -> Never {
+    fputs(message + "\n", stderr)
+    exit(code)
+}
+
+private struct XpcCallError: Error, CustomStringConvertible {
+    let message: String
+
+    var description: String {
+        message
+    }
+}
+
+private func xpcCall(
+    connection: NSXPCConnection,
+    timeoutMs: Int,
+    invoke: (ProbeServiceProtocol, @escaping (Data) -> Void) -> Void
+) -> Result<Data, XpcCallError> {
+    let lock = NSLock()
+    var done = false
+    var replyData: Data?
+    var replyError: Error?
+    let sema = DispatchSemaphore(value: 0)
+
+    guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
+        lock.lock()
+        defer { lock.unlock() }
+        if done { return }
+        done = true
+        replyError = error
+        sema.signal()
+    }) as? ProbeServiceProtocol else {
+        return .failure(XpcCallError(message: "failed to construct remote proxy (type mismatch)"))
+    }
+
+    invoke(proxy) { data in
+        lock.lock()
+        defer { lock.unlock() }
+        if done { return }
+        done = true
+        replyData = data
+        sema.signal()
+    }
+
+    let deadline = DispatchTime.now() + .milliseconds(timeoutMs)
+    if sema.wait(timeout: deadline) == .timedOut {
+        return .failure(XpcCallError(message: "xpc call timeout after \(timeoutMs)ms"))
+    }
+
+    lock.lock()
+    let data = replyData
+    let err = replyError
+    lock.unlock()
+
+    if let err {
+        return .failure(XpcCallError(message: "xpc error: \(err)"))
+    }
+    if let data {
+        return .success(data)
+    }
+    return .failure(XpcCallError(message: "xpc call failed (no reply and no error)"))
+}
+
+private func emitProbeResponseEnvelope(_ response: RunProbeResponse, stdout: LockedStdout) -> Int32 {
+    let ok = response.rc == 0
+    let result = JsonResult(
+        ok: ok,
+        rc: response.rc,
+        exit_code: response.rc,
+        normalized_outcome: response.normalized_outcome,
+        errno: response.errno,
+        error: response.error,
+        stderr: response.stderr.isEmpty ? nil : response.stderr,
+        stdout: response.stdout.isEmpty ? nil : response.stdout
+    )
+    let envelope = JsonEnvelope(
+        kind: "probe_response",
+        generated_at_unix_ms: nowUnixMs(),
+        result: result,
+        data: response
+    )
+    do {
+        stdout.writeDataLine(try encodeJSON(envelope))
+    } catch {
+        fputs("encode failed: \(error)\n", stderr)
+        let fallbackRc: Int32 = 2
+        return fallbackRc
+    }
+    return Int32(max(0, min(255, response.rc)))
+}
+
+private func emitSessionErrorEnvelope(
+    event: String,
+    planId: String?,
+    correlationId: String?,
+    sessionToken: String?,
+    pid: Int?,
+    serviceBundleId: String?,
+    serviceName: String?,
+    waitMode: String?,
+    waitPath: String?,
+    error: String,
+    stdout: LockedStdout
+) {
+    let data = XpcSessionErrorData(
+        event: event,
+        plan_id: planId,
+        correlation_id: correlationId,
+        session_token: sessionToken,
+        pid: pid,
+        service_bundle_id: serviceBundleId,
+        service_name: serviceName,
+        wait_mode: waitMode,
+        wait_path: waitPath,
+        error: error
+    )
+    let result = JsonResult(ok: false, rc: 1, exit_code: 1, normalized_outcome: "error", error: error)
+    let envelope = JsonEnvelope(
+        kind: "xpc_session_error",
+        generated_at_unix_ms: nowUnixMs(),
+        result: result,
+        data: data
+    )
+    if let encoded = try? encodeJSON(envelope) {
+        stdout.writeDataLine(encoded)
+    }
+}
+
+private func parseInt(_ s: String, label: String) -> Int {
+    guard let v = Int(s) else {
+        die("invalid \(label): \(s)", code: 2)
+    }
+    return v
+}
+
+// MARK: - run
+
+private func runOneShot(args: [String]) -> Never {
+    let stdout = LockedStdout()
+
+    var planId: String?
+    var rowId: String?
+    var correlationId: String?
+
+    var idx = 0
+    while idx < args.count {
+        let arg = args[idx]
+        if arg == "--" {
+            idx += 1
+            break
+        }
+        if !arg.hasPrefix("-") {
+            break
+        }
+        switch arg {
+        case "-h", "--help":
+            die(usage(), code: 0)
+        case "--plan-id":
+            guard idx + 1 < args.count else { die("missing value for --plan-id", code: 2) }
+            planId = args[idx + 1]
+            idx += 2
+        case "--row-id":
+            guard idx + 1 < args.count else { die("missing value for --row-id", code: 2) }
+            rowId = args[idx + 1]
+            idx += 2
+        case "--correlation-id":
+            guard idx + 1 < args.count else { die("missing value for --correlation-id", code: 2) }
+            correlationId = args[idx + 1]
+            idx += 2
+        default:
+            die("unknown argument for run: \(arg)\n\n\(usage())", code: 2)
+        }
+    }
+
+    guard idx + 1 < args.count else {
+        die("missing required arguments for run\n\n\(usage())", code: 2)
+    }
+    let serviceBundleId = args[idx]
+    let probeId = args[idx + 1]
+    let probeArgv = Array(args.dropFirst(idx + 2))
+
+    let sink = DiscardingSessionEventSink()
+    let connection = NSXPCConnection(serviceName: serviceBundleId)
+    connection.remoteObjectInterface = NSXPCInterface(with: ProbeServiceProtocol.self)
+    connection.exportedInterface = NSXPCInterface(with: SessionEventSinkProtocol.self)
+    connection.exportedObject = sink
+    connection.resume()
+
+    let timeoutMs = 30_000
+
+    let openReq = SessionOpenRequest(plan_id: planId, correlation_id: correlationId, wait_spec: nil)
+    let openReqData: Data
+    do {
+        openReqData = try encodeJSON(openReq)
+    } catch {
+        let response = RunProbeResponse(
+            rc: 2,
+            stdout: "",
+            stderr: "failed to encode SessionOpenRequest: \(error)",
+            normalized_outcome: "encode_failed",
+            errno: nil,
+            error: "\(error)",
+            details: nil,
+            layer_attribution: LayerAttribution(service_refusal: "client encode failed")
+        )
+        let code = emitProbeResponseEnvelope(response, stdout: stdout)
+        exit(code)
+    }
+
+    let openReply = xpcCall(connection: connection, timeoutMs: timeoutMs) { proxy, reply in
+        proxy.openSession(openReqData, withReply: reply)
+    }
+
+    let openResp: SessionOpenResponse
+    switch openReply {
+    case .failure(let err):
+        let errMessage = err.message
+        let response = RunProbeResponse(
+            rc: 1,
+            stdout: "",
+            stderr: errMessage,
+            normalized_outcome: "xpc_error",
+            errno: nil,
+            error: errMessage,
+            details: ["service_bundle_id": serviceBundleId],
+            layer_attribution: LayerAttribution(other: "xpc:openSession_failed")
+        )
+        let code = emitProbeResponseEnvelope(response, stdout: stdout)
+        exit(code)
+    case .success(let data):
+        do {
+            openResp = try decodeJSON(SessionOpenResponse.self, from: data)
+        } catch {
+            let response = RunProbeResponse(
+                rc: 1,
+                stdout: "",
+                stderr: "failed to decode SessionOpenResponse: \(error)",
+                normalized_outcome: "decode_failed",
+                errno: nil,
+                error: "\(error)",
+                details: ["service_bundle_id": serviceBundleId],
+                layer_attribution: LayerAttribution(other: "xpc:openSession_decode_failed")
+            )
+            let code = emitProbeResponseEnvelope(response, stdout: stdout)
+            exit(code)
+        }
+    }
+
+    guard openResp.rc == 0, let sessionToken = openResp.session_token else {
+        let err = openResp.error ?? "openSession failed"
+        let response = RunProbeResponse(
+            rc: openResp.rc == 0 ? 1 : openResp.rc,
+            stdout: "",
+            stderr: err,
+            normalized_outcome: "open_session_failed",
+            errno: nil,
+            error: err,
+            details: ["service_bundle_id": serviceBundleId],
+            layer_attribution: LayerAttribution(other: "xpc:openSession_rc=\(openResp.rc)")
+        )
+        let code = emitProbeResponseEnvelope(response, stdout: stdout)
+        exit(code)
+    }
+
+    let probeReq = RunProbeRequest(
+        plan_id: planId,
+        row_id: rowId,
+        correlation_id: correlationId,
+        probe_id: probeId,
+        argv: probeArgv
+    )
+    let runReq = SessionRunProbeRequest(session_token: sessionToken, probe_request: probeReq)
+
+    let runReqData: Data
+    do {
+        runReqData = try encodeJSON(runReq)
+    } catch {
+        let response = RunProbeResponse(
+            rc: 2,
+            stdout: "",
+            stderr: "failed to encode SessionRunProbeRequest: \(error)",
+            normalized_outcome: "encode_failed",
+            errno: nil,
+            error: "\(error)",
+            details: ["service_bundle_id": serviceBundleId],
+            layer_attribution: LayerAttribution(service_refusal: "client encode failed")
+        )
+        let code = emitProbeResponseEnvelope(response, stdout: stdout)
+        exit(code)
+    }
+
+    let runReply = xpcCall(connection: connection, timeoutMs: timeoutMs) { proxy, reply in
+        proxy.runProbeInSession(runReqData, withReply: reply)
+    }
+
+    let probeResp: RunProbeResponse
+    switch runReply {
+    case .failure(let err):
+        let errMessage = err.message
+        probeResp = RunProbeResponse(
+            rc: 1,
+            stdout: "",
+            stderr: errMessage,
+            normalized_outcome: "xpc_error",
+            errno: nil,
+            error: errMessage,
+            details: ["service_bundle_id": serviceBundleId],
+            layer_attribution: LayerAttribution(other: "xpc:runProbeInSession_failed")
+        )
+    case .success(let data):
+        do {
+            probeResp = try decodeJSON(RunProbeResponse.self, from: data)
+        } catch {
+            probeResp = RunProbeResponse(
+                rc: 1,
+                stdout: "",
+                stderr: "failed to decode RunProbeResponse: \(error)",
+                normalized_outcome: "decode_failed",
+                errno: nil,
+                error: "\(error)",
+                details: ["service_bundle_id": serviceBundleId],
+                layer_attribution: LayerAttribution(other: "xpc:runProbeInSession_decode_failed")
+            )
+        }
+    }
+
+    // Best-effort close.
+    let closeReq = SessionCloseRequest(session_token: sessionToken)
+    if let closeReqData = try? encodeJSON(closeReq) {
+        _ = xpcCall(connection: connection, timeoutMs: timeoutMs) { proxy, reply in
+            proxy.closeSession(closeReqData, withReply: reply)
+        }
+    }
+    connection.invalidate()
+
+    let exitCode = emitProbeResponseEnvelope(probeResp, stdout: stdout)
+    exit(exitCode)
+}
+
+// MARK: - session
+
+private struct SessionCommand: Decodable {
+    var command: String
     var plan_id: String?
     var row_id: String?
     var correlation_id: String?
     var probe_id: String?
     var argv: [String]?
-    var expected_outcome: String?
-    var service_bundle_id: String?
-    var service_name: String?
-    var service_version: String?
-    var service_build: String?
-    var started_at_iso8601: String?
-    var ended_at_iso8601: String?
-    var thread_id: String?
-    var details: [String: String]?
-    var layer_attribution: LayerAttribution?
-    var sandbox_log_excerpt_ref: String?
-    var log_capture_status: String?
-    var log_capture_path: String?
-    var log_capture_error: String?
-    var log_capture_predicate: String?
-    var log_capture_observed_lines: Int?
-    var log_capture_observed_deny: Bool?
-    var log_observer_status: String?
-    var log_observer_error: String?
-    var log_observer_path: String?
-    var log_observer_predicate: String?
-    var log_observer_start: String?
-    var log_observer_end: String?
-    var log_observer_last: String?
-    var log_observer_observed_lines: Int?
-    var log_observer_observed_deny: Bool?
-    var log_observer_deny_lines: [String]?
-    var log_observer_report: ObserverReportEnvelope?
-    var deny_evidence: String?
 }
 
-private struct DecodeFailureData: Encodable {
-    var raw_response: String?
-    var decode_error: String
-}
+private func runSession(args: [String]) -> Never {
+    let stdout = LockedStdout()
 
-private struct AttachEvent: Encodable {
-    var schema_version: Int
-    var kind: String
-    var generated_at_unix_ms: UInt64
-    var event: String
-    var service_bundle_id: String
-    var probe_id: String
-    var correlation_id: String?
-    var wait_mode: String?
-    var wait_path: String?
-    var wait_path_class: String?
-    var wait_name: String?
-    var pid: Int?
-    var process_name: String?
+    var planId: String?
+    var correlationId: String?
+    var waitSpec: String?
+    var waitTimeoutMs: Int?
+    var waitIntervalMs: Int?
+    var xpcTimeoutMs: Int = 30_000
 
-    init(
-        schema_version: Int = 1,
-        kind: String = "attach_event",
-        generated_at_unix_ms: UInt64,
-        event: String,
-        service_bundle_id: String,
-        probe_id: String,
-        correlation_id: String? = nil,
-        wait_mode: String? = nil,
-        wait_path: String? = nil,
-        wait_path_class: String? = nil,
-        wait_name: String? = nil,
-        pid: Int? = nil,
-        process_name: String? = nil
-    ) {
-        self.schema_version = schema_version
-        self.kind = kind
-        self.generated_at_unix_ms = generated_at_unix_ms
-        self.event = event
-        self.service_bundle_id = service_bundle_id
-        self.probe_id = probe_id
-        self.correlation_id = correlation_id
-        self.wait_mode = wait_mode
-        self.wait_path = wait_path
-        self.wait_path_class = wait_path_class
-        self.wait_name = wait_name
-        self.pid = pid
-        self.process_name = process_name
-    }
-}
-
-private struct ProcessRun {
-    var rc: Int32
-    var terminationReason: Process.TerminationReason?
-    var terminatedByClient: Bool
-    var stdout: Data
-    var stderr: Data
-}
-
-private func runCommand(_ argv: [String]) -> ProcessRun {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: argv[0])
-    process.arguments = Array(argv.dropFirst())
-
-    let stdoutPipe = Pipe()
-    let stderrPipe = Pipe()
-    process.standardOutput = stdoutPipe
-    process.standardError = stderrPipe
-
-    do {
-        try process.run()
-    } catch {
-        return ProcessRun(
-            rc: 127,
-            terminationReason: nil,
-            terminatedByClient: false,
-            stdout: Data(),
-            stderr: Data("spawn failed: \(error)\n".utf8)
-        )
-    }
-
-    process.waitUntilExit()
-    let out = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-    let err = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-    return ProcessRun(
-        rc: process.terminationStatus,
-        terminationReason: process.terminationReason,
-        terminatedByClient: false,
-        stdout: out,
-        stderr: err
-    )
-}
-
-private struct LogCaptureSummary {
-    var status: String
-    var error: String?
-    var denyEvidence: String?
-    var observedLines: Int?
-    var observedDeny: Bool?
-    var predicate: String?
-}
-
-private struct ObserverSummary {
-    var status: String
-    var error: String?
-    var path: String?
-    var predicate: String?
-    var start: String?
-    var end: String?
-    var last: String?
-    var observedLines: Int?
-    var observedDeny: Bool?
-    var denyLines: [String]?
-    var report: ObserverReportEnvelope?
-}
-
-private struct LogStreamLayerAttribution: Encodable {
-    var seatbelt: String
-}
-
-private struct LogStreamReportData: Encodable {
-    var pid: String?
-    var process_name: String?
-    var predicate: String?
-    var log_rc: Int?
-    var log_rc_raw: Int?
-    var log_stdout: String
-    var log_stderr: String
-    var log_error: String?
-    var observed_lines: Int
-    var observed_deny: Bool
-    var layer_attribution: LogStreamLayerAttribution
-}
-
-private struct ObserverReportEnvelope: Codable {
-    var schema_version: Int?
-    var kind: String?
-    var generated_at_unix_ms: UInt64?
-    var result: JsonResult?
-    var data: ObserverReportData?
-}
-
-private struct ObserverReportData: Codable {
-    var observer_schema_version: Int?
-    var mode: String?
-    var duration_ms: UInt64?
-    var plan_id: String?
-    var row_id: String?
-    var correlation_id: String?
-    var pid: Int?
-    var process_name: String?
-    var predicate: String?
-    var start: String?
-    var end: String?
-    var last: String?
-    var log_rc: Int?
-    var log_stdout: String?
-    var log_stderr: String?
-    var log_error: String?
-    var log_truncated: Bool?
-    var observed_lines: Int?
-    var observed_deny: Bool?
-    var deny_lines: [String]?
-}
-
-private func sandboxPredicate(processName: String, pid: String) -> String {
-    let escapedPid = pid.replacingOccurrences(of: "\"", with: "\\\"")
-    let escapedName = processName.replacingOccurrences(of: "\"", with: "\\\"")
-    let strictTerm = "Sandbox: \(escapedName)(\(escapedPid))"
-    return #"(eventMessage CONTAINS[c] "\#(strictTerm)") OR ((eventMessage CONTAINS[c] "deny") AND ((eventMessage CONTAINS[c] "\#(escapedPid)") OR (eventMessage CONTAINS[c] "\#(escapedName)")))"#
-}
-
-private func streamSandboxPredicate(processName: String, pid: String?) -> String {
-    let escapedName = processName.replacingOccurrences(of: "\"", with: "\\\"")
-    if let pid, !pid.isEmpty {
-        return sandboxPredicate(processName: processName, pid: pid)
-    }
-    return #"(eventMessage CONTAINS[c] "Sandbox: \#(escapedName)") OR ((eventMessage CONTAINS[c] "deny") AND (eventMessage CONTAINS[c] "\#(escapedName)"))"#
-}
-
-private func containerBaseURL(for bundleId: String) -> URL {
-    let homePath = hostHomeDirectory() ?? NSHomeDirectory()
-    let home = URL(fileURLWithPath: homePath, isDirectory: true)
-    return home
-        .appendingPathComponent("Library", isDirectory: true)
-        .appendingPathComponent("Containers", isDirectory: true)
-        .appendingPathComponent(bundleId, isDirectory: true)
-        .appendingPathComponent("Data", isDirectory: true)
-}
-
-private func resolveContainerPath(bundleId: String, pathClass: String, name: String) -> String? {
-    let base = containerBaseURL(for: bundleId)
-    let root: URL?
-    switch pathClass {
-    case "home":
-        root = base
-    case "tmp":
-        root = base.appendingPathComponent("tmp", isDirectory: true)
-    case "downloads":
-        root = base.appendingPathComponent("Downloads", isDirectory: true)
-    case "desktop":
-        root = base.appendingPathComponent("Desktop", isDirectory: true)
-    case "documents":
-        root = base.appendingPathComponent("Documents", isDirectory: true)
-    case "app_support":
-        root = base.appendingPathComponent("Library", isDirectory: true).appendingPathComponent("Application Support", isDirectory: true)
-    case "caches":
-        root = base.appendingPathComponent("Library", isDirectory: true).appendingPathComponent("Caches", isDirectory: true)
-    default:
-        root = nil
-    }
-    return root?.appendingPathComponent(name, isDirectory: false).path
-}
-
-private func isKnownPathClass(_ cls: String) -> Bool {
-    switch cls {
-    case "home", "tmp", "downloads", "desktop", "documents", "app_support", "caches":
-        return true
-    default:
-        return false
-    }
-}
-
-private func isSinglePathComponent(_ s: String) -> Bool {
-    if s.isEmpty || s == "." || s == ".." { return false }
-    return !s.contains("/") && !s.contains("\\")
-}
-
-private func hostHomeDirectory() -> String? {
-    let uid = getuid()
-    guard let pwd = getpwuid(uid), let dir = pwd.pointee.pw_dir else {
-        return nil
-    }
-    return String(cString: dir)
-}
-
-private func writeLogCapture(path: String, contents: String) -> String? {
-    let url = URL(fileURLWithPath: path)
-    let parent = url.deletingLastPathComponent()
-    if !parent.path.isEmpty && parent.path != "." {
-        try? FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true, attributes: nil)
-    }
-    do {
-        try contents.write(to: url, atomically: true, encoding: .utf8)
-        return nil
-    } catch {
-        fputs("failed to write log capture: \(error)\n", stderr)
-        let home = NSHomeDirectory()
-        let tmp = NSTemporaryDirectory()
-        fputs("hint: choose a path under \(home) or \(tmp)\n", stderr)
-        return "write_failed: \(error)"
-    }
-}
-
-private func writeFile(path: String, contents: String, label: String) -> String? {
-    let url = URL(fileURLWithPath: path)
-    let parent = url.deletingLastPathComponent()
-    if !parent.path.isEmpty && parent.path != "." {
-        try? FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true, attributes: nil)
-    }
-    do {
-        try contents.write(to: url, atomically: true, encoding: .utf8)
-        return nil
-    } catch {
-        fputs("failed to write \(label): \(error)\n", stderr)
-        let home = NSHomeDirectory()
-        let tmp = NSTemporaryDirectory()
-        fputs("hint: choose a path under \(home) or \(tmp)\n", stderr)
-        return "write_failed: \(error)"
-    }
-}
-
-private func appendLine(path: String, line: String, label: String) -> String? {
-    let url = URL(fileURLWithPath: path)
-    let parent = url.deletingLastPathComponent()
-    if !parent.path.isEmpty && parent.path != "." {
-        try? FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true, attributes: nil)
-    }
-    if !FileManager.default.fileExists(atPath: path) {
-        _ = FileManager.default.createFile(atPath: path, contents: nil, attributes: nil)
-    }
-    do {
-        let handle = try FileHandle(forWritingTo: url)
-        defer { try? handle.close() }
-        handle.seekToEndOfFile()
-        if let data = (line + "\n").data(using: .utf8) {
-            handle.write(data)
+    var idx = 0
+    while idx < args.count {
+        let arg = args[idx]
+        if arg == "--" {
+            idx += 1
+            break
         }
-        return nil
-    } catch {
-        fputs("failed to append \(label): \(error)\n", stderr)
-        let home = NSHomeDirectory()
-        let tmp = NSTemporaryDirectory()
-        fputs("hint: choose a path under \(home) or \(tmp)\n", stderr)
-        return "write_failed: \(error)"
-    }
-}
-
-private func emitProbeJSON(_ json: String, jsonOutPath: String?, logStreamUsesStdout: Bool) {
-    if let jsonOutPath {
-        if writeFile(path: jsonOutPath, contents: json, label: "probe JSON output") != nil {
-            if !logStreamUsesStdout {
-                print(json)
-            }
+        if !arg.hasPrefix("-") {
+            break
         }
-        return
-    }
-    print(json)
-}
-
-private func sanitizeComponent(_ value: String, fallback: String) -> String {
-    let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
-    var out = ""
-    for scalar in value.unicodeScalars {
-        if scalar.isASCII && allowed.contains(scalar) {
-            out.unicodeScalars.append(scalar)
-        } else {
-            out.append("-")
-        }
-    }
-    let trimmed = out.trimmingCharacters(in: CharacterSet(charactersIn: "-_."))
-    let normalized = trimmed.isEmpty ? fallback : trimmed
-    if normalized.count > 80 {
-        return String(normalized.prefix(80))
-    }
-    return normalized
-}
-
-private func autoLogBaseDir() -> String {
-    let homePath = hostHomeDirectory() ?? NSHomeDirectory()
-    let home = URL(fileURLWithPath: homePath, isDirectory: true)
-    return home
-        .appendingPathComponent("Library", isDirectory: true)
-        .appendingPathComponent("Application Support", isDirectory: true)
-        .appendingPathComponent("entitlement-jail", isDirectory: true)
-        .appendingPathComponent("logs", isDirectory: true)
-        .path
-}
-
-private func autoLogPath(
-    kind: String,
-    serviceName: String,
-    probeId: String,
-    correlationId: String?,
-    fileExtension: String = "json"
-) -> String {
-    let stamp = Int(Date().timeIntervalSince1970 * 1000.0)
-    let service = sanitizeComponent(serviceName, fallback: "service")
-    let probe = sanitizeComponent(probeId, fallback: "probe")
-    let corr = sanitizeComponent(correlationId ?? "corr", fallback: "corr")
-    let ext = fileExtension.isEmpty ? "json" : fileExtension
-    let file = "\(kind).\(stamp).\(service).\(probe).\(corr).\(ext)"
-    return URL(fileURLWithPath: autoLogBaseDir(), isDirectory: true)
-        .appendingPathComponent(file, isDirectory: false)
-        .path
-}
-
-private func writeLogStreamReport(path: String, data: LogStreamReportData, ok: Bool) -> String? {
-    let envelope = JsonEnvelope(
-        kind: "sandbox_log_stream_report",
-        generated_at_unix_ms: UInt64(Date().timeIntervalSince1970 * 1000.0),
-        result: JsonResult(ok: ok, exit_code: ok ? 0 : 3),
-        data: data
-    )
-    do {
-        let encoded = try encodeJSON(envelope)
-        let text = String(data: encoded, encoding: .utf8) ?? ""
-        if text.isEmpty {
-            return "failed to encode log stream report"
-        }
-        if path == "stdout" || path == "-" {
-            print(text)
-            return nil
-        }
-        return writeLogCapture(path: path, contents: text)
-    } catch {
-        return "failed to encode log stream report: \(error)"
-    }
-}
-
-private func isLogPreludeLine(_ line: String) -> Bool {
-    return line.range(of: "filtering the log data using", options: [.caseInsensitive]) != nil
-}
-
-private func filterLogStreamLines(_ stdout: String, pid: String, processName: String) -> [String] {
-    let lowerPid = pid.lowercased()
-    let lowerName = processName.lowercased()
-    let pidToken = lowerPid.isEmpty ? nil : "(\(lowerPid))"
-    return stdout
-        .split(separator: "\n", omittingEmptySubsequences: false)
-        .map(String.init)
-        .filter { line in
-            if isLogPreludeLine(line) { return false }
-            let lower = line.lowercased()
-            if !lower.contains("deny") && !lower.contains("sandbox:") { return false }
-            if let pidToken, lower.contains(pidToken) { return true }
-            if !lowerPid.isEmpty && lower.contains("deny") && lower.contains(lowerPid) { return true }
-            if !lowerName.isEmpty && lower.contains(lowerName) { return true }
-            return false
-        }
-}
-
-private struct LogStreamHandle {
-    var process: Process
-    var stdoutPipe: Pipe
-    var stderrPipe: Pipe
-    var predicate: String
-}
-
-private struct ObserverStreamHandle {
-    var process: Process
-    var stdoutPipe: Pipe
-    var stderrPipe: Pipe
-    var path: String
-    var predicate: String?
-    var format: String?
-}
-
-private func startLogStream(predicate: String) -> (LogStreamHandle?, String?) {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/log")
-    process.arguments = [
-        "stream",
-        "--style",
-        "syslog",
-        "--info",
-        "--debug",
-        "--predicate",
-        predicate,
-    ]
-
-    let stdoutPipe = Pipe()
-    let stderrPipe = Pipe()
-    process.standardOutput = stdoutPipe
-    process.standardError = stderrPipe
-
-    do {
-        try process.run()
-    } catch {
-        return (nil, "spawn failed: \(error)")
-    }
-
-    return (LogStreamHandle(process: process, stdoutPipe: stdoutPipe, stderrPipe: stderrPipe, predicate: predicate), nil)
-}
-
-private func stopLogStream(_ handle: LogStreamHandle) -> ProcessRun {
-    var terminatedByClient = false
-    if handle.process.isRunning {
-        handle.process.terminate()
-        terminatedByClient = true
-    }
-    handle.process.waitUntilExit()
-    let out = handle.stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-    let err = handle.stderrPipe.fileHandleForReading.readDataToEndOfFile()
-    return ProcessRun(
-        rc: handle.process.terminationStatus,
-        terminationReason: handle.process.terminationReason,
-        terminatedByClient: terminatedByClient,
-        stdout: out,
-        stderr: err
-    )
-}
-
-private func serviceNameHint(from bundleId: String) -> String {
-    if let last = bundleId.split(separator: ".").last, !last.isEmpty {
-        return String(last)
-    }
-    return bundleId
-}
-
-private func connectionPidHint(_ connection: NSXPCConnection) -> String? {
-    let pid = connection.processIdentifier
-    return pid > 0 ? "\(pid)" : nil
-}
-
-private func waitForConnectionPid(_ connection: NSXPCConnection, timeout: TimeInterval) -> String? {
-    if let pid = connectionPidHint(connection) {
-        return pid
-    }
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
-        Thread.sleep(forTimeInterval: 0.05)
-        if let pid = connectionPidHint(connection) {
-            return pid
-        }
-    }
-    return nil
-}
-
-private func pgrepNewestPid(processName: String) -> String? {
-    guard !processName.isEmpty else { return nil }
-    let tool = "/usr/bin/pgrep"
-    guard FileManager.default.isExecutableFile(atPath: tool) else { return nil }
-    let run = runCommand([tool, "-x", "-n", processName])
-    guard run.rc == 0 else { return nil }
-    let stdout = String(data: run.stdout, encoding: .utf8) ?? ""
-    let pid = stdout
-        .split(whereSeparator: \.isNewline)
-        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        .first { !$0.isEmpty }
-    return pid
-}
-
-private func parseIso8601(_ value: String?) -> Date? {
-    guard let value, !value.isEmpty else { return nil }
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return formatter.date(from: value)
-}
-
-private func formatLogShowTime(_ date: Date) -> String {
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.timeZone = TimeZone.current
-    formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-    return formatter.string(from: date)
-}
-
-private func observerReportPath(for logPath: String, format: String?) -> String {
-    let ext = (format == "jsonl") ? "jsonl" : "json"
-    return "\(logPath).observer.\(ext)"
-}
-
-private func parseObserverReportJson(_ text: String) -> ObserverReportEnvelope? {
-    guard let data = text.data(using: .utf8) else { return nil }
-    return try? decodeJSON(ObserverReportEnvelope.self, from: data)
-}
-
-private func parseObserverReportJsonl(_ text: String) -> ObserverReportEnvelope? {
-    var lastReport: ObserverReportEnvelope?
-    for line in text.split(whereSeparator: \.isNewline) {
-        guard let data = String(line).data(using: .utf8) else { continue }
-        if let report = try? decodeJSON(ObserverReportEnvelope.self, from: data),
-           report.kind == "sandbox_log_observer_report" {
-            lastReport = report
-        }
-    }
-    return lastReport
-}
-
-private func parseObserverReport(_ text: String, format: String?) -> ObserverReportEnvelope? {
-    if format == "jsonl" {
-        return parseObserverReportJsonl(text)
-    }
-    if format == "json" {
-        return parseObserverReportJson(text)
-    }
-    return parseObserverReportJson(text) ?? parseObserverReportJsonl(text)
-}
-
-private func parseObserverReportFile(path: String, format: String?) -> ObserverReportEnvelope? {
-    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
-    return parseObserverReport(text, format: format)
-}
-
-private func mergeDetails(
-    _ details: [String: String]?,
-    pidHint: String?,
-    processNameHint: String?
-) -> [String: String]? {
-    var out = details ?? [:]
-    var updated = false
-
-    if (out["pid"]?.isEmpty ?? true), let pidHint, !pidHint.isEmpty {
-        out["pid"] = pidHint
-        out["service_pid"] = pidHint
-        out["probe_pid"] = pidHint
-        if out["pid_source"] == nil {
-            out["pid_source"] = "xpc_connection"
-        }
-        updated = true
-    }
-
-    if (out["process_name"]?.isEmpty ?? true), let processNameHint, !processNameHint.isEmpty {
-        out["process_name"] = processNameHint
-        if out["process_name_source"] == nil {
-            out["process_name_source"] = "service_name_hint"
-        }
-        updated = true
-    }
-
-    if out.isEmpty && !updated {
-        return nil
-    }
-    return out
-}
-
-private func resolveObserverToolPath() -> String? {
-    let bundleURL = Bundle.main.bundleURL
-    let candidate = bundleURL
-        .appendingPathComponent("Contents", isDirectory: true)
-        .appendingPathComponent("MacOS", isDirectory: true)
-        .appendingPathComponent("sandbox-log-observer", isDirectory: false)
-    let path = candidate.path
-    return FileManager.default.isExecutableFile(atPath: path) ? path : nil
-}
-
-private func captureSandboxLogStream(
-    spec: LogCaptureSpec,
-    stream: LogStreamHandle?,
-    streamError: String?,
-    response: RunProbeResponse,
-    serviceName: String,
-    pidHint: String?,
-    processNameHint: String?,
-    predicate: String
-) -> LogCaptureSummary {
-    let details = response.details ?? [:]
-    let probePid = details["probe_pid"]
-    let servicePid = details["service_pid"]
-    let fallbackPid = details["pid"]
-    let pid = (probePid?.isEmpty == false ? probePid : (servicePid?.isEmpty == false ? servicePid : fallbackPid))
-        ?? (pidHint?.isEmpty == false ? pidHint : nil)
-        ?? ""
-    let processName = (details["process_name"]?.isEmpty == false ? details["process_name"] : nil)
-        ?? processNameHint
-        ?? serviceNameHint(from: serviceName)
-    var logError = streamError
-    var logRcRaw: Int? = nil
-    var logRc: Int? = nil
-    var stdout = ""
-    var stderr = ""
-
-    if let stream {
-        let run = stopLogStream(stream)
-        logRcRaw = Int(run.rc)
-        logRc = logRcRaw
-        if run.terminatedByClient, run.terminationReason == .uncaughtSignal, logRcRaw == 15 {
-            logRc = 0
-        }
-        stdout = String(data: run.stdout, encoding: .utf8) ?? ""
-        stderr = String(data: run.stderr, encoding: .utf8) ?? ""
-    } else if logError == nil {
-        logError = "log stream missing"
-    }
-
-    let lowerStdout = stdout.lowercased()
-    let lowerStderr = stderr.lowercased()
-    if lowerStdout.contains("cannot run while sandboxed") || lowerStderr.contains("cannot run while sandboxed") {
-        logError = "Cannot run while sandboxed"
-    }
-
-    let matched = filterLogStreamLines(stdout, pid: pid, processName: processName)
-    let logStdout = matched.joined(separator: "\n")
-    let observedLines = matched.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
-    let observedDeny = matched.contains { $0.localizedCaseInsensitiveContains("deny") }
-
-    let report = LogStreamReportData(
-        pid: pid.isEmpty ? nil : pid,
-        process_name: processName.isEmpty ? nil : processName,
-        predicate: predicate.isEmpty ? nil : predicate,
-        log_rc: logRc,
-        log_rc_raw: logRcRaw,
-        log_stdout: logStdout,
-        log_stderr: stderr,
-        log_error: logError,
-        observed_lines: observedLines,
-        observed_deny: observedDeny,
-        layer_attribution: LogStreamLayerAttribution(seatbelt: "log_stream")
-    )
-
-    let writeErr = writeLogStreamReport(path: spec.path, data: report, ok: logError == nil)
-
-    var status = "requested_written"
-    var error: String? = nil
-    if let writeErr {
-        status = "requested_failed"
-        error = writeErr
-    } else if let logError {
-        status = "requested_failed"
-        error = logError
-    }
-
-    let denyEvidence: String
-    if logError != nil {
-        denyEvidence = "log_error"
-    } else if observedDeny {
-        denyEvidence = "captured"
-    } else {
-        denyEvidence = "not_found"
-    }
-
-    return LogCaptureSummary(
-        status: status,
-        error: error,
-        denyEvidence: denyEvidence,
-        observedLines: observedLines,
-        observedDeny: observedDeny,
-        predicate: predicate.isEmpty ? nil : predicate
-    )
-}
-
-private func captureSandboxLogObserver(
-    observerPath: String?,
-    response: RunProbeResponse,
-    serviceName: String,
-    pidHint: String?,
-    processNameHint: String?,
-    predicateOverride: String?,
-    planId: String?,
-    rowId: String?,
-    correlationId: String?,
-    observerFormat: String?,
-    observerDuration: TimeInterval?,
-    observerFollow: Bool,
-    clientStarted: Date,
-    clientEnded: Date
-) -> ObserverSummary {
-    return captureSandboxLogObserver(
-        observerPath: observerPath,
-        response: response,
-        serviceName: serviceName,
-        pidHint: pidHint,
-        processNameHint: processNameHint,
-        predicateOverride: predicateOverride,
-        planId: planId,
-        rowId: rowId,
-        correlationId: correlationId,
-        observerFormat: observerFormat,
-        observerDuration: observerDuration,
-        observerFollow: observerFollow,
-        clientStarted: clientStarted,
-        clientEnded: clientEnded,
-        forceShow: false
-    )
-}
-
-private func summarizeObserverRun(
-    stdout: String,
-    stderr: String,
-    rc: Int32,
-    observerPath: String,
-    predicateOverride: String?,
-    observerFormat: String?,
-    observerStart: String?,
-    observerEnd: String?,
-    observerLast: String?
-) -> ObserverSummary {
-    let observerFileExists = FileManager.default.fileExists(atPath: observerPath)
-    let writePayload: String = {
-        if !stdout.isEmpty {
-            return stdout
-        }
-        if !stderr.isEmpty {
-            return "observer stderr:\n\(stderr)"
-        }
-        return "observer output empty\n"
-    }()
-
-    let writeErr = observerFileExists ? nil : writeLogCapture(path: observerPath, contents: writePayload)
-
-    var status = "requested_written"
-    var error: String? = writeErr
-    if writeErr != nil {
-        status = "requested_failed"
-    }
-
-    var observerPredicate: String? = predicateOverride
-    var observedLines: Int? = nil
-    var observedDeny: Bool? = nil
-    var denyLines: [String]? = nil
-    var report: ObserverReportEnvelope? = nil
-    var start = observerStart
-    var end = observerEnd
-    var last = observerLast
-
-    let reportFromStdout = parseObserverReport(stdout, format: observerFormat)
-    let reportFromFile = reportFromStdout
-        ?? (stdout.isEmpty ? parseObserverReportFile(path: observerPath, format: observerFormat) : nil)
-    if let parsed = reportFromFile, let data = parsed.data {
-        report = parsed
-        observerPredicate = data.predicate ?? observerPredicate
-        start = data.start ?? start
-        end = data.end ?? end
-        last = data.last ?? last
-        observedLines = data.observed_lines
-        observedDeny = data.observed_deny
-        denyLines = data.deny_lines
-        if let logError = data.log_error, !logError.isEmpty {
-            status = "requested_failed"
-            error = logError
-        } else if parsed.result?.ok == false {
-            status = "requested_failed"
-            error = error ?? "observer_report_not_ok"
-        }
-    } else if error == nil {
-        status = "requested_failed"
-        error = "observer_decode_failed"
-    }
-
-    if rc != 0 && error == nil {
-        status = "requested_failed"
-        error = "observer_exit=\(rc)"
-    }
-
-    return ObserverSummary(
-        status: status,
-        error: error,
-        path: observerPath,
-        predicate: observerPredicate,
-        start: start,
-        end: end,
-        last: last,
-        observedLines: observedLines,
-        observedDeny: observedDeny,
-        denyLines: denyLines,
-        report: report
-    )
-}
-
-private func startSandboxLogObserverStream(
-    observerPath: String?,
-    pidHint: String?,
-    processNameHint: String?,
-    predicateOverride: String?,
-    planId: String?,
-    rowId: String?,
-    correlationId: String?,
-    observerFormat: String?,
-    observerDuration: TimeInterval?,
-    observerFollow: Bool
-) -> (ObserverStreamHandle?, ObserverSummary?) {
-    guard let observerPath else {
-        return (nil, ObserverSummary(
-            status: "requested_failed",
-            error: "missing_observer_path",
-            path: nil,
-            predicate: nil,
-            start: nil,
-            end: nil,
-            last: nil,
-            observedLines: nil,
-            observedDeny: nil,
-            denyLines: nil,
-            report: nil
-        ))
-    }
-
-    let pid = pidHint ?? ""
-    let processName = processNameHint ?? ""
-
-    guard !pid.isEmpty else {
-        return (nil, ObserverSummary(
-            status: "requested_failed",
-            error: "missing_pid",
-            path: observerPath,
-            predicate: nil,
-            start: nil,
-            end: nil,
-            last: nil,
-            observedLines: nil,
-            observedDeny: nil,
-            denyLines: nil,
-            report: nil
-        ))
-    }
-
-    guard !processName.isEmpty else {
-        return (nil, ObserverSummary(
-            status: "requested_failed",
-            error: "missing_process_name",
-            path: observerPath,
-            predicate: nil,
-            start: nil,
-            end: nil,
-            last: nil,
-            observedLines: nil,
-            observedDeny: nil,
-            denyLines: nil,
-            report: nil
-        ))
-    }
-
-    guard let toolPath = resolveObserverToolPath() else {
-        return (nil, ObserverSummary(
-            status: "requested_failed",
-            error: "observer_missing",
-            path: observerPath,
-            predicate: nil,
-            start: nil,
-            end: nil,
-            last: nil,
-            observedLines: nil,
-            observedDeny: nil,
-            denyLines: nil,
-            report: nil
-        ))
-    }
-
-    var argv = [
-        toolPath,
-        "--pid",
-        pid,
-        "--process-name",
-        processName,
-    ]
-
-    if observerFollow {
-        argv.append("--follow")
-    }
-    if let observerDuration {
-        argv.append("--duration")
-        argv.append(String(observerDuration))
-    }
-    if let predicateOverride {
-        argv.append("--predicate")
-        argv.append(predicateOverride)
-    }
-    if let observerFormat {
-        argv.append("--format")
-        argv.append(observerFormat)
-    }
-    argv.append("--output")
-    argv.append(observerPath)
-    if let planId {
-        argv.append("--plan-id")
-        argv.append(planId)
-    }
-    if let rowId {
-        argv.append("--row-id")
-        argv.append(rowId)
-    }
-    if let correlationId {
-        argv.append("--correlation-id")
-        argv.append(correlationId)
-    }
-
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: toolPath)
-    process.arguments = Array(argv.dropFirst())
-
-    let stdoutPipe = Pipe()
-    let stderrPipe = Pipe()
-    process.standardOutput = stdoutPipe
-    process.standardError = stderrPipe
-
-    do {
-        try process.run()
-    } catch {
-        return (nil, ObserverSummary(
-            status: "requested_failed",
-            error: "observer_spawn_failed",
-            path: observerPath,
-            predicate: predicateOverride,
-            start: nil,
-            end: nil,
-            last: nil,
-            observedLines: nil,
-            observedDeny: nil,
-            denyLines: nil,
-            report: nil
-        ))
-    }
-
-    return (ObserverStreamHandle(
-        process: process,
-        stdoutPipe: stdoutPipe,
-        stderrPipe: stderrPipe,
-        path: observerPath,
-        predicate: predicateOverride,
-        format: observerFormat
-    ), nil)
-}
-
-private func finishSandboxLogObserverStream(
-    handle: ObserverStreamHandle,
-    observerFollow: Bool,
-    observerFormat: String?
-) -> ObserverSummary {
-    if observerFollow && handle.process.isRunning {
-        handle.process.terminate()
-    }
-    handle.process.waitUntilExit()
-
-    let stdout = String(data: handle.stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-    let stderr = String(data: handle.stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-    let rc = handle.process.terminationStatus
-
-    return summarizeObserverRun(
-        stdout: stdout,
-        stderr: stderr,
-        rc: rc,
-        observerPath: handle.path,
-        predicateOverride: handle.predicate,
-        observerFormat: observerFormat ?? handle.format,
-        observerStart: nil,
-        observerEnd: nil,
-        observerLast: nil
-    )
-}
-
-private func captureSandboxLogObserver(
-    observerPath: String?,
-    response: RunProbeResponse,
-    serviceName: String,
-    pidHint: String?,
-    processNameHint: String?,
-    predicateOverride: String?,
-    planId: String?,
-    rowId: String?,
-    correlationId: String?,
-    observerFormat: String?,
-    observerDuration: TimeInterval?,
-    observerFollow: Bool,
-    clientStarted: Date,
-    clientEnded: Date,
-    forceShow: Bool
-) -> ObserverSummary {
-    guard let observerPath else {
-        return ObserverSummary(
-            status: "requested_failed",
-            error: "missing_observer_path",
-            path: nil,
-            predicate: nil,
-            start: nil,
-            end: nil,
-            last: nil,
-            observedLines: nil,
-            observedDeny: nil,
-            denyLines: nil,
-            report: nil
-        )
-    }
-
-    let details = response.details ?? [:]
-    let probePid = details["probe_pid"]
-    let servicePid = details["service_pid"]
-    let fallbackPid = details["pid"]
-    let pid = (probePid?.isEmpty == false ? probePid : (servicePid?.isEmpty == false ? servicePid : fallbackPid))
-        ?? (pidHint?.isEmpty == false ? pidHint : nil)
-        ?? ""
-    let processName = (details["process_name"]?.isEmpty == false ? details["process_name"] : nil)
-        ?? processNameHint
-        ?? serviceNameHint(from: serviceName)
-
-    guard !pid.isEmpty else {
-        return ObserverSummary(
-            status: "requested_failed",
-            error: "missing_pid",
-            path: observerPath,
-            predicate: nil,
-            start: nil,
-            end: nil,
-            last: nil,
-            observedLines: nil,
-            observedDeny: nil,
-            denyLines: nil,
-            report: nil
-        )
-    }
-
-    guard let toolPath = resolveObserverToolPath() else {
-        return ObserverSummary(
-            status: "requested_failed",
-            error: "observer_missing",
-            path: observerPath,
-            predicate: nil,
-            start: nil,
-            end: nil,
-            last: nil,
-            observedLines: nil,
-            observedDeny: nil,
-            denyLines: nil,
-            report: nil
-        )
-    }
-
-    let useStream = !forceShow && (observerFollow || observerDuration != nil)
-    var observerStart: String? = nil
-    var observerEnd: String? = nil
-    let observerLast: String? = nil
-
-    var argv = [
-        toolPath,
-        "--pid",
-        pid,
-        "--process-name",
-        processName,
-    ]
-
-    if useStream {
-        if observerFollow {
-            argv.append("--follow")
-        }
-        if let observerDuration {
-            argv.append("--duration")
-            argv.append(String(observerDuration))
-        }
-    } else {
-        let startSource = parseIso8601(response.started_at_iso8601) ?? clientStarted
-        let endSource = parseIso8601(response.ended_at_iso8601) ?? clientEnded
-        let paddingSeconds: TimeInterval = 5
-        let paddedStart = startSource.addingTimeInterval(-paddingSeconds)
-        let paddedEnd = max(endSource.addingTimeInterval(paddingSeconds), paddedStart.addingTimeInterval(1))
-        observerStart = formatLogShowTime(paddedStart)
-        observerEnd = formatLogShowTime(paddedEnd)
-        if let observerStart, let observerEnd {
-            argv.append("--start")
-            argv.append(observerStart)
-            argv.append("--end")
-            argv.append(observerEnd)
+        switch arg {
+        case "-h", "--help":
+            die(usage(), code: 0)
+        case "--plan-id":
+            guard idx + 1 < args.count else { die("missing value for --plan-id", code: 2) }
+            planId = args[idx + 1]
+            idx += 2
+        case "--correlation-id":
+            guard idx + 1 < args.count else { die("missing value for --correlation-id", code: 2) }
+            correlationId = args[idx + 1]
+            idx += 2
+        case "--wait":
+            guard idx + 1 < args.count else { die("missing value for --wait", code: 2) }
+            waitSpec = args[idx + 1]
+            idx += 2
+        case "--wait-timeout-ms":
+            guard idx + 1 < args.count else { die("missing value for --wait-timeout-ms", code: 2) }
+            waitTimeoutMs = parseInt(args[idx + 1], label: "--wait-timeout-ms")
+            idx += 2
+        case "--wait-interval-ms":
+            guard idx + 1 < args.count else { die("missing value for --wait-interval-ms", code: 2) }
+            waitIntervalMs = parseInt(args[idx + 1], label: "--wait-interval-ms")
+            idx += 2
+        case "--xpc-timeout-ms":
+            guard idx + 1 < args.count else { die("missing value for --xpc-timeout-ms", code: 2) }
+            xpcTimeoutMs = parseInt(args[idx + 1], label: "--xpc-timeout-ms")
+            idx += 2
+        default:
+            die("unknown argument for session: \(arg)\n\n\(usage())", code: 2)
         }
     }
 
-    if let predicateOverride {
-        argv.append("--predicate")
-        argv.append(predicateOverride)
+    guard idx < args.count else {
+        die("missing required argument: <xpc-service-bundle-id>\n\n\(usage())", code: 2)
     }
-    if let observerFormat {
-        argv.append("--format")
-        argv.append(observerFormat)
-    }
-    argv.append("--output")
-    argv.append(observerPath)
-    if let planId {
-        argv.append("--plan-id")
-        argv.append(planId)
-    }
-    if let rowId {
-        argv.append("--row-id")
-        argv.append(rowId)
-    }
-    if let correlationId {
-        argv.append("--correlation-id")
-        argv.append(correlationId)
+    let serviceBundleId = args[idx]
+    if idx + 1 != args.count {
+        die("session takes exactly one positional argument: <xpc-service-bundle-id>\n\n\(usage())", code: 2)
     }
 
-    let run = runCommand(argv)
-    let stdout = String(data: run.stdout, encoding: .utf8) ?? ""
-    let stderr = String(data: run.stderr, encoding: .utf8) ?? ""
+    let connection = NSXPCConnection(serviceName: serviceBundleId)
+    connection.remoteObjectInterface = NSXPCInterface(with: ProbeServiceProtocol.self)
 
-    return summarizeObserverRun(
-        stdout: stdout,
-        stderr: stderr,
-        rc: run.rc,
-        observerPath: observerPath,
-        predicateOverride: predicateOverride,
-        observerFormat: observerFormat,
-        observerStart: observerStart,
-        observerEnd: observerEnd,
-        observerLast: observerLast
-    )
-}
+    let sink = SessionEventSink(stdout: stdout)
+    connection.exportedInterface = NSXPCInterface(with: SessionEventSinkProtocol.self)
+    connection.exportedObject = sink
 
-let args = CommandLine.arguments
-
-var logPath: String?
-var logPredicate: String?
-var logPathClass: String?
-var logName: String?
-var attachReport: String?
-var preloadDylibPath: String?
-var preloadDylibStage: Bool = false
-var jsonOutPath: String?
-var observe: Bool = false
-var observerFormat: String?
-var observerOutput: String?
-var observerDuration: TimeInterval?
-var observerFollow: Bool?
-var planId: String?
-var rowId: String?
-var correlationId: String?
-var expectedOutcome: String?
-var holdOpenSeconds: TimeInterval?
-var waitMode: String?
-var waitPath: String?
-var waitPathClass: String?
-var waitName: String?
-var waitTimeoutMs: Int?
-var waitIntervalMs: Int?
-var waitCreate: Bool?
-var attachSeconds: TimeInterval?
-var xpcTimeoutMs: Int?
-
-var idx = 1
-parseLoop: while idx < args.count {
-    let a = args[idx]
-    switch a {
-    case "-h", "--help":
-        printUsage()
-        exit(0)
-    case "--log-sandbox":
-        fputs("--log-sandbox has been removed; use --log-stream or sandbox-log-observer instead\n", stderr)
-        printUsage()
-        exit(2)
-    case "--log-stream":
-        guard idx + 1 < args.count else {
-            fputs("missing value for \(a)\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        if logPath != nil {
-            fputs("--log-stream specified multiple times\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        logPath = args[idx + 1]
-        idx += 2
-    case "--json-out":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --json-out\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        if jsonOutPath != nil {
-            fputs("--json-out specified multiple times\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        jsonOutPath = args[idx + 1]
-        idx += 2
-    case "--attach-report":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --attach-report\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        if attachReport != nil {
-            fputs("--attach-report specified multiple times\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        attachReport = args[idx + 1]
-        idx += 2
-    case "--preload-dylib":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --preload-dylib\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        if preloadDylibPath != nil {
-            fputs("--preload-dylib specified multiple times\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        preloadDylibPath = args[idx + 1]
-        idx += 2
-    case "--preload-dylib-stage":
-        preloadDylibStage = true
-        idx += 1
-    case "--log-path-class":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --log-path-class\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        logPathClass = args[idx + 1]
-        idx += 2
-    case "--log-name":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --log-name\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        logName = args[idx + 1]
-        idx += 2
-    case "--log-predicate":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --log-predicate\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        logPredicate = args[idx + 1]
-        idx += 2
-    case "--observe":
-        observe = true
-        idx += 1
-    case "--observer-duration":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --observer-duration\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        let raw = args[idx + 1]
-        guard let secs = Double(raw), secs > 0 else {
-            fputs("invalid value for --observer-duration (expected seconds > 0)\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        observerDuration = secs
-        idx += 2
-    case "--observer-format":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --observer-format\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        observerFormat = args[idx + 1]
-        idx += 2
-    case "--observer-output":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --observer-output\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        observerOutput = args[idx + 1]
-        idx += 2
-    case "--observer-follow":
-        observerFollow = true
-        idx += 1
-    case "--plan-id":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --plan-id\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        planId = args[idx + 1]
-        idx += 2
-    case "--row-id":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --row-id\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        rowId = args[idx + 1]
-        idx += 2
-    case "--correlation-id":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --correlation-id\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        correlationId = args[idx + 1]
-        idx += 2
-    case "--expected-outcome":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --expected-outcome\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        expectedOutcome = args[idx + 1]
-        idx += 2
-    case "--hold-open":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --hold-open\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        let raw = args[idx + 1]
-        guard let secs = Double(raw), secs >= 0 else {
-            fputs("invalid value for --hold-open (expected seconds >= 0)\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        holdOpenSeconds = secs
-        idx += 2
-    case "--wait-fifo":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --wait-fifo\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        if let waitMode, waitMode != "fifo" {
-            fputs("cannot combine --wait-fifo with --wait-exists\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        waitMode = "fifo"
-        waitPath = args[idx + 1]
-        idx += 2
-    case "--wait-exists":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --wait-exists\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        if let waitMode, waitMode != "exists" {
-            fputs("cannot combine --wait-exists with --wait-fifo\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        waitMode = "exists"
-        waitPath = args[idx + 1]
-        idx += 2
-    case "--wait-path-class":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --wait-path-class\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        waitPathClass = args[idx + 1]
-        idx += 2
-    case "--wait-name":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --wait-name\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        waitName = args[idx + 1]
-        idx += 2
-    case "--wait-timeout-ms":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --wait-timeout-ms\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        guard let v = Int(args[idx + 1]), v >= 0 else {
-            fputs("invalid value for --wait-timeout-ms (expected >= 0)\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        waitTimeoutMs = v
-        idx += 2
-    case "--wait-interval-ms":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --wait-interval-ms\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        guard let v = Int(args[idx + 1]), v >= 1 else {
-            fputs("invalid value for --wait-interval-ms (expected >= 1)\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        waitIntervalMs = v
-        idx += 2
-    case "--xpc-timeout-ms":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --xpc-timeout-ms\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        guard let v = Int(args[idx + 1]), v >= 0 else {
-            fputs("invalid value for --xpc-timeout-ms (expected >= 0)\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        xpcTimeoutMs = v
-        idx += 2
-    case "--wait-create":
-        waitCreate = true
-        idx += 1
-    case "--attach":
-        guard idx + 1 < args.count else {
-            fputs("missing value for --attach\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        let raw = args[idx + 1]
-        guard let secs = Double(raw), secs > 0 else {
-            fputs("invalid value for --attach (expected seconds > 0)\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        attachSeconds = secs
-        idx += 2
-    default:
-        break parseLoop
-    }
-}
-
-let observerRequested = observe
-    || observerDuration != nil
-    || observerFormat != nil
-    || observerOutput != nil
-    || observerFollow == true
-
-if logPredicate != nil && logPath == nil && logPathClass == nil && !observerRequested {
-    fputs("missing value for --log-stream or --log-path-class/--log-name (required when --log-predicate is set)\n", stderr)
-    printUsage()
-    exit(2)
-}
-
-if let observerFormat, observerFormat != "json" && observerFormat != "jsonl" {
-    fputs("invalid value for --observer-format (expected json|jsonl)\n", stderr)
-    printUsage()
-    exit(2)
-}
-
-if observerFollow == true && observerDuration != nil {
-    fputs("--observer-follow cannot be combined with --observer-duration\n", stderr)
-    printUsage()
-    exit(2)
-}
-
-if logPath != nil && logPathClass != nil {
-    fputs("--log-path-class/--log-name cannot be combined with an explicit log path\n", stderr)
-    printUsage()
-    exit(2)
-}
-
-if (logPathClass != nil && logName == nil) || (logPathClass == nil && logName != nil) {
-    fputs("--log-path-class and --log-name must be provided together\n", stderr)
-    printUsage()
-    exit(2)
-}
-
-if let logPathClass {
-    guard isKnownPathClass(logPathClass) else {
-        fputs("invalid --log-path-class (expected home|tmp|downloads|desktop|documents|app_support|caches)\n", stderr)
-        printUsage()
-        exit(2)
-    }
-}
-
-if let logName, !isSinglePathComponent(logName) {
-    fputs("invalid --log-name (must be a single path component)\n", stderr)
-    printUsage()
-    exit(2)
-}
-
-if let logPath, (logPath == "stdout" || logPath == "-"), jsonOutPath == nil {
-    fputs("--log-stream stdout requires --json-out to avoid mixing output streams\n", stderr)
-    printUsage()
-    exit(2)
-}
-
-guard args.count - idx >= 2 else {
-    printUsage()
-    exit(2)
-}
-
-let serviceName = args[idx]
-let probeId = args[idx + 1]
-let probeArgs = Array(args.dropFirst(idx + 2))
-
-if correlationId == nil {
-    correlationId = UUID().uuidString
-}
-
-if preloadDylibStage && preloadDylibPath == nil {
-    fputs("--preload-dylib-stage requires --preload-dylib\n", stderr)
-    printUsage()
-    exit(2)
-}
-
-if let preloadDylibPath, !preloadDylibPath.hasPrefix("/") {
-    fputs("--preload-dylib path must be absolute\n", stderr)
-    printUsage()
-    exit(2)
-}
-
-let resolvedPreloadDylibPath: String? = {
-    guard let preloadDylibPath else { return nil }
-    guard preloadDylibStage else { return preloadDylibPath }
-    let seed = correlationId ?? UUID().uuidString
-    let candidate = "ej-preload-\(seed).dylib"
-    let stageName = isSinglePathComponent(candidate) ? candidate : "ej-preload-\(UUID().uuidString).dylib"
-    guard let stagedPath = resolveContainerPath(bundleId: serviceName, pathClass: "tmp", name: stageName) else {
-        fputs("failed to resolve preload staging path under service container\n", stderr)
-        exit(2)
-    }
-    let dstURL = URL(fileURLWithPath: stagedPath)
-    let parent = dstURL.deletingLastPathComponent()
-    do {
-        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true, attributes: nil)
-        if FileManager.default.fileExists(atPath: stagedPath) {
-            try FileManager.default.removeItem(at: dstURL)
-        }
-        try FileManager.default.copyItem(at: URL(fileURLWithPath: preloadDylibPath), to: dstURL)
-        fputs("[client] preload-dylib staged_path=\(stagedPath)\n", stderr)
-        return stagedPath
-    } catch {
-        fputs("failed to stage preload dylib: \(error)\n", stderr)
-        exit(2)
-    }
-}()
-
-let resolvedLogPath: String? = {
-    if let logPath {
-        if logPath == "auto" {
-            return autoLogPath(kind: "sandbox-log-stream", serviceName: serviceName, probeId: probeId, correlationId: correlationId)
-        }
-        return logPath
-    }
-    if let logPathClass, let logName {
-        return resolveContainerPath(bundleId: serviceName, pathClass: logPathClass, name: logName)
-    }
-    return nil
-}()
-
-if logPathClass != nil && resolvedLogPath == nil {
-    fputs("failed to resolve --log-path-class/--log-name for service container\n", stderr)
-    exit(2)
-}
-
-let logSpec = resolvedLogPath.map { LogCaptureSpec(path: $0, predicate_override: logPredicate) }
-let logStreamUsesStdout = resolvedLogPath == "stdout" || resolvedLogPath == "-"
-let observerExtension = (observerFormat == "jsonl") ? "jsonl" : "json"
-
-let attachReportOutput: String? = {
-    guard let attachReport else { return nil }
-    if attachReport == "auto" {
-        return autoLogPath(kind: "attach-report", serviceName: serviceName, probeId: probeId, correlationId: correlationId, fileExtension: "jsonl")
-    }
-    return attachReport
-}()
-
-if let attachReportOutput, (attachReportOutput == "stdout" || attachReportOutput == "-"), jsonOutPath == nil {
-    fputs("--attach-report stdout requires --json-out to avoid mixing output streams\n", stderr)
-    printUsage()
-    exit(2)
-}
-if let attachReportOutput, (attachReportOutput == "stdout" || attachReportOutput == "-"), logStreamUsesStdout {
-    fputs("--attach-report stdout cannot be combined with --log-stream stdout\n", stderr)
-    printUsage()
-    exit(2)
-}
-
-let observerOutputPath: String? = {
-    if let observerOutput {
-        if observerOutput == "auto" {
-            return autoLogPath(
-                kind: "sandbox-log-observer",
-                serviceName: serviceName,
-                probeId: probeId,
-                correlationId: correlationId,
-                fileExtension: observerExtension
-            )
-        }
-        return observerOutput
-    }
-    if let logPath = resolvedLogPath, logPath != "stdout" && logPath != "-" {
-        return observerReportPath(for: logPath, format: observerFormat)
-    }
-    if observerRequested || logSpec != nil {
-        return autoLogPath(
-            kind: "sandbox-log-observer",
-            serviceName: serviceName,
-            probeId: probeId,
+    connection.interruptionHandler = {
+        emitSessionErrorEnvelope(
+            event: "connection_interrupted",
+            planId: planId,
             correlationId: correlationId,
-            fileExtension: observerExtension
+            sessionToken: nil,
+            pid: nil,
+            serviceBundleId: serviceBundleId,
+            serviceName: nil,
+            waitMode: nil,
+            waitPath: nil,
+            error: "xpc connection interrupted",
+            stdout: stdout
         )
     }
-    return nil
-}()
-
-let shouldObserve = observerRequested || logSpec != nil
-
-private func emitAttachEvent(_ event: AttachEvent) {
-    guard let attachReportOutput else { return }
-    do {
-        let encoded = try encodeJSON(event)
-        guard let json = String(data: encoded, encoding: .utf8), !json.isEmpty else { return }
-        if attachReportOutput == "stderr" {
-            fputs("\(json)\n", stderr)
-            fflush(stderr)
-        } else if attachReportOutput == "stdout" || attachReportOutput == "-" {
-            print(json)
-        } else {
-            _ = appendLine(path: attachReportOutput, line: json, label: "attach report")
-        }
-    } catch {
-        fputs("failed to encode attach report: \(error)\n", stderr)
-    }
-}
-
-if let attachReportOutput, attachReportOutput != "stderr", attachReportOutput != "stdout", attachReportOutput != "-" {
-    fputs("[client] attach-report path=\(attachReportOutput)\n", stderr)
-}
-
-if let attachSeconds {
-    if holdOpenSeconds == nil {
-        holdOpenSeconds = attachSeconds
-    }
-    if waitMode == nil {
-        waitMode = "fifo"
-    }
-    if waitTimeoutMs == nil {
-        waitTimeoutMs = Int(attachSeconds * 1000.0)
-    }
-    if waitPath == nil && waitPathClass == nil {
-        waitPathClass = "tmp"
-    }
-    if waitName == nil && waitPath == nil {
-        let seed = correlationId ?? UUID().uuidString
-        let candidate = "ej-attach-\(seed).fifo"
-        waitName = isSinglePathComponent(candidate) ? candidate : "ej-attach-\(UUID().uuidString).fifo"
-    }
-    if waitCreate == nil && (waitMode == nil || waitMode == "fifo") {
-        waitCreate = true
-    }
-}
-
-if waitMode == nil && waitPath == nil && waitPathClass != nil {
-    // `--wait-path-class/--wait-name` is the ergonomic container-safe wait; default to FIFO.
-    waitMode = "fifo"
-    if waitCreate == nil {
-        waitCreate = true
-    }
-}
-
-if waitMode == nil {
-    if waitPath != nil || waitPathClass != nil || waitName != nil || waitTimeoutMs != nil || waitIntervalMs != nil || waitCreate != nil {
-        fputs("missing --wait-fifo/--wait-exists (required when wait options are provided)\n", stderr)
-        printUsage()
-        exit(2)
-    }
-} else {
-    guard waitMode == "fifo" || waitMode == "exists" else {
-        fputs("invalid wait mode (expected fifo or exists)\n", stderr)
-        printUsage()
-        exit(2)
-    }
-    if waitPath != nil && (waitPathClass != nil || waitName != nil) {
-        fputs("--wait-path-class/--wait-name cannot be combined with an explicit wait path\n", stderr)
-        printUsage()
-        exit(2)
-    }
-    if let waitPath, !waitPath.hasPrefix("/") {
-        fputs("wait path must be absolute\n", stderr)
-        printUsage()
-        exit(2)
-    }
-    if let waitPathClass {
-        guard isKnownPathClass(waitPathClass) else {
-            fputs("invalid --wait-path-class (expected home|tmp|downloads|desktop|documents|app_support|caches)\n", stderr)
-            printUsage()
-            exit(2)
-        }
-        guard let waitName, isSinglePathComponent(waitName) else {
-            fputs("invalid --wait-name (must be a single path component)\n", stderr)
-            printUsage()
-            exit(2)
-        }
-    }
-    if waitPath == nil && waitPathClass == nil {
-        fputs("missing wait path (use --wait-fifo/--wait-exists <path> or --wait-path-class + --wait-name)\n", stderr)
-        printUsage()
-        exit(2)
-    }
-    if waitCreate == true && waitMode != "fifo" {
-        fputs("--wait-create is only valid with --wait-fifo\n", stderr)
-        printUsage()
-        exit(2)
-    }
-}
-
-let waitSpec: WaitSpec? = {
-    guard let waitMode else { return nil }
-    return WaitSpec(
-        mode: waitMode,
-        path: waitPath,
-        path_class: waitPathClass,
-        name: waitName,
-        timeout_ms: waitTimeoutMs,
-        interval_ms: waitIntervalMs,
-        create: waitCreate
-    )
-}()
-
-if let waitMode {
-    let waitPathForPrint = waitPath ?? (waitPathClass.flatMap { cls in
-        waitName.flatMap { name in
-            resolveContainerPath(bundleId: serviceName, pathClass: cls, name: name)
-        }
-    })
-    if let waitPathForPrint {
-        fputs("[client] wait-ready mode=\(waitMode) wait_path=\(waitPathForPrint)\n", stderr)
-        emitAttachEvent(AttachEvent(
-            generated_at_unix_ms: UInt64(Date().timeIntervalSince1970 * 1000.0),
-            event: "wait_ready",
-            service_bundle_id: serviceName,
-            probe_id: probeId,
-            correlation_id: correlationId,
-            wait_mode: waitMode,
-            wait_path: waitPathForPrint
-        ))
-    } else if let waitPathClass, let waitName {
-        fputs("[client] wait-ready mode=\(waitMode) wait_path_class=\(waitPathClass) wait_name=\(waitName)\n", stderr)
-        emitAttachEvent(AttachEvent(
-            generated_at_unix_ms: UInt64(Date().timeIntervalSince1970 * 1000.0),
-            event: "wait_ready",
-            service_bundle_id: serviceName,
-            probe_id: probeId,
-            correlation_id: correlationId,
-            wait_mode: waitMode,
-            wait_path_class: waitPathClass,
-            wait_name: waitName
-        ))
-    }
-} else if probeId == "fs_op_wait" {
-    var i = 0
-    while i + 1 < probeArgs.count {
-        let flag = probeArgs[i]
-        if flag == "--wait-fifo" || flag == "--wait-exists" {
-            let mode = (flag == "--wait-fifo") ? "fifo" : "exists"
-            let path = probeArgs[i + 1]
-            fputs("[client] wait-ready mode=\(mode) wait_path=\(path)\n", stderr)
-            emitAttachEvent(AttachEvent(
-                generated_at_unix_ms: UInt64(Date().timeIntervalSince1970 * 1000.0),
-                event: "wait_ready",
-                service_bundle_id: serviceName,
-                probe_id: probeId,
-                correlation_id: correlationId,
-                wait_mode: mode,
-                wait_path: path
-            ))
-            break
-        }
-        i += 1
-    }
-}
-
-let request = RunProbeRequest(
-    plan_id: planId,
-    row_id: rowId,
-    correlation_id: correlationId,
-    probe_id: probeId,
-    argv: probeArgs,
-    expected_outcome: expectedOutcome,
-    preload_dylib_path: resolvedPreloadDylibPath,
-    env_overrides: nil,
-    wait_spec: waitSpec
-)
-let requestData: Data
-do {
-    requestData = try encodeJSON(request)
-} catch {
-    fputs("failed to encode request JSON: \(error)\n", stderr)
-    exit(2)
-}
-
-let connection = NSXPCConnection(serviceName: serviceName)
-connection.remoteObjectInterface = NSXPCInterface(with: ProbeServiceProtocol.self)
-connection.resume()
-let processNameHint = serviceNameHint(from: serviceName)
-var pidHint = connectionPidHint(connection)
-
-let attachRequested = attachSeconds != nil || waitMode != nil || probeId == "fs_op_wait"
-var didEmitPidReady = false
-func emitPidReadyOnce(pid: String) {
-    if didEmitPidReady { return }
-    didEmitPidReady = true
-    let corr = correlationId ?? ""
-    let corrField = corr.isEmpty ? "" : " correlation_id=\(corr)"
-    fputs("[client] pid-ready pid=\(pid) process_name=\(processNameHint)\(corrField)\n", stderr)
-    fflush(stderr)
-    emitAttachEvent(AttachEvent(
-        generated_at_unix_ms: UInt64(Date().timeIntervalSince1970 * 1000.0),
-        event: "pid_ready",
-        service_bundle_id: serviceName,
-        probe_id: probeId,
-        correlation_id: correlationId,
-        pid: Int(pid),
-        process_name: processNameHint
-    ))
-}
-if attachRequested, let pid = pidHint {
-    emitPidReadyOnce(pid: pid)
-}
-
-let semaphore = DispatchSemaphore(value: 0)
-var exitCode: Int32 = 1
-
-private var logStream: LogStreamHandle?
-private var logStreamError: String?
-private var logStreamPredicate: String?
-private var observerStreamHandle: ObserverStreamHandle?
-private var timeoutTimer: DispatchSourceTimer?
-
-let emitLock = NSLock()
-var didEmitFailure = false
-var responseReceived = false
-
-func emitFailureOnce(stage: String, error: String) {
-    emitLock.lock()
-    if didEmitFailure || responseReceived {
-        emitLock.unlock()
-        return
-    }
-    didEmitFailure = true
-    emitLock.unlock()
-
-    if let timer = timeoutTimer {
-        timer.cancel()
-        timeoutTimer = nil
-    }
-
-    if let stream = logStream, stream.process.isRunning {
-        _ = stopLogStream(stream)
-    }
-
-    var logObserverSummary: ObserverSummary?
-    if let handle = observerStreamHandle {
-        logObserverSummary = finishSandboxLogObserverStream(
-            handle: handle,
-            observerFollow: observerFollow == true,
-            observerFormat: observerFormat
+    connection.invalidationHandler = {
+        emitSessionErrorEnvelope(
+            event: "connection_invalidated",
+            planId: planId,
+            correlationId: correlationId,
+            sessionToken: nil,
+            pid: nil,
+            serviceBundleId: serviceBundleId,
+            serviceName: nil,
+            waitMode: nil,
+            waitPath: nil,
+            error: "xpc connection invalidated",
+            stdout: stdout
         )
     }
 
-    var details: [String: String] = [
-        "probe_family": "xpc_error",
-        "xpc_error_stage": stage,
-        "xpc_error": error,
-        "service_bundle_id": serviceName,
-    ]
-    if let pidHint, !pidHint.isEmpty {
-        details["pid"] = pidHint
-        details["service_pid"] = pidHint
-        details["probe_pid"] = pidHint
-        details["pid_source"] = "xpc_connection"
-    }
-    if !processNameHint.isEmpty {
-        details["process_name"] = processNameHint
-        details["process_name_source"] = "service_name_hint"
-    }
-    if let correlationId, !correlationId.isEmpty {
-        details["correlation_id"] = correlationId
-    }
+    connection.resume()
 
-    let logCapturePredicate: String? = {
-        if let pred = logStreamPredicate {
-            return pred
-        }
-        return logSpec?.predicate_override
+    let wait: WaitSpec? = {
+        guard let waitSpec else { return nil }
+        return WaitSpec(spec: waitSpec, timeout_ms: waitTimeoutMs, interval_ms: waitIntervalMs)
     }()
 
-    let data = ProbeData(
-        plan_id: planId,
-        row_id: rowId,
-        correlation_id: correlationId,
-        probe_id: probeId,
-        argv: probeArgs,
-        expected_outcome: expectedOutcome,
-        service_bundle_id: serviceName,
-        service_name: nil,
-        service_version: nil,
-        service_build: nil,
-        started_at_iso8601: nil,
-        ended_at_iso8601: nil,
-        thread_id: nil,
-        details: details,
-        layer_attribution: nil,
-        sandbox_log_excerpt_ref: nil,
-        log_capture_status: logSpec == nil ? "not_requested" : "requested_failed",
-        log_capture_path: logSpec?.path,
-        log_capture_error: logSpec == nil ? nil : error,
-        log_capture_predicate: logCapturePredicate,
-        log_capture_observed_lines: nil,
-        log_capture_observed_deny: nil,
-        log_observer_status: shouldObserve ? (logObserverSummary?.status ?? "requested_failed") : "not_requested",
-        log_observer_error: shouldObserve ? (logObserverSummary?.error ?? error) : nil,
-        log_observer_path: logObserverSummary?.path ?? observerOutputPath,
-        log_observer_predicate: logObserverSummary?.predicate,
-        log_observer_start: logObserverSummary?.start,
-        log_observer_end: logObserverSummary?.end,
-        log_observer_last: logObserverSummary?.last,
-        log_observer_observed_lines: logObserverSummary?.observedLines,
-        log_observer_observed_deny: logObserverSummary?.observedDeny,
-        log_observer_deny_lines: logObserverSummary?.denyLines,
-        log_observer_report: logObserverSummary?.report,
-        deny_evidence: (logSpec != nil || shouldObserve) ? "log_error" : "not_captured"
-    )
-
-    let result = JsonResult(
-        ok: false,
-        rc: 1,
-        exit_code: nil,
-        normalized_outcome: "xpc_error",
-        errno: nil,
-        error: error,
-        stderr: error,
-        stdout: ""
-    )
-    let envelope = JsonEnvelope(
-        kind: "probe_response",
-        generated_at_unix_ms: UInt64(Date().timeIntervalSince1970 * 1000.0),
-        result: result,
-        data: data
-    )
-
+    let openReq = SessionOpenRequest(plan_id: planId, correlation_id: correlationId, wait_spec: wait)
+    let openReqData: Data
     do {
-        let data = try encodeJSON(envelope)
-        if let json = String(data: data, encoding: .utf8) {
-            emitProbeJSON(json, jsonOutPath: jsonOutPath, logStreamUsesStdout: logStreamUsesStdout)
-        } else {
-            fputs("failed to encode response JSON\n", stderr)
-        }
+        openReqData = try encodeJSON(openReq)
     } catch {
-        fputs("failed to encode response JSON: \(error)\n", stderr)
-    }
-
-    exitCode = 1
-    semaphore.signal()
-}
-
-connection.invalidationHandler = {
-    emitFailureOnce(stage: "connection_invalidated", error: "xpc connection invalidated")
-}
-connection.interruptionHandler = {
-    emitFailureOnce(stage: "connection_interrupted", error: "xpc connection interrupted")
-}
-
-guard
-    let proxy = connection.remoteObjectProxyWithErrorHandler({ err in
-        emitFailureOnce(stage: "connection_error", error: "\(err)")
-    }) as? ProbeServiceProtocol
-else {
-    emitFailureOnce(stage: "proxy_error", error: "failed to create xpc proxy")
-    _ = semaphore.wait(timeout: .now() + .milliseconds(50))
-    connection.invalidate()
-    exit(exitCode)
-}
-if let spec = logSpec {
-    let predicate = spec.predicate_override ?? streamSandboxPredicate(processName: processNameHint, pid: pidHint)
-    logStreamPredicate = predicate
-    let (handle, err) = startLogStream(predicate: predicate)
-    logStream = handle
-    logStreamError = err
-    Thread.sleep(forTimeInterval: 0.2)
-}
-
-let observerStreamRequested = shouldObserve && (observerFollow == true || observerDuration != nil)
-if observerStreamRequested {
-    let observerPid = pidHint ?? waitForConnectionPid(connection, timeout: 0.5)
-    let (handle, _) = startSandboxLogObserverStream(
-        observerPath: observerOutputPath,
-        pidHint: observerPid,
-        processNameHint: processNameHint,
-        predicateOverride: logPredicate,
-        planId: planId,
-        rowId: rowId,
-        correlationId: correlationId,
-        observerFormat: observerFormat,
-        observerDuration: observerDuration,
-        observerFollow: observerFollow == true
-    )
-    observerStreamHandle = handle
-    Thread.sleep(forTimeInterval: 0.1)
-}
-
-if let timeoutMs = xpcTimeoutMs, timeoutMs > 0 {
-    let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInitiated))
-    timer.schedule(deadline: .now() + .milliseconds(timeoutMs))
-    timer.setEventHandler {
-        emitFailureOnce(stage: "timeout", error: "xpc timeout after \(timeoutMs)ms")
-    }
-    timer.resume()
-    timeoutTimer = timer
-}
-
-let clientStarted = Date()
-proxy.runProbe(requestData) { responseData in
-    emitLock.lock()
-    if didEmitFailure {
-        emitLock.unlock()
-        return
-    }
-    responseReceived = true
-    emitLock.unlock()
-    if let timer = timeoutTimer {
-        timer.cancel()
-        timeoutTimer = nil
-    }
-    let clientEnded = Date()
-    let rawJson = String(data: responseData, encoding: .utf8)
-    do {
-        var response = try decodeJSON(RunProbeResponse.self, from: responseData)
-        exitCode = Int32(clamping: response.rc)
-
-        var logCapturePredicate: String? = nil
-        var logCaptureObservedLines: Int? = nil
-        var logCaptureObservedDeny: Bool? = nil
-        var logObserverStatus: String? = nil
-        var logObserverError: String? = nil
-        var logObserverPath: String? = nil
-        var logObserverPredicate: String? = nil
-        var logObserverStart: String? = nil
-        var logObserverEnd: String? = nil
-        var logObserverLast: String? = nil
-        var logObserverObservedLines: Int? = nil
-        var logObserverObservedDeny: Bool? = nil
-        var logObserverDenyLines: [String]? = nil
-        var logObserverReport: ObserverReportEnvelope? = nil
-        var logStreamFound = false
-        var logStreamSucceeded = false
-        var observerFound = false
-        var observerSucceeded = false
-        if let spec = logSpec {
-            Thread.sleep(forTimeInterval: 0.2)
-            let predicate = logStreamPredicate ?? spec.predicate_override ?? ""
-            let summary = captureSandboxLogStream(
-                spec: spec,
-                stream: logStream,
-                streamError: logStreamError,
-                response: response,
-                serviceName: serviceName,
-                pidHint: pidHint,
-                processNameHint: processNameHint,
-                predicate: predicate
-            )
-            response.log_capture_status = summary.status
-            response.log_capture_path = spec.path
-            response.log_capture_error = summary.error
-            logCapturePredicate = summary.predicate
-            logCaptureObservedLines = summary.observedLines
-            logCaptureObservedDeny = summary.observedDeny
-            logStreamFound = summary.observedDeny == true
-            logStreamSucceeded = summary.status == "requested_written"
-        } else {
-            response.log_capture_status = "not_requested"
-        }
-
-        if shouldObserve {
-            let observer: ObserverSummary
-            if let handle = observerStreamHandle {
-                observer = finishSandboxLogObserverStream(
-                    handle: handle,
-                    observerFollow: observerFollow == true,
-                    observerFormat: observerFormat
-                )
-            } else {
-                observer = captureSandboxLogObserver(
-                    observerPath: observerOutputPath,
-                    response: response,
-                    serviceName: serviceName,
-                    pidHint: pidHint,
-                    processNameHint: processNameHint,
-                    predicateOverride: logPredicate,
-                    planId: response.plan_id ?? planId,
-                    rowId: response.row_id ?? rowId,
-                    correlationId: response.correlation_id ?? correlationId,
-                    observerFormat: observerFormat,
-                    observerDuration: observerDuration,
-                    observerFollow: observerFollow == true,
-                    clientStarted: clientStarted,
-                    clientEnded: clientEnded,
-                    forceShow: observerStreamRequested
-                )
-            }
-            logObserverStatus = observer.status
-            logObserverError = observer.error
-            logObserverPath = observer.path
-            logObserverPredicate = observer.predicate
-            logObserverStart = observer.start
-            logObserverEnd = observer.end
-            logObserverLast = observer.last
-            logObserverObservedLines = observer.observedLines
-            logObserverObservedDeny = observer.observedDeny
-            logObserverDenyLines = observer.denyLines
-            logObserverReport = observer.report
-            observerFound = observer.observedDeny == true
-            observerSucceeded = observer.status == "requested_written"
-        } else {
-            logObserverStatus = "not_requested"
-        }
-
-        if logSpec != nil || shouldObserve {
-            if logStreamFound || observerFound {
-                response.deny_evidence = "captured"
-            } else if observerSucceeded || logStreamSucceeded {
-                response.deny_evidence = "not_found"
-            } else {
-                response.deny_evidence = "log_error"
-            }
-        } else {
-            response.deny_evidence = "not_captured"
-        }
-
-        let data = ProbeData(
-            plan_id: response.plan_id,
-            row_id: response.row_id,
-            correlation_id: response.correlation_id,
-            probe_id: response.probe_id,
-            argv: response.argv,
-            expected_outcome: response.expected_outcome,
-            service_bundle_id: response.service_bundle_id,
-            service_name: response.service_name,
-            service_version: response.service_version,
-            service_build: response.service_build,
-            started_at_iso8601: response.started_at_iso8601,
-            ended_at_iso8601: response.ended_at_iso8601,
-            thread_id: response.thread_id,
-            details: mergeDetails(response.details, pidHint: pidHint, processNameHint: processNameHint),
-            layer_attribution: response.layer_attribution,
-            sandbox_log_excerpt_ref: response.sandbox_log_excerpt_ref,
-            log_capture_status: response.log_capture_status,
-            log_capture_path: response.log_capture_path,
-            log_capture_error: response.log_capture_error,
-            log_capture_predicate: logCapturePredicate,
-            log_capture_observed_lines: logCaptureObservedLines,
-            log_capture_observed_deny: logCaptureObservedDeny,
-            log_observer_status: logObserverStatus,
-            log_observer_error: logObserverError,
-            log_observer_path: logObserverPath,
-            log_observer_predicate: logObserverPredicate,
-            log_observer_start: logObserverStart,
-            log_observer_end: logObserverEnd,
-            log_observer_last: logObserverLast,
-            log_observer_observed_lines: logObserverObservedLines,
-            log_observer_observed_deny: logObserverObservedDeny,
-            log_observer_deny_lines: logObserverDenyLines,
-            log_observer_report: logObserverReport,
-            deny_evidence: response.deny_evidence
+        emitSessionErrorEnvelope(
+            event: "client_encode_failed",
+            planId: planId,
+            correlationId: correlationId,
+            sessionToken: nil,
+            pid: nil,
+            serviceBundleId: serviceBundleId,
+            serviceName: nil,
+            waitMode: nil,
+            waitPath: nil,
+            error: "failed to encode SessionOpenRequest: \(error)",
+            stdout: stdout
         )
+        exit(2)
+    }
 
-        let result = JsonResult(
-            ok: response.rc == 0,
-            rc: response.rc,
-            exit_code: nil,
-            normalized_outcome: response.normalized_outcome,
-            errno: response.errno,
-            error: response.error,
-            stderr: response.stderr,
-            stdout: response.stdout
+    let openReply = xpcCall(connection: connection, timeoutMs: xpcTimeoutMs) { proxy, reply in
+        proxy.openSession(openReqData, withReply: reply)
+    }
+
+    let openResp: SessionOpenResponse
+    switch openReply {
+    case .failure(let err):
+        let errMessage = err.message
+        emitSessionErrorEnvelope(
+            event: "open_session_failed",
+            planId: planId,
+            correlationId: correlationId,
+            sessionToken: nil,
+            pid: nil,
+            serviceBundleId: serviceBundleId,
+            serviceName: nil,
+            waitMode: nil,
+            waitPath: nil,
+            error: errMessage,
+            stdout: stdout
         )
-
-        let envelope = JsonEnvelope(
-            kind: "probe_response",
-            generated_at_unix_ms: UInt64(Date().timeIntervalSince1970 * 1000.0),
-            result: result,
-            data: data
-        )
-
+        exit(1)
+    case .success(let data):
         do {
-            let data = try encodeJSON(envelope)
-            if let json = String(data: data, encoding: .utf8) {
-                emitProbeJSON(json, jsonOutPath: jsonOutPath, logStreamUsesStdout: logStreamUsesStdout)
-            } else {
-                fputs("failed to encode response JSON\n", stderr)
-            }
+            openResp = try decodeJSON(SessionOpenResponse.self, from: data)
         } catch {
-            fputs("failed to encode response JSON: \(error)\n", stderr)
-            if let rawJson {
-                emitProbeJSON(rawJson, jsonOutPath: jsonOutPath, logStreamUsesStdout: logStreamUsesStdout)
+            emitSessionErrorEnvelope(
+                event: "open_session_decode_failed",
+                planId: planId,
+                correlationId: correlationId,
+                sessionToken: nil,
+                pid: nil,
+                serviceBundleId: serviceBundleId,
+                serviceName: nil,
+                waitMode: nil,
+                waitPath: nil,
+                error: "failed to decode SessionOpenResponse: \(error)",
+                stdout: stdout
+            )
+            exit(1)
+        }
+    }
+
+    guard openResp.rc == 0, let sessionToken = openResp.session_token else {
+        let err = openResp.error ?? "openSession failed"
+        emitSessionErrorEnvelope(
+            event: "open_session_rc_nonzero",
+            planId: planId,
+            correlationId: correlationId,
+            sessionToken: openResp.session_token,
+            pid: openResp.pid,
+            serviceBundleId: openResp.service_bundle_id ?? serviceBundleId,
+            serviceName: openResp.service_name,
+            waitMode: openResp.wait_mode,
+            waitPath: openResp.wait_path,
+            error: err,
+            stdout: stdout
+        )
+        exit(Int32(max(1, min(255, openResp.rc))))
+    }
+
+    func closeAndExit(code: Int32) -> Never {
+        let closeReq = SessionCloseRequest(session_token: sessionToken)
+        if let closeReqData = try? encodeJSON(closeReq) {
+            _ = xpcCall(connection: connection, timeoutMs: xpcTimeoutMs) { proxy, reply in
+                proxy.closeSession(closeReqData, withReply: reply)
             }
         }
-    } catch {
-        let data = DecodeFailureData(raw_response: rawJson, decode_error: "\(error)")
-        let result = JsonResult(
-            ok: false,
-            rc: nil,
-            exit_code: 1,
-            normalized_outcome: nil,
-            errno: nil,
-            error: "decode_failed",
-            stderr: nil,
-            stdout: nil
-        )
-        let envelope = JsonEnvelope(
-            kind: "probe_response",
-            generated_at_unix_ms: UInt64(Date().timeIntervalSince1970 * 1000.0),
-            result: result,
-            data: data
-        )
-        if let encoded = try? encodeJSON(envelope),
-           let json = String(data: encoded, encoding: .utf8) {
-            emitProbeJSON(json, jsonOutPath: jsonOutPath, logStreamUsesStdout: logStreamUsesStdout)
-        } else {
-            fputs("failed to encode response JSON: \(error)\n", stderr)
-            if let rawJson {
-                emitProbeJSON(rawJson, jsonOutPath: jsonOutPath, logStreamUsesStdout: logStreamUsesStdout)
+        connection.invalidate()
+        exit(code)
+    }
+
+    while let line = readLine() {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            continue
+        }
+
+        let cmd: SessionCommand
+        do {
+            cmd = try JSONDecoder().decode(SessionCommand.self, from: Data(trimmed.utf8))
+        } catch {
+            emitSessionErrorEnvelope(
+                event: "bad_command",
+                planId: planId,
+                correlationId: correlationId,
+                sessionToken: sessionToken,
+                pid: openResp.pid,
+                serviceBundleId: openResp.service_bundle_id ?? serviceBundleId,
+                serviceName: openResp.service_name,
+                waitMode: openResp.wait_mode,
+                waitPath: openResp.wait_path,
+                error: "failed to decode command JSON: \(error)",
+                stdout: stdout
+            )
+            continue
+        }
+
+        switch cmd.command {
+        case "keepalive":
+            let keepReq = SessionKeepaliveRequest(session_token: sessionToken)
+            guard let keepReqData = try? encodeJSON(keepReq) else {
+                emitSessionErrorEnvelope(
+                    event: "client_encode_failed",
+                    planId: planId,
+                    correlationId: correlationId,
+                    sessionToken: sessionToken,
+                    pid: openResp.pid,
+                    serviceBundleId: openResp.service_bundle_id ?? serviceBundleId,
+                    serviceName: openResp.service_name,
+                    waitMode: openResp.wait_mode,
+                    waitPath: openResp.wait_path,
+                    error: "failed to encode keepalive request",
+                    stdout: stdout
+                )
+                continue
             }
+            let reply = xpcCall(connection: connection, timeoutMs: xpcTimeoutMs) { proxy, reply in
+                proxy.keepaliveSession(keepReqData, withReply: reply)
+            }
+            switch reply {
+            case .failure(let err):
+                let errMessage = err.message
+                emitSessionErrorEnvelope(
+                    event: "keepalive_failed",
+                    planId: planId,
+                    correlationId: correlationId,
+                    sessionToken: sessionToken,
+                    pid: openResp.pid,
+                    serviceBundleId: openResp.service_bundle_id ?? serviceBundleId,
+                    serviceName: openResp.service_name,
+                    waitMode: openResp.wait_mode,
+                    waitPath: openResp.wait_path,
+                    error: errMessage,
+                    stdout: stdout
+                )
+            case .success(let data):
+                if let decoded = try? decodeJSON(SessionControlResponse.self, from: data), decoded.rc != 0 {
+                    emitSessionErrorEnvelope(
+                        event: "keepalive_rc_nonzero",
+                        planId: planId,
+                        correlationId: correlationId,
+                        sessionToken: sessionToken,
+                        pid: openResp.pid,
+                        serviceBundleId: openResp.service_bundle_id ?? serviceBundleId,
+                        serviceName: openResp.service_name,
+                        waitMode: openResp.wait_mode,
+                        waitPath: openResp.wait_path,
+                        error: decoded.error ?? "keepalive failed",
+                        stdout: stdout
+                    )
+                }
+            }
+
+        case "run_probe":
+            guard let probeId = cmd.probe_id, !probeId.isEmpty else {
+                emitSessionErrorEnvelope(
+                    event: "bad_command",
+                    planId: planId,
+                    correlationId: correlationId,
+                    sessionToken: sessionToken,
+                    pid: openResp.pid,
+                    serviceBundleId: openResp.service_bundle_id ?? serviceBundleId,
+                    serviceName: openResp.service_name,
+                    waitMode: openResp.wait_mode,
+                    waitPath: openResp.wait_path,
+                    error: "missing command.probe_id",
+                    stdout: stdout
+                )
+                continue
+            }
+            let req = RunProbeRequest(
+                plan_id: cmd.plan_id ?? planId,
+                row_id: cmd.row_id,
+                correlation_id: cmd.correlation_id ?? correlationId,
+                probe_id: probeId,
+                argv: cmd.argv ?? []
+            )
+            let runReq = SessionRunProbeRequest(session_token: sessionToken, probe_request: req)
+            guard let runReqData = try? encodeJSON(runReq) else {
+                emitSessionErrorEnvelope(
+                    event: "client_encode_failed",
+                    planId: planId,
+                    correlationId: correlationId,
+                    sessionToken: sessionToken,
+                    pid: openResp.pid,
+                    serviceBundleId: openResp.service_bundle_id ?? serviceBundleId,
+                    serviceName: openResp.service_name,
+                    waitMode: openResp.wait_mode,
+                    waitPath: openResp.wait_path,
+                    error: "failed to encode run_probe request",
+                    stdout: stdout
+                )
+                continue
+            }
+            let reply = xpcCall(connection: connection, timeoutMs: xpcTimeoutMs) { proxy, reply in
+                proxy.runProbeInSession(runReqData, withReply: reply)
+            }
+            switch reply {
+            case .failure(let err):
+                let errMessage = err.message
+                emitSessionErrorEnvelope(
+                    event: "run_probe_failed",
+                    planId: planId,
+                    correlationId: correlationId,
+                    sessionToken: sessionToken,
+                    pid: openResp.pid,
+                    serviceBundleId: openResp.service_bundle_id ?? serviceBundleId,
+                    serviceName: openResp.service_name,
+                    waitMode: openResp.wait_mode,
+                    waitPath: openResp.wait_path,
+                    error: errMessage,
+                    stdout: stdout
+                )
+            case .success(let data):
+                if let decoded = try? decodeJSON(RunProbeResponse.self, from: data) {
+                    _ = emitProbeResponseEnvelope(decoded, stdout: stdout)
+                } else {
+                    emitSessionErrorEnvelope(
+                        event: "run_probe_decode_failed",
+                        planId: planId,
+                        correlationId: correlationId,
+                        sessionToken: sessionToken,
+                        pid: openResp.pid,
+                        serviceBundleId: openResp.service_bundle_id ?? serviceBundleId,
+                        serviceName: openResp.service_name,
+                        waitMode: openResp.wait_mode,
+                        waitPath: openResp.wait_path,
+                        error: "failed to decode RunProbeResponse",
+                        stdout: stdout
+                    )
+                }
+            }
+
+        case "close_session":
+            closeAndExit(code: 0)
+
+        default:
+            emitSessionErrorEnvelope(
+                event: "bad_command",
+                planId: planId,
+                correlationId: correlationId,
+                sessionToken: sessionToken,
+                pid: openResp.pid,
+                serviceBundleId: openResp.service_bundle_id ?? serviceBundleId,
+                serviceName: openResp.service_name,
+                waitMode: openResp.wait_mode,
+                waitPath: openResp.wait_path,
+                error: "unknown command: \(cmd.command)",
+                stdout: stdout
+            )
         }
-        exitCode = 1
     }
-    if let hold = holdOpenSeconds, hold > 0 {
-        Thread.sleep(forTimeInterval: hold)
-    }
-    semaphore.signal()
+
+    closeAndExit(code: 0)
 }
 
-if attachRequested && !didEmitPidReady {
-    let deadline = Date().addingTimeInterval(5.0)
-    var attempts = 0
-    while Date() < deadline {
-        if let pid = connectionPidHint(connection) {
-            pidHint = pid
-            emitPidReadyOnce(pid: pid)
-            break
-        }
-        attempts += 1
-        if attempts % 4 == 0, let pid = pgrepNewestPid(processName: processNameHint) {
-            pidHint = pid
-            emitPidReadyOnce(pid: pid)
-            break
-        }
-        emitLock.lock()
-        let stop = didEmitFailure || responseReceived
-        emitLock.unlock()
-        if stop { break }
-        Thread.sleep(forTimeInterval: 0.05)
-    }
+// MARK: - entrypoint
+
+let argv = Array(CommandLine.arguments.dropFirst())
+if argv.isEmpty {
+    die(usage(), code: 2)
 }
 
-_ = semaphore.wait(timeout: .distantFuture)
-if let stream = logStream, stream.process.isRunning {
-    _ = stopLogStream(stream)
+switch argv[0] {
+case "-h", "--help", "help":
+    die(usage(), code: 0)
+case "run":
+    runOneShot(args: Array(argv.dropFirst()))
+case "session":
+    runSession(args: Array(argv.dropFirst()))
+default:
+    die("unknown subcommand: \(argv[0])\n\n\(usage())", code: 2)
 }
-connection.invalidate()
-exit(exitCode)

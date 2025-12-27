@@ -22,6 +22,8 @@ For usage/behavior contracts, see:
   - Stable `ej_*` trace marker symbols used by external tooling
 - `client/main.swift` → builds the embedded `xpc-probe-client`
 - `quarantine-client/main.swift` → builds the embedded `xpc-quarantine-client`
+- `QuarantineLabServiceHost.swift`
+  - Shared Quarantine Lab service implementation (identical behavior across `QuarantineLab_*`)
 - `services/<ServiceName>/…`
   - One directory per XPC service target: `Info.plist`, `Entitlements.plist`, `main.swift`
 
@@ -56,7 +58,15 @@ If you change naming/layout here, you also need to update the build script, Evid
 Build composition is shared-source based:
 
 - Client helpers are compiled from `ProbeAPI.swift` + their `main.swift`.
-- Every XPC service is compiled from `ProbeAPI.swift` + `InProcessProbeCore.swift` + `services/<ServiceName>/main.swift`.
+- Probe services (`ProbeService_*`) are compiled from:
+  - `ProbeAPI.swift`
+  - `InProcessProbeCore.swift`
+  - `ProbeServiceSessionHost.swift`
+  - `services/<ServiceName>/main.swift`
+- Quarantine Lab services (`QuarantineLab_*`) are compiled from:
+  - `ProbeAPI.swift`
+  - `QuarantineLabServiceHost.swift`
+  - `services/<ServiceName>/main.swift`
 
 ### Signing (what matters for XPC work)
 
@@ -76,12 +86,29 @@ All signing procedure lives in [SIGNING.md](../SIGNING.md).
 ## Runtime wiring (who talks to whom)
 
 - `EntitlementJail.app/Contents/MacOS/entitlement-jail` (Rust launcher) does not speak NSXPC directly.
-- For `run-xpc` / `quarantine-lab`, it invokes the embedded Swift client helpers:
+- For `entitlement-jail xpc {run,session}` / `quarantine-lab`, it invokes the embedded Swift client helpers:
   - `xpc-probe-client` opens an `NSXPCConnection(serviceName: <bundle-id>)` and calls `ProbeServiceProtocol`.
   - `xpc-quarantine-client` does the same for `QuarantineLabProtocol`.
 - Services decode JSON request bytes, perform work, and reply with JSON response bytes.
 
 CLI flag semantics and JSON envelope details are defined in [runner/README.md](../runner/README.md).
+
+## Session mode (debug/attach)
+
+EntitlementJail v2 uses **sessions** as the primary XPC surface for probes, so external tooling can attach deterministically without racing service startup.
+
+Shape:
+
+- Control plane: client → service (`ProbeServiceProtocol` session methods in `ProbeAPI.swift`)
+- Event plane: service → client (`SessionEventSinkProtocol`, emitting JSON envelopes)
+
+Where to look:
+
+- Wire types/protocols: `xpc/ProbeAPI.swift`
+- Service implementation: `xpc/ProbeServiceSessionHost.swift` (shared session host)
+- Service entrypoints: `xpc/services/*/main.swift` (tiny; listener + delegate)
+- Client implementation: `xpc/client/main.swift` (`xpc-probe-client session <bundle-id>`; JSONL stdin/stdout)
+- Rust wrapper command: `runner/src/main.rs` (`entitlement-jail xpc session ...`)
 
 ## Targets in `xpc/services/` (three buckets)
 
@@ -117,10 +144,8 @@ If you modify Quarantine Lab behavior, apply the same change across the whole `Q
 
 These are not XPC services, but they are part of the XPC subsystem and are required for the Rust launcher’s XPC commands.
 
-- `xpc-probe-client` (from `xpc/client/main.swift`): wraps NSXPC calls + optional observer/log capture, prints a JSON envelope to stdout, exits with the probe `rc`.
+- `xpc-probe-client` (from `xpc/client/main.swift`): wraps NSXPC calls, prints JSON envelopes to stdout, exits with the probe `rc` in one-shot mode.
 - `xpc-quarantine-client` (from `xpc/quarantine-client/main.swift`): wraps NSXPC calls for Quarantine Lab, prints a JSON envelope, exits with the lab `rc`.
-
-Tip: set `EJ_XPC_CLIENT_DEBUG=1` to have the clients print `Bundle.main` debugging info to stderr (useful when diagnosing “wrong bundle context” problems).
 
 ## Probe execution model (what a ProbeService is allowed to do)
 

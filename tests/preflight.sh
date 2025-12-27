@@ -184,7 +184,7 @@ dylib_exists = os.path.exists(dylib_path)
 dylib_signed, dylib_error = codesign_verify(dylib_path) if dylib_exists else (False, "missing")
 
 report = {
-    "schema_version": 1,
+    "schema_version": 2,
     "profiles_manifest": {
         "path": profiles_manifest_path,
         "exists": os.path.exists(profiles_manifest_path),

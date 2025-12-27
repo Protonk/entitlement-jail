@@ -17,7 +17,8 @@ fn print_usage() {
 usage:
   entitlement-jail run-system <absolute-platform-binary> [args...]
   entitlement-jail run-embedded <tool-name> [args...]
-  entitlement-jail run-xpc [--ack-risk <id|bundle-id>] [--log-stream <path|auto|stdout>|--log-path-class <class> --log-name <name>] [--log-predicate <predicate>] [--observe] [--observer-duration <seconds>] [--observer-format <json|jsonl>] [--observer-output <path|auto>] [--observer-follow] [--attach-report <path|auto|stdout|stderr>] [--preload-dylib <abs>] [--preload-dylib-stage] [--json-out <path>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--expected-outcome <label>] [--wait-fifo <path>|--wait-exists <path>|--wait-path-class <class> --wait-name <name>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--wait-create] [--attach <seconds>] [--hold-open <seconds>] [--xpc-timeout-ms <n>] (--profile <id> | <xpc-service-bundle-id>) <probe-id> [probe-args...]
+  entitlement-jail xpc run (--profile <id> | --service <bundle-id>) [--ack-risk <id|bundle-id>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] <probe-id> [probe-args...]
+  entitlement-jail xpc session (--profile <id> | --service <bundle-id>) [--ack-risk <id|bundle-id>] [--plan-id <id>] [--correlation-id <id>] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
   entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
   entitlement-jail verify-evidence
   entitlement-jail inspect-macho <service-id|main|path>
@@ -474,24 +475,10 @@ fn load_profiles_manifest(app_root: &Path) -> (profiles::ProfilesManifest, PathB
     (manifest, profiles_path)
 }
 
-fn resolve_profile_bundle_id(profile_id: &str) -> Result<String, String> {
-    let app_root = resolve_app_root();
-    let (manifest, _) = load_profiles_manifest(&app_root);
-    let profile = profiles::find_profile(&manifest, profile_id)
-        .ok_or_else(|| format!("unknown profile: {profile_id}"))?;
-    if profile.kind != "probe" {
-        return Err(format!(
-            "profile is not a probe service: {} (kind={})",
-            profile.profile_id, profile.kind
-        ));
-    }
-    Ok(profile.bundle_id.clone())
-}
-
 fn run_xpc_probe(service_id: &str, probe_id: &str, probe_args: &[&str]) -> Result<(String, i32, String), String> {
     let cmd_path = resolve_contents_macos_tool("xpc-probe-client")?;
     let mut cmd = Command::new(&cmd_path);
-    cmd.arg(service_id).arg(probe_id).args(probe_args);
+    cmd.arg("run").arg(service_id).arg(probe_id).args(probe_args);
     let output = cmd
         .output()
         .map_err(|e| format!("spawn failed for {}: {e}", cmd_path.display()))?;
@@ -1597,125 +1584,31 @@ fn main() {
             }
             run_and_wait(cmd_path, args[2..].to_vec());
         }
-        Some("run-xpc") => {
-            let mut idx = 1;
-            let mut profile_arg: Option<String> = None;
-            let mut ack_risk: Option<String> = None;
-            while idx < args.len() {
-                match args.get(idx).and_then(|s| s.to_str()) {
-                    Some("-h") | Some("--help") => {
-                        print_usage();
-                        return;
-                    }
-                    Some("--profile") => {
-                        if idx + 1 >= args.len() {
-                            eprintln!("missing value for --profile");
-                            print_usage();
-                            std::process::exit(2);
-                        }
-                        if profile_arg.is_some() {
-                            eprintln!("--profile specified multiple times");
-                            print_usage();
-                            std::process::exit(2);
-                        }
-                        let value = args
-                            .get(idx + 1)
-                            .and_then(|s| s.to_str())
-                            .unwrap_or_else(|| {
-                                eprintln!("invalid value for --profile");
-                                std::process::exit(2);
-                            });
-                        profile_arg = Some(value.to_string());
-                        idx += 2;
-                    }
-                    Some("--ack-risk") => {
-                        if idx + 1 >= args.len() {
-                            eprintln!("missing value for --ack-risk");
-                            print_usage();
-                            std::process::exit(2);
-                        }
-                        if ack_risk.is_some() {
-                            eprintln!("--ack-risk specified multiple times");
-                            print_usage();
-                            std::process::exit(2);
-                        }
-                        let value = args
-                            .get(idx + 1)
-                            .and_then(|s| s.to_str())
-                            .unwrap_or_else(|| {
-                                eprintln!("invalid value for --ack-risk");
-                                std::process::exit(2);
-                            });
-                        ack_risk = Some(value.to_string());
-                        idx += 2;
-                    }
-                    Some("--log-sandbox") => {
-                        eprintln!("--log-sandbox has been removed; use --log-stream or sandbox-log-observer instead");
-                        print_usage();
-                        std::process::exit(2);
-                    }
-                    Some("--log-stream")
-                    | Some("--log-path-class")
-                    | Some("--log-name")
-                    | Some("--log-predicate")
-                    | Some("--attach-report")
-                    | Some("--preload-dylib")
-                    | Some("--json-out")
-                    | Some("--observer-duration")
-                    | Some("--observer-format")
-                    | Some("--observer-output")
-                    | Some("--plan-id")
-                    | Some("--row-id")
-                    | Some("--correlation-id")
-                    | Some("--expected-outcome")
-                    | Some("--wait-fifo")
-                    | Some("--wait-exists")
-                    | Some("--wait-path-class")
-                    | Some("--wait-name")
-                    | Some("--wait-timeout-ms")
-                    | Some("--wait-interval-ms")
-                    | Some("--xpc-timeout-ms")
-                    | Some("--attach")
-                    | Some("--hold-open") => {
-                        if idx + 1 >= args.len() {
-                            eprintln!("missing value for {}", args[idx].to_string_lossy());
-                            print_usage();
-                            std::process::exit(2);
-                        }
-                        idx += 2;
-                    }
-                    Some("--observe") | Some("--observer-follow") | Some("--preload-dylib-stage") => {
-                        idx += 1;
-                    }
-                    Some("--wait-create") => {
-                        idx += 1;
-                    }
-                    _ => break,
+        Some("xpc") => {
+            let mode = match args.get(1).and_then(|s| s.to_str()) {
+                Some("-h") | Some("--help") => {
+                    print_usage();
+                    return;
                 }
-            }
-            let positional = args.len().saturating_sub(idx);
-            if profile_arg.is_some() {
-                if positional < 1 {
+                Some("run") => "run",
+                Some("session") => "session",
+                Some(other) => {
+                    eprintln!("unknown xpc subcommand: {other}");
                     print_usage();
                     std::process::exit(2);
                 }
-            } else if positional < 2 {
-                print_usage();
-                std::process::exit(2);
-            }
-            let profile_selected = profile_arg.is_some();
-            let first_positional = if profile_selected {
-                args.get(idx)
-                    .and_then(|s| s.to_str())
-                    .map(|s| s.to_string())
-            } else {
-                None
+                None => {
+                    eprintln!("missing xpc subcommand (expected: run|session)");
+                    print_usage();
+                    std::process::exit(2);
+                }
             };
+
             let cmd_path = match resolve_contents_macos_tool("xpc-probe-client") {
                 Ok(p) => p,
                 Err(err) => {
                     eprintln!("{err}\n");
-                    eprintln!("note: xpc mode requires the embedded `xpc-probe-client` tool under Contents/MacOS.");
+                    eprintln!("note: xpc commands require the embedded `xpc-probe-client` tool under Contents/MacOS.");
                     std::process::exit(2);
                 }
             };
@@ -1723,223 +1616,552 @@ fn main() {
                 eprintln!("{err}");
                 std::process::exit(2);
             }
-            let mut forward_args: Vec<OsString> = Vec::new();
-            let mut i = 1;
-            while i < args.len() {
-                let arg = args.get(i).and_then(|s| s.to_str()).unwrap_or("");
-                if arg == "--profile" || arg == "--ack-risk" {
-                    i += 2;
-                    continue;
-                }
-                forward_args.push(args[i].clone());
-                i += 1;
-            }
-
-            if let Some(profile_id) = profile_arg {
-                let service_id = match resolve_profile_bundle_id(&profile_id) {
-                    Ok(id) => id,
-                    Err(err) => {
-                        eprintln!("{err}");
-                        std::process::exit(2);
-                    }
-                };
-                let mut insert_idx = 0usize;
-                while insert_idx < forward_args.len() {
-                    match forward_args.get(insert_idx).and_then(|s| s.to_str()) {
-                        Some("--log-stream")
-                        | Some("--log-path-class")
-                        | Some("--log-name")
-                        | Some("--log-predicate")
-                        | Some("--attach-report")
-                        | Some("--preload-dylib")
-                        | Some("--json-out")
-                        | Some("--observer-duration")
-                        | Some("--observer-format")
-                        | Some("--observer-output")
-                        | Some("--plan-id")
-                        | Some("--row-id")
-                        | Some("--correlation-id")
-                        | Some("--expected-outcome")
-                        | Some("--wait-fifo")
-                        | Some("--wait-exists")
-                        | Some("--wait-path-class")
-                        | Some("--wait-name")
-                        | Some("--wait-timeout-ms")
-                        | Some("--wait-interval-ms")
-                        | Some("--xpc-timeout-ms")
-                        | Some("--attach")
-                        | Some("--hold-open") => {
-                            insert_idx += 2;
-                        }
-                        Some("--wait-create")
-                        | Some("--observe")
-                        | Some("--observer-follow")
-                        | Some("--preload-dylib-stage") => {
-                            insert_idx += 1;
-                        }
-                        _ => break,
-                    }
-                }
-                forward_args.insert(insert_idx, OsString::from(service_id));
-            } else {
-                let mut insert_idx = 0usize;
-                while insert_idx < forward_args.len() {
-                    match forward_args.get(insert_idx).and_then(|s| s.to_str()) {
-                        Some("--log-stream")
-                        | Some("--log-path-class")
-                        | Some("--log-name")
-                        | Some("--log-predicate")
-                        | Some("--attach-report")
-                        | Some("--preload-dylib")
-                        | Some("--json-out")
-                        | Some("--observer-duration")
-                        | Some("--observer-format")
-                        | Some("--observer-output")
-                        | Some("--plan-id")
-                        | Some("--row-id")
-                        | Some("--correlation-id")
-                        | Some("--expected-outcome")
-                        | Some("--wait-fifo")
-                        | Some("--wait-exists")
-                        | Some("--wait-path-class")
-                        | Some("--wait-name")
-                        | Some("--wait-timeout-ms")
-                        | Some("--wait-interval-ms")
-                        | Some("--xpc-timeout-ms")
-                        | Some("--attach")
-                        | Some("--hold-open") => {
-                            insert_idx += 2;
-                        }
-                        Some("--wait-create")
-                        | Some("--observe")
-                        | Some("--observer-follow")
-                        | Some("--preload-dylib-stage") => {
-                            insert_idx += 1;
-                        }
-                        _ => break,
-                    }
-                }
-                if insert_idx >= forward_args.len() {
-                    eprintln!("missing service bundle id");
-                    print_usage();
-                    std::process::exit(2);
-                }
-            }
 
             let app_root = resolve_app_root();
-            let profiles_manifest = match std::fs::metadata(profiles::profiles_path_from_app_root(&app_root)) {
-                Ok(_) => Some(load_profiles_manifest(&app_root).0),
-                Err(_) => None,
-            };
-            if profile_selected {
-                if let (Some(manifest), Some(positional)) =
-                    (profiles_manifest.as_ref(), first_positional.as_ref())
-                {
-                    if resolve_profile_by_bundle_id(manifest, positional).is_some() {
-                        eprintln!("--profile cannot be combined with an explicit service id");
+            let (profiles_manifest, _) = load_profiles_manifest(&app_root);
+
+            match mode {
+                "run" => {
+                    let mut profile_arg: Option<String> = None;
+                    let mut service_arg: Option<String> = None;
+                    let mut ack_risk: Option<String> = None;
+                    let mut plan_id: Option<String> = None;
+                    let mut row_id: Option<String> = None;
+                    let mut correlation_id: Option<String> = None;
+
+                    let mut idx = 2usize;
+                    while idx < args.len() {
+                        let arg = match args.get(idx).and_then(|s| s.to_str()) {
+                            Some(value) => value,
+                            None => break,
+                        };
+                        if arg == "--" {
+                            idx += 1;
+                            break;
+                        }
+                        if !arg.starts_with('-') {
+                            break;
+                        }
+                        match arg {
+                            "-h" | "--help" => {
+                                print_usage();
+                                return;
+                            }
+                            "--profile" => {
+                                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                                let value = value.ok_or_else(|| "missing value for --profile".to_string());
+                                match value {
+                                    Ok(v) => {
+                                        if profile_arg.is_some() {
+                                            eprintln!("--profile specified multiple times");
+                                            print_usage();
+                                            std::process::exit(2);
+                                        }
+                                        profile_arg = Some(v.to_string());
+                                    }
+                                    Err(err) => {
+                                        eprintln!("{err}");
+                                        print_usage();
+                                        std::process::exit(2);
+                                    }
+                                }
+                                idx += 2;
+                            }
+                            "--service" => {
+                                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                                let value = value.ok_or_else(|| "missing value for --service".to_string());
+                                match value {
+                                    Ok(v) => {
+                                        if service_arg.is_some() {
+                                            eprintln!("--service specified multiple times");
+                                            print_usage();
+                                            std::process::exit(2);
+                                        }
+                                        service_arg = Some(v.to_string());
+                                    }
+                                    Err(err) => {
+                                        eprintln!("{err}");
+                                        print_usage();
+                                        std::process::exit(2);
+                                    }
+                                }
+                                idx += 2;
+                            }
+                            "--ack-risk" => {
+                                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                                let value = value.ok_or_else(|| "missing value for --ack-risk".to_string());
+                                match value {
+                                    Ok(v) => {
+                                        if ack_risk.is_some() {
+                                            eprintln!("--ack-risk specified multiple times");
+                                            print_usage();
+                                            std::process::exit(2);
+                                        }
+                                        ack_risk = Some(v.to_string());
+                                    }
+                                    Err(err) => {
+                                        eprintln!("{err}");
+                                        print_usage();
+                                        std::process::exit(2);
+                                    }
+                                }
+                                idx += 2;
+                            }
+                            "--plan-id" => {
+                                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                                let value = value.ok_or_else(|| "missing value for --plan-id".to_string());
+                                match value {
+                                    Ok(v) => plan_id = Some(v.to_string()),
+                                    Err(err) => {
+                                        eprintln!("{err}");
+                                        print_usage();
+                                        std::process::exit(2);
+                                    }
+                                }
+                                idx += 2;
+                            }
+                            "--row-id" => {
+                                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                                let value = value.ok_or_else(|| "missing value for --row-id".to_string());
+                                match value {
+                                    Ok(v) => row_id = Some(v.to_string()),
+                                    Err(err) => {
+                                        eprintln!("{err}");
+                                        print_usage();
+                                        std::process::exit(2);
+                                    }
+                                }
+                                idx += 2;
+                            }
+                            "--correlation-id" => {
+                                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                                let value =
+                                    value.ok_or_else(|| "missing value for --correlation-id".to_string());
+                                match value {
+                                    Ok(v) => correlation_id = Some(v.to_string()),
+                                    Err(err) => {
+                                        eprintln!("{err}");
+                                        print_usage();
+                                        std::process::exit(2);
+                                    }
+                                }
+                                idx += 2;
+                            }
+                            other => {
+                                eprintln!("unknown argument for xpc run: {other}");
+                                print_usage();
+                                std::process::exit(2);
+                            }
+                        }
+                    }
+
+                    if profile_arg.is_some() && service_arg.is_some() {
+                        eprintln!("--profile cannot be combined with --service");
                         print_usage();
                         std::process::exit(2);
                     }
-                }
-            }
 
-            let service_id = {
-                let mut insert_idx = 0usize;
-                while insert_idx < forward_args.len() {
-                    match forward_args.get(insert_idx).and_then(|s| s.to_str()) {
-                        Some("--log-stream")
-                        | Some("--log-path-class")
-                        | Some("--log-name")
-                        | Some("--log-predicate")
-                        | Some("--attach-report")
-                        | Some("--preload-dylib")
-                        | Some("--json-out")
-                        | Some("--observer-duration")
-                        | Some("--observer-format")
-                        | Some("--observer-output")
-                        | Some("--plan-id")
-                        | Some("--row-id")
-                        | Some("--correlation-id")
-                        | Some("--expected-outcome")
-                        | Some("--wait-fifo")
-                        | Some("--wait-exists")
-                        | Some("--wait-path-class")
-                        | Some("--wait-name")
-                        | Some("--wait-timeout-ms")
-                        | Some("--wait-interval-ms")
-                        | Some("--xpc-timeout-ms")
-                        | Some("--attach")
-                        | Some("--hold-open") => {
-                            insert_idx += 2;
+                    let target_profile = profile_arg
+                        .as_ref()
+                        .and_then(|id| profiles::find_profile(&profiles_manifest, id));
+
+                    let service_id = if let Some(profile) = target_profile {
+                        if profile.kind != "probe" {
+                            eprintln!(
+                                "profile is not a probe service: {} (kind={})",
+                                profile.profile_id, profile.kind
+                            );
+                            std::process::exit(2);
                         }
-                        Some("--wait-create")
-                        | Some("--observe")
-                        | Some("--observer-follow")
-                        | Some("--preload-dylib-stage") => {
-                            insert_idx += 1;
-                        }
-                        _ => break,
-                    }
-                }
-                forward_args
-                    .get(insert_idx)
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_string()
-            };
-
-            let profile = profiles_manifest
-                .as_ref()
-                .and_then(|manifest| profiles::find_profile(manifest, &service_id)
-                    .or_else(|| resolve_profile_by_bundle_id(manifest, &service_id)));
-            let (gate, reasons, label) = risk_gate_for_profile(profile);
-            let require_ack = matches!(gate, RiskGate::RequireAck);
-            let warn_only = matches!(gate, RiskGate::Warn);
-
-            if warn_only {
-                let profile_id = profile.map(|p| p.profile_id.clone());
-                let name = label
-                    .clone()
-                    .or_else(|| profile_id.clone())
-                    .unwrap_or_else(|| service_id.clone());
-                if reasons.is_empty() {
-                    eprintln!("warning: profile {name} is tier 1 (some concern)");
-                } else {
-                    eprintln!("warning: profile {name} is tier 1 (reasons: {})", reasons.join(", "));
-                }
-            }
-
-            if require_ack {
-                let profile_id = profile.map(|p| p.profile_id.clone());
-                let ack_ok = ack_risk
-                    .as_ref()
-                    .map(|ack| {
-                        ack == &service_id
-                            || profile_id
-                                .as_ref()
-                                .map(|id| ack == id)
-                                .unwrap_or(false)
-                    })
-                    .unwrap_or(false);
-                if !ack_ok {
-                    let name = label
-                        .or_else(|| profile_id.clone())
-                        .unwrap_or_else(|| service_id.clone());
-                    let ack_hint = profile_id.unwrap_or_else(|| service_id.clone());
-                    let msg = if reasons.is_empty() {
-                        format!("profile {name} is tier 2 (high concern); re-run with --ack-risk {ack_hint}")
+                        profile.bundle_id.clone()
+                    } else if let Some(service_id) = service_arg.as_ref() {
+                        service_id.clone()
                     } else {
-                        format!(
-                            "profile {name} is tier 2 (reasons: {}); re-run with --ack-risk {ack_hint}",
-                            reasons.join(", ")
-                        )
+                        eprintln!("missing --profile or --service");
+                        print_usage();
+                        std::process::exit(2);
                     };
-                    eprintln!("{msg}");
-                    std::process::exit(2);
-                }
-            }
 
-            run_and_wait(cmd_path, forward_args);
+                    let profile = target_profile.or_else(|| {
+                        let profile = resolve_profile_by_bundle_id(&profiles_manifest, &service_id);
+                        if let Some(profile) = profile {
+                            if profile.kind != "probe" {
+                                eprintln!(
+                                    "service is not a probe profile: {} (kind={})",
+                                    profile.profile_id, profile.kind
+                                );
+                                std::process::exit(2);
+                            }
+                        }
+                        profile
+                    });
+
+                    let (gate, reasons, label) = risk_gate_for_profile(profile);
+                    let require_ack = matches!(gate, RiskGate::RequireAck);
+                    let warn_only = matches!(gate, RiskGate::Warn);
+
+                    if warn_only {
+                        let profile_id = profile.map(|p| p.profile_id.clone());
+                        let name = label
+                            .clone()
+                            .or_else(|| profile_id.clone())
+                            .unwrap_or_else(|| service_id.clone());
+                        if reasons.is_empty() {
+                            eprintln!("warning: profile {name} is tier 1 (some concern)");
+                        } else {
+                            eprintln!(
+                                "warning: profile {name} is tier 1 (reasons: {})",
+                                reasons.join(", ")
+                            );
+                        }
+                    }
+
+                    if require_ack {
+                        let profile_id = profile.map(|p| p.profile_id.clone());
+                        let ack_ok = ack_risk
+                            .as_ref()
+                            .map(|ack| {
+                                ack == &service_id
+                                    || profile_id
+                                        .as_ref()
+                                        .map(|id| ack == id)
+                                        .unwrap_or(false)
+                            })
+                            .unwrap_or(false);
+                        if !ack_ok {
+                            let name = label
+                                .or_else(|| profile_id.clone())
+                                .unwrap_or_else(|| service_id.clone());
+                            let ack_hint = profile_id.unwrap_or_else(|| service_id.clone());
+                            let msg = if reasons.is_empty() {
+                                format!("profile {name} is tier 2 (high concern); re-run with --ack-risk {ack_hint}")
+                            } else {
+                                format!(
+                                    "profile {name} is tier 2 (reasons: {}); re-run with --ack-risk {ack_hint}",
+                                    reasons.join(", ")
+                                )
+                            };
+                            eprintln!("{msg}");
+                            std::process::exit(2);
+                        }
+                    }
+
+                    let probe_id = match args.get(idx).and_then(|s| s.to_str()) {
+                        Some(probe) => probe.to_string(),
+                        None => {
+                            eprintln!("missing probe id for xpc run");
+                            print_usage();
+                            std::process::exit(2);
+                        }
+                    };
+                    let probe_args: Vec<OsString> = args.iter().skip(idx + 1).cloned().collect();
+
+                    let mut forward_args: Vec<OsString> = Vec::new();
+                    forward_args.push(OsString::from("run"));
+                    if let Some(plan_id) = plan_id {
+                        forward_args.push(OsString::from("--plan-id"));
+                        forward_args.push(OsString::from(plan_id));
+                    }
+                    if let Some(row_id) = row_id {
+                        forward_args.push(OsString::from("--row-id"));
+                        forward_args.push(OsString::from(row_id));
+                    }
+                    if let Some(correlation_id) = correlation_id {
+                        forward_args.push(OsString::from("--correlation-id"));
+                        forward_args.push(OsString::from(correlation_id));
+                    }
+                    forward_args.push(OsString::from(service_id));
+                    forward_args.push(OsString::from(probe_id));
+                    forward_args.extend(probe_args);
+
+                    run_and_wait(cmd_path, forward_args);
+                }
+                "session" => {
+                    let mut profile_arg: Option<String> = None;
+                    let mut service_arg: Option<String> = None;
+                    let mut ack_risk: Option<String> = None;
+                    let mut plan_id: Option<String> = None;
+                    let mut correlation_id: Option<String> = None;
+                    let mut wait_spec: Option<String> = None;
+                    let mut wait_timeout_ms: Option<String> = None;
+                    let mut wait_interval_ms: Option<String> = None;
+                    let mut xpc_timeout_ms: Option<String> = None;
+
+                    let mut idx = 2usize;
+                    while idx < args.len() {
+                        let arg = match args.get(idx).and_then(|s| s.to_str()) {
+                            Some(value) => value,
+                            None => break,
+                        };
+                        if arg == "--" {
+                            idx += 1;
+                            break;
+                        }
+                        if !arg.starts_with('-') {
+                            break;
+                        }
+                        match arg {
+                            "-h" | "--help" => {
+                                print_usage();
+                                return;
+                            }
+                            "--profile" => {
+                                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                                let value = value.ok_or_else(|| "missing value for --profile".to_string());
+                                match value {
+                                    Ok(v) => profile_arg = Some(v.to_string()),
+                                    Err(err) => {
+                                        eprintln!("{err}");
+                                        print_usage();
+                                        std::process::exit(2);
+                                    }
+                                }
+                                idx += 2;
+                            }
+                            "--service" => {
+                                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                                let value = value.ok_or_else(|| "missing value for --service".to_string());
+                                match value {
+                                    Ok(v) => service_arg = Some(v.to_string()),
+                                    Err(err) => {
+                                        eprintln!("{err}");
+                                        print_usage();
+                                        std::process::exit(2);
+                                    }
+                                }
+                                idx += 2;
+                            }
+                            "--ack-risk" => {
+                                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                                let value = value.ok_or_else(|| "missing value for --ack-risk".to_string());
+                                match value {
+                                    Ok(v) => ack_risk = Some(v.to_string()),
+                                    Err(err) => {
+                                        eprintln!("{err}");
+                                        print_usage();
+                                        std::process::exit(2);
+                                    }
+                                }
+                                idx += 2;
+                            }
+                            "--plan-id" => {
+                                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                                let value = value.ok_or_else(|| "missing value for --plan-id".to_string());
+                                match value {
+                                    Ok(v) => plan_id = Some(v.to_string()),
+                                    Err(err) => {
+                                        eprintln!("{err}");
+                                        print_usage();
+                                        std::process::exit(2);
+                                    }
+                                }
+                                idx += 2;
+                            }
+                            "--correlation-id" => {
+                                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                                let value =
+                                    value.ok_or_else(|| "missing value for --correlation-id".to_string());
+                                match value {
+                                    Ok(v) => correlation_id = Some(v.to_string()),
+                                    Err(err) => {
+                                        eprintln!("{err}");
+                                        print_usage();
+                                        std::process::exit(2);
+                                    }
+                                }
+                                idx += 2;
+                            }
+                            "--wait" => {
+                                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                                let value = value.ok_or_else(|| "missing value for --wait".to_string());
+                                match value {
+                                    Ok(v) => wait_spec = Some(v.to_string()),
+                                    Err(err) => {
+                                        eprintln!("{err}");
+                                        print_usage();
+                                        std::process::exit(2);
+                                    }
+                                }
+                                idx += 2;
+                            }
+                            "--wait-timeout-ms" => {
+                                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                                let value =
+                                    value.ok_or_else(|| "missing value for --wait-timeout-ms".to_string());
+                                match value {
+                                    Ok(v) => wait_timeout_ms = Some(v.to_string()),
+                                    Err(err) => {
+                                        eprintln!("{err}");
+                                        print_usage();
+                                        std::process::exit(2);
+                                    }
+                                }
+                                idx += 2;
+                            }
+                            "--wait-interval-ms" => {
+                                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                                let value =
+                                    value.ok_or_else(|| "missing value for --wait-interval-ms".to_string());
+                                match value {
+                                    Ok(v) => wait_interval_ms = Some(v.to_string()),
+                                    Err(err) => {
+                                        eprintln!("{err}");
+                                        print_usage();
+                                        std::process::exit(2);
+                                    }
+                                }
+                                idx += 2;
+                            }
+                            "--xpc-timeout-ms" => {
+                                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                                let value =
+                                    value.ok_or_else(|| "missing value for --xpc-timeout-ms".to_string());
+                                match value {
+                                    Ok(v) => xpc_timeout_ms = Some(v.to_string()),
+                                    Err(err) => {
+                                        eprintln!("{err}");
+                                        print_usage();
+                                        std::process::exit(2);
+                                    }
+                                }
+                                idx += 2;
+                            }
+                            other => {
+                                eprintln!("unknown argument for xpc session: {other}");
+                                print_usage();
+                                std::process::exit(2);
+                            }
+                        }
+                    }
+
+                    if idx != args.len() {
+                        eprintln!("xpc session does not take positional arguments (commands are read from stdin)");
+                        print_usage();
+                        std::process::exit(2);
+                    }
+                    if profile_arg.is_some() && service_arg.is_some() {
+                        eprintln!("--profile cannot be combined with --service");
+                        print_usage();
+                        std::process::exit(2);
+                    }
+
+                    let target_profile = profile_arg
+                        .as_ref()
+                        .and_then(|id| profiles::find_profile(&profiles_manifest, id));
+
+                    let service_id = if let Some(profile) = target_profile {
+                        if profile.kind != "probe" {
+                            eprintln!(
+                                "profile is not a probe service: {} (kind={})",
+                                profile.profile_id, profile.kind
+                            );
+                            std::process::exit(2);
+                        }
+                        profile.bundle_id.clone()
+                    } else if let Some(service_id) = service_arg.as_ref() {
+                        service_id.clone()
+                    } else {
+                        eprintln!("missing --profile or --service");
+                        print_usage();
+                        std::process::exit(2);
+                    };
+
+                    let profile = target_profile.or_else(|| {
+                        let profile = resolve_profile_by_bundle_id(&profiles_manifest, &service_id);
+                        if let Some(profile) = profile {
+                            if profile.kind != "probe" {
+                                eprintln!(
+                                    "service is not a probe profile: {} (kind={})",
+                                    profile.profile_id, profile.kind
+                                );
+                                std::process::exit(2);
+                            }
+                        }
+                        profile
+                    });
+
+                    let (gate, reasons, label) = risk_gate_for_profile(profile);
+                    let require_ack = matches!(gate, RiskGate::RequireAck);
+                    let warn_only = matches!(gate, RiskGate::Warn);
+
+                    if warn_only {
+                        let profile_id = profile.map(|p| p.profile_id.clone());
+                        let name = label
+                            .clone()
+                            .or_else(|| profile_id.clone())
+                            .unwrap_or_else(|| service_id.clone());
+                        if reasons.is_empty() {
+                            eprintln!("warning: profile {name} is tier 1 (some concern)");
+                        } else {
+                            eprintln!(
+                                "warning: profile {name} is tier 1 (reasons: {})",
+                                reasons.join(", ")
+                            );
+                        }
+                    }
+
+                    if require_ack {
+                        let profile_id = profile.map(|p| p.profile_id.clone());
+                        let ack_ok = ack_risk
+                            .as_ref()
+                            .map(|ack| {
+                                ack == &service_id
+                                    || profile_id
+                                        .as_ref()
+                                        .map(|id| ack == id)
+                                        .unwrap_or(false)
+                            })
+                            .unwrap_or(false);
+                        if !ack_ok {
+                            let name = label
+                                .or_else(|| profile_id.clone())
+                                .unwrap_or_else(|| service_id.clone());
+                            let ack_hint = profile_id.unwrap_or_else(|| service_id.clone());
+                            let msg = if reasons.is_empty() {
+                                format!("profile {name} is tier 2 (high concern); re-run with --ack-risk {ack_hint}")
+                            } else {
+                                format!(
+                                    "profile {name} is tier 2 (reasons: {}); re-run with --ack-risk {ack_hint}",
+                                    reasons.join(", ")
+                                )
+                            };
+                            eprintln!("{msg}");
+                            std::process::exit(2);
+                        }
+                    }
+
+                    let mut forward_args: Vec<OsString> = Vec::new();
+                    forward_args.push(OsString::from("session"));
+                    if let Some(plan_id) = plan_id {
+                        forward_args.push(OsString::from("--plan-id"));
+                        forward_args.push(OsString::from(plan_id));
+                    }
+                    if let Some(correlation_id) = correlation_id {
+                        forward_args.push(OsString::from("--correlation-id"));
+                        forward_args.push(OsString::from(correlation_id));
+                    }
+                    if let Some(wait_spec) = wait_spec {
+                        forward_args.push(OsString::from("--wait"));
+                        forward_args.push(OsString::from(wait_spec));
+                    }
+                    if let Some(wait_timeout_ms) = wait_timeout_ms {
+                        forward_args.push(OsString::from("--wait-timeout-ms"));
+                        forward_args.push(OsString::from(wait_timeout_ms));
+                    }
+                    if let Some(wait_interval_ms) = wait_interval_ms {
+                        forward_args.push(OsString::from("--wait-interval-ms"));
+                        forward_args.push(OsString::from(wait_interval_ms));
+                    }
+                    if let Some(xpc_timeout_ms) = xpc_timeout_ms {
+                        forward_args.push(OsString::from("--xpc-timeout-ms"));
+                        forward_args.push(OsString::from(xpc_timeout_ms));
+                    }
+                    forward_args.push(OsString::from(service_id));
+
+                    run_and_wait(cmd_path, forward_args);
+                }
+                _ => unreachable!(),
+            }
         }
         Some("quarantine-lab") => {
             if args.len() < 3 {

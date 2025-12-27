@@ -146,7 +146,7 @@ private func printUsage() {
 
         notes:
           - Baseline/policy run the substrate (unsandboxed vs `sandbox-exec`).
-          - Entitlement runs use `entitlement-jail run-xpc` / `quarantine-lab` against XPC targets.
+          - Entitlement runs use `entitlement-jail xpc run` / `quarantine-lab` against XPC targets.
           - Rows are never dropped: missing services become explicit service_refusal results.
         """,
         stderr
@@ -395,7 +395,7 @@ private func makeEntitlementCommand(
         let svc = node.xpc_probe_service_bundle_id
         let hint = SandboxLogHint(term: xpcExecutableName(fromBundleId: svc) ?? svc)
         return CommandSpec(
-            argv: [ej, "run-xpc", "--plan-id", planId, "--row-id", rowId, svc, probe.probe_id] + adjusted,
+            argv: [ej, "xpc", "run", "--plan-id", planId, "--row-id", rowId, "--service", svc, probe.probe_id] + adjusted,
             logHint: hint,
             serviceBundleId: svc
         )

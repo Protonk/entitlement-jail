@@ -1,7 +1,15 @@
 import Foundation
 
 @objc public protocol ProbeServiceProtocol {
-    func runProbe(_ request: Data, withReply reply: @escaping (Data) -> Void)
+    func openSession(_ request: Data, withReply reply: @escaping (Data) -> Void)
+    func keepaliveSession(_ request: Data, withReply reply: @escaping (Data) -> Void)
+    func runProbeInSession(_ request: Data, withReply reply: @escaping (Data) -> Void)
+    func closeSession(_ request: Data, withReply reply: @escaping (Data) -> Void)
+}
+
+// Bidirectional XPC: the service can emit lifecycle events to the client (JSON-over-Data).
+@objc public protocol SessionEventSinkProtocol {
+    func emitEvent(_ event: Data)
 }
 
 @objc public protocol QuarantineLabProtocol {
@@ -9,30 +17,195 @@ import Foundation
 }
 
 public struct WaitSpec: Codable {
-    public var mode: String?
-    public var path: String?
-    public var path_class: String?
-    public var name: String?
+    public var spec: String
     public var timeout_ms: Int?
     public var interval_ms: Int?
-    public var create: Bool?
 
     public init(
-        mode: String? = nil,
-        path: String? = nil,
-        path_class: String? = nil,
-        name: String? = nil,
+        spec: String,
         timeout_ms: Int? = nil,
-        interval_ms: Int? = nil,
-        create: Bool? = nil
+        interval_ms: Int? = nil
     ) {
-        self.mode = mode
-        self.path = path
-        self.path_class = path_class
-        self.name = name
+        self.spec = spec
         self.timeout_ms = timeout_ms
         self.interval_ms = interval_ms
-        self.create = create
+    }
+}
+
+public struct SessionOpenRequest: Codable {
+    public var plan_id: String?
+    public var correlation_id: String?
+    public var wait_spec: WaitSpec?
+
+    public init(
+        plan_id: String? = nil,
+        correlation_id: String? = nil,
+        wait_spec: WaitSpec? = nil
+    ) {
+        self.plan_id = plan_id
+        self.correlation_id = correlation_id
+        self.wait_spec = wait_spec
+    }
+}
+
+public struct SessionOpenResponse: Codable {
+    public var schema_version: Int
+    public var rc: Int
+    public var error: String?
+    public var session_token: String?
+    public var pid: Int?
+    public var service_bundle_id: String?
+    public var service_name: String?
+    public var service_version: String?
+    public var service_build: String?
+    public var wait_mode: String?
+    public var wait_path: String?
+
+    public init(
+        schema_version: Int = 2,
+        rc: Int,
+        error: String? = nil,
+        session_token: String? = nil,
+        pid: Int? = nil,
+        service_bundle_id: String? = nil,
+        service_name: String? = nil,
+        service_version: String? = nil,
+        service_build: String? = nil,
+        wait_mode: String? = nil,
+        wait_path: String? = nil
+    ) {
+        self.schema_version = schema_version
+        self.rc = rc
+        self.error = error
+        self.session_token = session_token
+        self.pid = pid
+        self.service_bundle_id = service_bundle_id
+        self.service_name = service_name
+        self.service_version = service_version
+        self.service_build = service_build
+        self.wait_mode = wait_mode
+        self.wait_path = wait_path
+    }
+}
+
+public struct SessionKeepaliveRequest: Codable {
+    public var session_token: String
+
+    public init(session_token: String) {
+        self.session_token = session_token
+    }
+}
+
+public struct SessionCloseRequest: Codable {
+    public var session_token: String
+
+    public init(session_token: String) {
+        self.session_token = session_token
+    }
+}
+
+public struct SessionRunProbeRequest: Codable {
+    public var session_token: String
+    public var probe_request: RunProbeRequest
+
+    public init(session_token: String, probe_request: RunProbeRequest) {
+        self.session_token = session_token
+        self.probe_request = probe_request
+    }
+}
+
+public struct SessionControlResponse: Codable {
+    public var schema_version: Int
+    public var rc: Int
+    public var error: String?
+
+    public init(schema_version: Int = 2, rc: Int, error: String? = nil) {
+        self.schema_version = schema_version
+        self.rc = rc
+        self.error = error
+    }
+}
+
+public struct XpcSessionEventData: Codable {
+    public var event: String
+    public var plan_id: String?
+    public var correlation_id: String?
+    public var session_token: String?
+    public var pid: Int?
+    public var service_bundle_id: String?
+    public var service_name: String?
+    public var wait_mode: String?
+    public var wait_path: String?
+    public var trigger_bytes: Int?
+    public var probe_id: String?
+    public var probe_argv: [String]?
+    public var message: String?
+
+    public init(
+        event: String,
+        plan_id: String? = nil,
+        correlation_id: String? = nil,
+        session_token: String? = nil,
+        pid: Int? = nil,
+        service_bundle_id: String? = nil,
+        service_name: String? = nil,
+        wait_mode: String? = nil,
+        wait_path: String? = nil,
+        trigger_bytes: Int? = nil,
+        probe_id: String? = nil,
+        probe_argv: [String]? = nil,
+        message: String? = nil
+    ) {
+        self.event = event
+        self.plan_id = plan_id
+        self.correlation_id = correlation_id
+        self.session_token = session_token
+        self.pid = pid
+        self.service_bundle_id = service_bundle_id
+        self.service_name = service_name
+        self.wait_mode = wait_mode
+        self.wait_path = wait_path
+        self.trigger_bytes = trigger_bytes
+        self.probe_id = probe_id
+        self.probe_argv = probe_argv
+        self.message = message
+    }
+}
+
+public struct XpcSessionErrorData: Codable {
+    public var event: String
+    public var plan_id: String?
+    public var correlation_id: String?
+    public var session_token: String?
+    public var pid: Int?
+    public var service_bundle_id: String?
+    public var service_name: String?
+    public var wait_mode: String?
+    public var wait_path: String?
+    public var error: String
+
+    public init(
+        event: String,
+        plan_id: String? = nil,
+        correlation_id: String? = nil,
+        session_token: String? = nil,
+        pid: Int? = nil,
+        service_bundle_id: String? = nil,
+        service_name: String? = nil,
+        wait_mode: String? = nil,
+        wait_path: String? = nil,
+        error: String
+    ) {
+        self.event = event
+        self.plan_id = plan_id
+        self.correlation_id = correlation_id
+        self.session_token = session_token
+        self.pid = pid
+        self.service_bundle_id = service_bundle_id
+        self.service_name = service_name
+        self.wait_mode = wait_mode
+        self.wait_path = wait_path
+        self.error = error
     }
 }
 
@@ -42,31 +215,19 @@ public struct RunProbeRequest: Codable {
     public var correlation_id: String?
     public var probe_id: String
     public var argv: [String]
-    public var expected_outcome: String?
-    public var preload_dylib_path: String?
-    public var env_overrides: [String: String]?
-    public var wait_spec: WaitSpec?
 
     public init(
-        plan_id: String?,
+        plan_id: String? = nil,
         row_id: String? = nil,
         correlation_id: String? = nil,
         probe_id: String,
-        argv: [String],
-        expected_outcome: String? = nil,
-        preload_dylib_path: String? = nil,
-        env_overrides: [String: String]?,
-        wait_spec: WaitSpec? = nil
+        argv: [String]
     ) {
         self.plan_id = plan_id
         self.row_id = row_id
         self.correlation_id = correlation_id
         self.probe_id = probe_id
         self.argv = argv
-        self.expected_outcome = expected_outcome
-        self.preload_dylib_path = preload_dylib_path
-        self.env_overrides = env_overrides
-        self.wait_spec = wait_spec
     }
 }
 
@@ -77,7 +238,6 @@ public struct RunProbeResponse: Codable {
     public var correlation_id: String?
     public var probe_id: String?
     public var argv: [String]?
-    public var expected_outcome: String?
     public var service_bundle_id: String?
     public var service_name: String?
     public var service_version: String?
@@ -85,7 +245,6 @@ public struct RunProbeResponse: Codable {
     public var started_at_iso8601: String?
     public var ended_at_iso8601: String?
     public var thread_id: String?
-    public var os_status: Int?
     public var rc: Int
     public var stdout: String
     public var stderr: String
@@ -93,21 +252,15 @@ public struct RunProbeResponse: Codable {
     public var errno: Int?
     public var error: String?
     public var details: [String: String]?
-    public var log_capture_status: String?
-    public var log_capture_path: String?
-    public var log_capture_error: String?
-    public var deny_evidence: String?
     public var layer_attribution: LayerAttribution?
-    public var sandbox_log_excerpt_ref: String?
 
     public init(
-        schema_version: Int = 1,
+        schema_version: Int = 2,
         plan_id: String? = nil,
         row_id: String? = nil,
         correlation_id: String? = nil,
         probe_id: String? = nil,
         argv: [String]? = nil,
-        expected_outcome: String? = nil,
         service_bundle_id: String? = nil,
         service_name: String? = nil,
         service_version: String? = nil,
@@ -115,7 +268,6 @@ public struct RunProbeResponse: Codable {
         started_at_iso8601: String? = nil,
         ended_at_iso8601: String? = nil,
         thread_id: String? = nil,
-        os_status: Int? = nil,
         rc: Int,
         stdout: String,
         stderr: String,
@@ -123,12 +275,7 @@ public struct RunProbeResponse: Codable {
         errno: Int? = nil,
         error: String? = nil,
         details: [String: String]? = nil,
-        log_capture_status: String? = nil,
-        log_capture_path: String? = nil,
-        log_capture_error: String? = nil,
-        deny_evidence: String? = nil,
-        layer_attribution: LayerAttribution? = nil,
-        sandbox_log_excerpt_ref: String?
+        layer_attribution: LayerAttribution? = nil
     ) {
         self.schema_version = schema_version
         self.plan_id = plan_id
@@ -136,7 +283,6 @@ public struct RunProbeResponse: Codable {
         self.correlation_id = correlation_id
         self.probe_id = probe_id
         self.argv = argv
-        self.expected_outcome = expected_outcome
         self.service_bundle_id = service_bundle_id
         self.service_name = service_name
         self.service_version = service_version
@@ -144,7 +290,6 @@ public struct RunProbeResponse: Codable {
         self.started_at_iso8601 = started_at_iso8601
         self.ended_at_iso8601 = ended_at_iso8601
         self.thread_id = thread_id
-        self.os_status = os_status
         self.rc = rc
         self.stdout = stdout
         self.stderr = stderr
@@ -152,12 +297,7 @@ public struct RunProbeResponse: Codable {
         self.errno = errno
         self.error = error
         self.details = details
-        self.log_capture_status = log_capture_status
-        self.log_capture_path = log_capture_path
-        self.log_capture_error = log_capture_error
-        self.deny_evidence = deny_evidence
         self.layer_attribution = layer_attribution
-        self.sandbox_log_excerpt_ref = sandbox_log_excerpt_ref
     }
 }
 
@@ -289,7 +429,7 @@ public struct QuarantineWriteResponse: Codable {
     public var layer_attribution: LayerAttribution?
 
     public init(
-        schema_version: Int = 1,
+        schema_version: Int = 2,
         rc: Int,
         normalized_outcome: String,
         error: String? = nil,
@@ -396,7 +536,7 @@ public struct JsonEnvelope<T: Encodable>: Encodable {
     public var data: T
 
     public init(
-        schema_version: Int = 1,
+        schema_version: Int = 2,
         kind: String,
         generated_at_unix_ms: UInt64,
         result: JsonResult,

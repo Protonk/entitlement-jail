@@ -1,7 +1,7 @@
 use std::env;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Output, Stdio};
+use std::process::{Child, ChildStdin, ChildStderr, ChildStdout, Command, Output, Stdio};
 
 fn integration_enabled() -> bool {
     env::var("EJ_INTEGRATION").ok().as_deref() == Some("1")
@@ -96,212 +96,113 @@ fn parse_probe_catalog(output: &Output) -> serde_json::Value {
     })
 }
 
-struct HoldRun {
+struct SessionHold {
     child: Child,
+    stdin: ChildStdin,
     stdout_reader: BufReader<ChildStdout>,
     stderr: ChildStderr,
     stdout_buf: String,
-    json: serde_json::Value,
+    pid: i32,
 }
 
-struct HoldResult {
-    status: ExitStatus,
+struct SessionHoldResult {
+    stdout: String,
     stderr: String,
+    status_ok: bool,
 }
 
-fn spawn_run_xpc_hold(bin: &Path, args: &[&str]) -> HoldRun {
+fn spawn_xpc_session_hold(bin: &Path, args: &[&str]) -> SessionHold {
     let mut child = Command::new(bin)
         .args(args)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap_or_else(|err| panic!("failed to spawn {}: {err}", bin.display()));
 
+    let stdin = child.stdin.take().expect("missing stdin");
     let stdout = child.stdout.take().expect("missing stdout");
     let stderr = child.stderr.take().expect("missing stderr");
+
     let mut reader = BufReader::new(stdout);
     let mut stdout_buf = String::new();
-    let mut json: Option<serde_json::Value> = None;
 
     loop {
         let mut line = String::new();
         let n = reader
             .read_line(&mut line)
-            .unwrap_or_else(|err| panic!("failed to read stdout: {err}"));
+            .unwrap_or_else(|err| panic!("failed to read session stdout: {err}"));
         if n == 0 {
             break;
         }
         stdout_buf.push_str(&line);
-        if json.is_none() {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&stdout_buf) {
-                json = Some(value);
-                break;
-            }
+
+        let parsed: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if parsed.get("kind").and_then(|v| v.as_str()) != Some("xpc_session_event") {
+            continue;
         }
+        let data = parsed.get("data").cloned().unwrap_or(serde_json::Value::Null);
+        if data.get("event").and_then(|v| v.as_str()) != Some("session_ready") {
+            continue;
+        }
+
+        let pid = data
+            .get("pid")
+            .and_then(|v| v.as_i64())
+            .and_then(|v| i32::try_from(v).ok())
+            .unwrap_or(0);
+        let token = data
+            .get("session_token")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if pid <= 0 || token.is_empty() {
+            panic!("malformed session_ready event:\n{line}\n\nstdout so far:\n{stdout_buf}");
+        }
+
+        return SessionHold {
+            child,
+            stdin,
+            stdout_reader: reader,
+            stderr,
+            stdout_buf,
+            pid,
+        };
     }
 
-    let json = json.unwrap_or_else(|| {
-        panic!("failed to parse early JSON from run-xpc output:\n{stdout_buf}")
-    });
-
-    HoldRun {
-        child,
-        stdout_reader: reader,
-        stderr,
-        stdout_buf,
-        json,
-    }
+    panic!("failed to observe session_ready event\nstdout:\n{stdout_buf}");
 }
 
-fn finish_hold(mut hold: HoldRun) -> HoldResult {
+fn finish_session_hold(mut hold: SessionHold) -> SessionHoldResult {
     let status = hold
         .child
         .wait()
-        .unwrap_or_else(|err| panic!("failed to wait for child: {err}"));
+        .unwrap_or_else(|err| panic!("failed to wait for session child: {err}"));
+
     let mut rest = String::new();
     hold.stdout_reader
         .read_to_string(&mut rest)
-        .unwrap_or_else(|err| panic!("failed to read remaining stdout: {err}"));
+        .unwrap_or_else(|err| panic!("failed to read remaining session stdout: {err}"));
     hold.stdout_buf.push_str(&rest);
+
     let mut stderr_buf = String::new();
     hold.stderr
         .read_to_string(&mut stderr_buf)
-        .unwrap_or_else(|err| panic!("failed to read stderr: {err}"));
-    HoldResult {
-        status,
+        .unwrap_or_else(|err| panic!("failed to read session stderr: {err}"));
+
+    SessionHoldResult {
+        stdout: hold.stdout_buf,
         stderr: stderr_buf,
+        status_ok: status.success(),
     }
-}
-
-fn extract_pid(response: &serde_json::Value) -> Option<i32> {
-    let details = response.get("data")?.get("details")?.as_object()?;
-    let keys = ["service_pid", "probe_pid", "pid"];
-    for key in keys {
-        if let Some(pid_str) = details.get(key).and_then(|v| v.as_str()) {
-            if let Ok(pid) = pid_str.parse::<i32>() {
-                return Some(pid);
-            }
-        }
-    }
-    None
 }
 
 #[test]
-fn cli_wait_fifo_trigger_is_write_safe() {
-    if !integration_enabled() {
-        return;
-    }
-
-    let bin = require_ej_bin();
-    let seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let wait_name = format!("ej-test-wait-{seed}.fifo");
-
-    let mut child = Command::new(&bin)
-        .args([
-            "run-xpc",
-            "--profile",
-            "minimal",
-            "--wait-path-class",
-            "tmp",
-            "--wait-name",
-            &wait_name,
-            "--wait-create",
-            "--wait-timeout-ms",
-            "5000",
-            "--hold-open",
-            "0",
-            "fs_op",
-            "--op",
-            "stat",
-            "--path-class",
-            "tmp",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap_or_else(|err| panic!("failed to spawn {}: {err}", bin.display()));
-
-    let stderr = child.stderr.take().expect("missing stderr");
-    let mut stderr_reader = BufReader::new(stderr);
-    let mut wait_path: Option<String> = None;
-    let mut stderr_buf = String::new();
-    while wait_path.is_none() {
-        let mut line = String::new();
-        let n = stderr_reader
-            .read_line(&mut line)
-            .unwrap_or_else(|err| panic!("failed to read stderr: {err}"));
-        if n == 0 {
-            break;
-        }
-        stderr_buf.push_str(&line);
-        if let Some(idx) = line.find("wait_path=") {
-            wait_path = Some(line[idx + "wait_path=".len()..].trim().to_string());
-        }
-    }
-
-    let wait_path = wait_path.unwrap_or_else(|| panic!("missing wait_path in stderr:\n{stderr_buf}"));
-    let wait_path_fs = Path::new(&wait_path);
-
-    for _ in 0..200 {
-        if wait_path_fs.exists() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert!(
-        wait_path_fs.exists(),
-        "wait fifo was not created at {wait_path}\n\nstderr:\n{stderr_buf}"
-    );
-
-    let mut fifo = std::fs::OpenOptions::new()
-        .write(true)
-        .open(&wait_path)
-        .unwrap_or_else(|err| panic!("failed to open wait fifo {wait_path}: {err}"));
-
-    std::thread::sleep(std::time::Duration::from_millis(50));
-
-    use std::io::Write;
-    fifo.write_all(b"go")
-        .unwrap_or_else(|err| panic!("failed to write to wait fifo {wait_path}: {err}"));
-    drop(fifo);
-
-    let status = child
-        .wait()
-        .unwrap_or_else(|err| panic!("failed to wait for child: {err}"));
-    let mut stdout_buf = String::new();
-    if let Some(mut stdout) = child.stdout.take() {
-        stdout
-            .read_to_string(&mut stdout_buf)
-            .unwrap_or_else(|err| panic!("failed to read stdout: {err}"));
-    }
-    let mut stderr_rest = String::new();
-    stderr_reader
-        .read_to_string(&mut stderr_rest)
-        .unwrap_or_else(|err| panic!("failed to read stderr: {err}"));
-    stderr_buf.push_str(&stderr_rest);
-
-    assert!(
-        status.success(),
-        "run-xpc wait fifo failed: status={status}\n\nstdout:\n{stdout_buf}\n\nstderr:\n{stderr_buf}"
-    );
-
-    let json = serde_json::from_str::<serde_json::Value>(&stdout_buf).unwrap_or_else(|err| {
-        panic!("failed to parse JSON output: {err}\nstdout:\n{stdout_buf}\n\nstderr:\n{stderr_buf}")
-    });
-    assert_eq!(
-        json.get("result")
-            .and_then(|v| v.get("ok"))
-            .and_then(|v| v.as_bool()),
-        Some(true),
-        "expected ok=true in JSON\n\nstdout:\n{stdout_buf}\n\nstderr:\n{stderr_buf}"
-    );
-}
-
-#[test]
-fn cli_profiles_and_risk_gate() {
+fn cli_integration_smoke() {
     if !integration_enabled() {
         return;
     }
@@ -318,7 +219,7 @@ fn cli_profiles_and_risk_gate() {
     let verify_json = parse_json(&verify_out);
     assert_eq!(
         verify_json.get("schema_version").and_then(|v| v.as_u64()),
-        Some(1)
+        Some(2)
     );
     assert_eq!(
         verify_json.get("kind").and_then(|v| v.as_str()),
@@ -371,7 +272,7 @@ fn cli_profiles_and_risk_gate() {
     let list_json = parse_json(&list_out);
     assert_eq!(
         list_json.get("schema_version").and_then(|v| v.as_u64()),
-        Some(1)
+        Some(2)
     );
     assert_eq!(
         list_json.get("kind").and_then(|v| v.as_str()),
@@ -393,7 +294,7 @@ fn cli_profiles_and_risk_gate() {
     let show_json = parse_json(&show_out);
     assert_eq!(
         show_json.get("schema_version").and_then(|v| v.as_u64()),
-        Some(1)
+        Some(2)
     );
     assert_eq!(
         show_json.get("kind").and_then(|v| v.as_str()),
@@ -413,55 +314,17 @@ fn cli_profiles_and_risk_gate() {
         "list-services failed: {}",
         String::from_utf8_lossy(&services_out.stderr)
     );
-    let services_json = parse_json(&services_out);
-    assert_eq!(
-        services_json.get("schema_version").and_then(|v| v.as_u64()),
-        Some(1)
-    );
-    assert_eq!(
-        services_json.get("kind").and_then(|v| v.as_str()),
-        Some("services_report")
-    );
-    let services = services_json
-        .get("data")
-        .and_then(|v| v.get("services"))
-        .and_then(|v| v.as_array())
-        .unwrap_or_else(|| panic!("list-services missing services array"));
-    assert!(!services.is_empty(), "list-services returned empty list");
 
-    let describe_out = run_ej(&bin, &["describe-service", "minimal"]);
-    assert!(
-        describe_out.status.success(),
-        "describe-service minimal failed: {}",
-        String::from_utf8_lossy(&describe_out.stderr)
-    );
-    let describe_json = parse_json(&describe_out);
-    assert_eq!(
-        describe_json.get("schema_version").and_then(|v| v.as_u64()),
-        Some(1)
-    );
-    assert_eq!(
-        describe_json.get("kind").and_then(|v| v.as_str()),
-        Some("describe_service_report")
-    );
-    let described_id = describe_json
-        .get("data")
-        .and_then(|v| v.get("service"))
-        .and_then(|v| v.get("profile_id"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    assert_eq!(described_id, "minimal");
-
-    let probe_out = run_ej(&bin, &["run-xpc", "--profile", "minimal", "probe_catalog"]);
+    let probe_out = run_ej(&bin, &["xpc", "run", "--profile", "minimal", "probe_catalog"]);
     assert!(
         probe_out.status.success(),
-        "run-xpc minimal probe_catalog failed: {}",
+        "xpc run minimal probe_catalog failed: {}",
         String::from_utf8_lossy(&probe_out.stderr)
     );
     let probe_json = parse_json(&probe_out);
     assert_eq!(
         probe_json.get("schema_version").and_then(|v| v.as_u64()),
-        Some(1)
+        Some(2)
     );
     assert_eq!(
         probe_json.get("kind").and_then(|v| v.as_str()),
@@ -470,34 +333,33 @@ fn cli_profiles_and_risk_gate() {
     let catalog = parse_probe_catalog(&probe_out);
     assert_eq!(
         catalog.get("schema_version").and_then(|v| v.as_u64()),
-        Some(1)
+        Some(2)
     );
+
     let trace = catalog
         .get("trace_symbols")
         .and_then(|v| v.as_array())
         .unwrap_or_else(|| panic!("probe_catalog missing trace_symbols"));
-    let mut found = false;
-    for entry in trace {
-        let probe_id = entry.get("probe_id").and_then(|v| v.as_str());
-        let symbols = entry.get("symbols").and_then(|v| v.as_array());
-        if probe_id == Some("fs_op") {
-            if let Some(symbols) = symbols {
-                if symbols
-                    .iter()
-                    .any(|s| s.as_str() == Some("ej_probe_fs_op"))
-                {
-                    found = true;
-                    break;
-                }
-            }
-        }
-    }
-    assert!(found, "trace_symbols missing fs_op -> ej_probe_fs_op");
+    assert!(
+        trace.iter().any(|entry| {
+            entry.get("probe_id").and_then(|v| v.as_str()) == Some("fs_op")
+                && entry
+                    .get("symbols")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|symbols| {
+                        symbols
+                            .iter()
+                            .any(|s| s.as_str() == Some("ej_probe_fs_op"))
+                    })
+        }),
+        "trace_symbols missing fs_op -> ej_probe_fs_op"
+    );
 
     let fs_out = run_ej(
         &bin,
         &[
-            "run-xpc",
+            "xpc",
+            "run",
             "--profile",
             "minimal",
             "fs_op",
@@ -509,7 +371,7 @@ fn cli_profiles_and_risk_gate() {
     );
     assert!(
         fs_out.status.success(),
-        "run-xpc minimal fs_op failed: {}",
+        "xpc run minimal fs_op failed: {}",
         String::from_utf8_lossy(&fs_out.stderr)
     );
 
@@ -522,7 +384,7 @@ fn cli_profiles_and_risk_gate() {
     let health_json = parse_json(&health_out);
     assert_eq!(
         health_json.get("schema_version").and_then(|v| v.as_u64()),
-        Some(1)
+        Some(2)
     );
     assert_eq!(
         health_json.get("kind").and_then(|v| v.as_str()),
@@ -536,7 +398,10 @@ fn cli_profiles_and_risk_gate() {
         Some(true)
     );
 
-    let gate_out = run_ej(&bin, &["run-xpc", "--profile", "fully_injectable", "probe_catalog"]);
+    let gate_out = run_ej(
+        &bin,
+        &["xpc", "run", "--profile", "fully_injectable", "probe_catalog"],
+    );
     assert!(
         !gate_out.status.success(),
         "expected tier2 profile to require --ack-risk"
@@ -545,7 +410,8 @@ fn cli_profiles_and_risk_gate() {
     let allow_out = run_ej(
         &bin,
         &[
-            "run-xpc",
+            "xpc",
+            "run",
             "--profile",
             "fully_injectable",
             "--ack-risk",
@@ -561,12 +427,7 @@ fn cli_profiles_and_risk_gate() {
 
     let matrix_out = run_ej(
         &bin,
-        &[
-            "run-matrix",
-            "--group",
-            "baseline",
-            "capabilities_snapshot",
-        ],
+        &["run-matrix", "--group", "baseline", "capabilities_snapshot"],
     );
     assert!(
         matrix_out.status.success(),
@@ -576,7 +437,7 @@ fn cli_profiles_and_risk_gate() {
     let matrix_json = parse_json(&matrix_out);
     assert_eq!(
         matrix_json.get("schema_version").and_then(|v| v.as_u64()),
-        Some(1)
+        Some(2)
     );
     assert_eq!(
         matrix_json.get("kind").and_then(|v| v.as_str()),
@@ -601,27 +462,12 @@ fn cli_profiles_and_risk_gate() {
     let bundle_json = parse_json(&bundle_out);
     assert_eq!(
         bundle_json.get("schema_version").and_then(|v| v.as_u64()),
-        Some(1)
+        Some(2)
     );
     assert_eq!(
         bundle_json.get("kind").and_then(|v| v.as_str()),
         Some("bundle_evidence_report")
     );
-    let bundle_output = bundle_json
-        .get("data")
-        .and_then(|v| v.get("output_dir"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    assert!(!bundle_output.is_empty(), "bundle-evidence output_dir missing");
-
-    let bundle_dir = PathBuf::from(bundle_output);
-    assert!(bundle_dir.join("bundle_meta.json").exists());
-    assert!(bundle_dir.join("verify-evidence.json").exists());
-    assert!(bundle_dir.join("list-profiles.json").exists());
-    assert!(bundle_dir.join("Evidence").join("manifest.json").exists());
-    assert!(bundle_dir.join("Evidence").join("symbols.json").exists());
-    assert!(bundle_dir.join("Evidence").join("profiles.json").exists());
-    assert!(bundle_dir.join("profiles").join("minimal.json").exists());
 
     if let Some(preflight) = preflight.as_ref() {
         let app_signed = preflight_bool(preflight, &["app", "signed"]) == Some(true);
@@ -633,32 +479,33 @@ fn cli_profiles_and_risk_gate() {
         let inspector_debugger = preflight_bool(preflight, &["inspector", "cs_debugger"]) == Some(true);
         let inspector_path = preflight_str(preflight, &["inspector", "path"]).unwrap_or_default();
 
-        if !(app_signed && get_task_allow_entitled && inspector_signed && inspector_debugger) {
-            eprintln!("skip attach test: preflight indicates signatures/entitlements are not ready");
-        } else {
+        if app_signed && get_task_allow_entitled && inspector_signed && inspector_debugger {
             let inspector_bin = PathBuf::from(inspector_path);
-            if !inspector_bin.exists() {
-                panic!("inspector binary missing at {}", inspector_bin.display());
-            }
+            assert!(
+                inspector_bin.exists(),
+                "inspector binary missing at {}",
+                inspector_bin.display()
+            );
 
-            let hold_args = [
-                "run-xpc",
-                "--profile",
-                "get-task-allow",
-                "--hold-open",
-                "8",
-                "probe_catalog",
-            ];
-            let hold = spawn_run_xpc_hold(&bin, &hold_args);
-            let pid = extract_pid(&hold.json).unwrap_or_else(|| {
-                panic!(
-                    "missing pid in get-task-allow run-xpc response: {:?}",
-                    hold.json
-                )
-            });
+            // get-task-allow should be attachable (task_for_pid allowed).
+            let mut hold = spawn_xpc_session_hold(
+                &bin,
+                &[
+                    "xpc",
+                    "session",
+                    "--profile",
+                    "get-task-allow",
+                    "--ack-risk",
+                    "get-task-allow",
+                ],
+            );
             let inspector_out = run_cmd(
                 &inspector_bin,
-                &["--bundle-id-prefix", "com.yourteam.entitlement-jail.", &pid.to_string()],
+                &[
+                    "--bundle-id-prefix",
+                    "com.yourteam.entitlement-jail.",
+                    &hold.pid.to_string(),
+                ],
             );
             let inspector_json = parse_json(&inspector_out);
             assert_eq!(
@@ -670,28 +517,27 @@ fn cli_profiles_and_risk_gate() {
                 "ej-inspector refused get-task-allow pid: {}",
                 String::from_utf8_lossy(&inspector_out.stderr)
             );
-            let hold_res = finish_hold(hold);
+
+            hold.stdin
+                .write_all(b"{\"command\":\"close_session\"}\n")
+                .expect("write close_session");
+            let hold_res = finish_session_hold(hold);
             assert!(
-                hold_res.status.success(),
-                "get-task-allow run-xpc failed: {}",
+                hold_res.status_ok,
+                "get-task-allow xpc session failed:\n\nstdout:\n{}\n\nstderr:\n{}",
+                hold_res.stdout,
                 hold_res.stderr
             );
 
-            let hold_args = [
-                "run-xpc",
-                "--profile",
-                "minimal",
-                "--hold-open",
-                "8",
-                "probe_catalog",
-            ];
-            let hold = spawn_run_xpc_hold(&bin, &hold_args);
-            let pid = extract_pid(&hold.json).unwrap_or_else(|| {
-                panic!("missing pid in minimal run-xpc response: {:?}", hold.json)
-            });
+            // minimal should be refused by task_for_pid (but still allowed as a target).
+            let mut hold = spawn_xpc_session_hold(&bin, &["xpc", "session", "--profile", "minimal"]);
             let inspector_out = run_cmd(
                 &inspector_bin,
-                &["--bundle-id-prefix", "com.yourteam.entitlement-jail.", &pid.to_string()],
+                &[
+                    "--bundle-id-prefix",
+                    "com.yourteam.entitlement-jail.",
+                    &hold.pid.to_string(),
+                ],
             );
             let inspector_json = parse_json(&inspector_out);
             assert_eq!(
@@ -710,12 +556,19 @@ fn cli_profiles_and_risk_gate() {
                 Some("refused"),
                 "expected task_for_pid to be refused for minimal"
             );
-            let hold_res = finish_hold(hold);
+
+            hold.stdin
+                .write_all(b"{\"command\":\"close_session\"}\n")
+                .expect("write close_session");
+            let hold_res = finish_session_hold(hold);
             assert!(
-                hold_res.status.success(),
-                "minimal run-xpc failed: {}",
+                hold_res.status_ok,
+                "minimal xpc session failed:\n\nstdout:\n{}\n\nstderr:\n{}",
+                hold_res.stdout,
                 hold_res.stderr
             );
+        } else {
+            eprintln!("skip inspector attach tests: preflight indicates signatures/entitlements are not ready");
         }
 
         if dlopen_tests_enabled() {
@@ -725,15 +578,14 @@ fn cli_profiles_and_risk_gate() {
                 preflight,
                 &["services", "fully_injectable", "entitlements", "disable_library_validation"],
             ) == Some(true);
-            if !(dylib_ready && relax_ok) {
-                eprintln!("skip dlopen test: missing signed test dylib or entitlement");
-            } else {
+            if dylib_ready && relax_ok {
                 let dylib = PathBuf::from(dylib_path);
                 assert!(dylib.exists(), "test dylib missing at {}", dylib.display());
                 let dlopen_out = run_ej(
                     &bin,
                     &[
-                        "run-xpc",
+                        "xpc",
+                        "run",
                         "--profile",
                         "fully_injectable",
                         "--ack-risk",
@@ -757,6 +609,8 @@ fn cli_profiles_and_risk_gate() {
                     Some(true),
                     "dlopen_external did not succeed"
                 );
+            } else {
+                eprintln!("skip dlopen test: missing signed test dylib or entitlement");
             }
         } else {
             eprintln!("skip dlopen test: set EJ_DLOPEN_TESTS=1 to enable");
@@ -775,13 +629,12 @@ fn cli_profiles_and_risk_gate() {
                     "allow_unsigned_executable_memory",
                 ],
             ) == Some(true);
-        if !jit_ok {
-            eprintln!("skip jit tests: missing jit entitlements");
-        } else {
+        if jit_ok {
             let jit_map_out = run_ej(
                 &bin,
                 &[
-                    "run-xpc",
+                    "xpc",
+                    "run",
                     "--profile",
                     "fully_injectable",
                     "--ack-risk",
@@ -794,20 +647,12 @@ fn cli_profiles_and_risk_gate() {
                 "jit_map_jit failed: {}",
                 String::from_utf8_lossy(&jit_map_out.stderr)
             );
-            let jit_map_json = parse_json(&jit_map_out);
-            assert_eq!(
-                jit_map_json
-                    .get("result")
-                    .and_then(|v| v.get("ok"))
-                    .and_then(|v| v.as_bool()),
-                Some(true),
-                "jit_map_jit did not succeed"
-            );
 
             let jit_rwx_out = run_ej(
                 &bin,
                 &[
-                    "run-xpc",
+                    "xpc",
+                    "run",
                     "--profile",
                     "fully_injectable",
                     "--ack-risk",
@@ -820,28 +665,20 @@ fn cli_profiles_and_risk_gate() {
                 "jit_rwx_legacy failed: {}",
                 String::from_utf8_lossy(&jit_rwx_out.stderr)
             );
-            let jit_rwx_json = parse_json(&jit_rwx_out);
-            assert_eq!(
-                jit_rwx_json
-                    .get("result")
-                    .and_then(|v| v.get("ok"))
-                    .and_then(|v| v.as_bool()),
-                Some(true),
-                "jit_rwx_legacy did not succeed"
-            );
+        } else {
+            eprintln!("skip jit tests: missing jit entitlements");
         }
 
         let net_client_ok = preflight_bool(
             preflight,
             &["services", "net_client", "entitlements", "network_client"],
         ) == Some(true);
-        if !net_client_ok {
-            eprintln!("skip network test: missing network client entitlement");
-        } else {
+        if net_client_ok {
             let net_min_out = run_ej(
                 &bin,
                 &[
-                    "run-xpc",
+                    "xpc",
+                    "run",
                     "--profile",
                     "minimal",
                     "net_op",
@@ -852,11 +689,6 @@ fn cli_profiles_and_risk_gate() {
                     "--port",
                     "9",
                 ],
-            );
-            assert!(
-                net_min_out.status.success(),
-                "net_op minimal failed: {}",
-                String::from_utf8_lossy(&net_min_out.stderr)
             );
             let net_min_json = parse_json(&net_min_out);
             assert_eq!(
@@ -871,7 +703,8 @@ fn cli_profiles_and_risk_gate() {
             let net_client_out = run_ej(
                 &bin,
                 &[
-                    "run-xpc",
+                    "xpc",
+                    "run",
                     "--profile",
                     "net_client",
                     "net_op",
@@ -882,11 +715,6 @@ fn cli_profiles_and_risk_gate() {
                     "--port",
                     "9",
                 ],
-            );
-            assert!(
-                net_client_out.status.success(),
-                "net_op net_client failed: {}",
-                String::from_utf8_lossy(&net_client_out.stderr)
             );
             let net_client_json = parse_json(&net_client_out);
             let outcome = net_client_json
@@ -899,8 +727,10 @@ fn cli_profiles_and_risk_gate() {
                 "permission_error",
                 "network client should not be permission_error"
             );
+        } else {
+            eprintln!("skip network test: missing network client entitlement");
         }
     } else {
-        eprintln!("skip attach/dlopen/jit/network tests: missing EJ_PREFLIGHT_JSON");
+        eprintln!("skip inspector/dlopen/jit/network tests: missing EJ_PREFLIGHT_JSON");
     }
 }

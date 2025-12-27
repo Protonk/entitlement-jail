@@ -8,11 +8,11 @@ This file is for people and agents *working in the repo*: where to make changes,
 
 Pick the thing you’re changing:
 
-- **User-facing usage / workflows** → `EntitlementJail.md` (the **only** user facing guidance)
-- **CLI behavior contract** → `runner/README.md` (authoritative; flags, refusal rules, JSON kinds)
-- **XPC architecture + how to add services** → `xpc/README.md`
-- **Tri-run harness + mismatch atlas schema** → `experiments/README.md`
-- **Signing/build/notarization procedure** → `SIGNING.md` (single source of truth)
+- **User-facing usage / workflows** → [`EntitlementJail.md`](EntitlementJail.md) (the **only** user-facing guide)
+- **CLI behavior contract** → [`runner/README.md`](runner/README.md) (authoritative; flags, refusal rules, JSON kinds)
+- **XPC architecture + how to add services** → [`xpc/README.md`](xpc/README.md)
+- **Tri-run harness + mismatch atlas schema** → [`experiments/README.md`](experiments/README.md)
+- **Signing/build/notarization procedure** → [`SIGNING.md`](SIGNING.md) (single source of truth)
 
 Pick the thing that’s failing:
 
@@ -87,8 +87,8 @@ Key build facts worth knowing before you touch anything:
 
 - `ProbeAPI.swift` defines `RunProbeRequest/RunProbeResponse` and `QuarantineWriteRequest/QuarantineWriteResponse`.
 - Services and clients pass JSON bytes (`Data`) rather than rich XPC objects.
-  - If you evolve these types, keep backward-compatibility in mind and update both sides together.
-- The Rust launcher does not speak NSXPC directly; `run-xpc`/`quarantine-lab` shell out to the embedded Swift clients under `Contents/MacOS/`.
+  - If you evolve these types, update both sides together, bump `schema_version` when the JSON contract changes, and delete old protocol paths (no long-lived shims).
+- The Rust launcher does not speak NSXPC directly; `entitlement-jail xpc {run,session}` and `quarantine-lab` shell out to the embedded Swift clients under `Contents/MacOS/`.
 
 ### JSON envelopes are stable and key-sorted
 

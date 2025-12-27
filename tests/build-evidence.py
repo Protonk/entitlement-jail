@@ -383,7 +383,7 @@ def main() -> int:
     })
 
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "app_bundle_id": app_bundle_id,
         "app_binary_rel_path": "Contents/MacOS/entitlement-jail",

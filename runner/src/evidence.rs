@@ -5,6 +5,8 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+pub const EVIDENCE_SCHEMA_VERSION: u32 = 2;
+
 #[derive(Debug, Deserialize)]
 pub struct EvidenceManifest {
     pub schema_version: u32,
@@ -49,8 +51,17 @@ pub struct VerifyMismatch {
 pub fn load_manifest(path: &Path) -> Result<EvidenceManifest, String> {
     let data = std::fs::read_to_string(path)
         .map_err(|e| format!("failed to read manifest {}: {e}", path.display()))?;
-    serde_json::from_str(&data)
-        .map_err(|e| format!("failed to parse manifest {}: {e}", path.display()))
+    let manifest: EvidenceManifest = serde_json::from_str(&data)
+        .map_err(|e| format!("failed to parse manifest {}: {e}", path.display()))?;
+    if manifest.schema_version != EVIDENCE_SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported evidence manifest schema_version {} (expected {}) in {}",
+            manifest.schema_version,
+            EVIDENCE_SCHEMA_VERSION,
+            path.display()
+        ));
+    }
+    Ok(manifest)
 }
 
 pub fn sha256_hex(path: &Path) -> Result<String, String> {
@@ -183,7 +194,7 @@ mod tests {
     #[test]
     fn parses_manifest() {
         let manifest = r#"{
-  "schema_version": 1,
+  "schema_version": 2,
   "app_bundle_id": "com.example.app",
   "app_binary_rel_path": "Contents/MacOS/entitlement-jail",
   "app_entitlements": {"com.apple.security.app-sandbox": true},
@@ -201,7 +212,7 @@ mod tests {
   "notes": ["ok"]
 }"#;
         let parsed: EvidenceManifest = serde_json::from_str(manifest).unwrap();
-        assert_eq!(parsed.schema_version, 1);
+        assert_eq!(parsed.schema_version, 2);
         assert_eq!(parsed.entries.len(), 1);
         assert_eq!(parsed.entries[0].id, "com.example.service");
     }
@@ -216,7 +227,7 @@ mod tests {
         let hash = sha256_hex(&file_path).unwrap();
 
         let manifest = EvidenceManifest {
-            schema_version: 1,
+            schema_version: EVIDENCE_SCHEMA_VERSION,
             app_bundle_id: None,
             app_binary_rel_path: None,
             app_entitlements: None,
@@ -248,7 +259,7 @@ mod tests {
         fs::write(&file_path, b"hello").unwrap();
 
         let manifest = EvidenceManifest {
-            schema_version: 1,
+            schema_version: EVIDENCE_SCHEMA_VERSION,
             app_bundle_id: None,
             app_binary_rel_path: None,
             app_entitlements: None,
@@ -274,7 +285,7 @@ mod tests {
     #[test]
     fn finds_entry_by_id() {
         let manifest = EvidenceManifest {
-            schema_version: 1,
+            schema_version: EVIDENCE_SCHEMA_VERSION,
             app_bundle_id: None,
             app_binary_rel_path: None,
             app_entitlements: None,

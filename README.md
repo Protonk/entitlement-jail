@@ -1,55 +1,49 @@
-# entitlement-jail
+# EntitlementJail
 
-`entitlement-jail` is a macOS research/teaching repo for exploring **App Sandbox + entitlement behavior** without turning every “couldn’t do X” into “the sandbox denied X”.
+EntitlementJail is a macOS research/teaching repo that’s intentionally biased toward producing **witness records** (structured outcome descriptions) without quietly upgrading those outcomes into stronger claims about *why* they happened.
 
-Most macOS “sandbox demos” collapse a bunch of failure modes into one bucket. A `posix_spawn` failure might be a missing file, a bad signature, a quarantine/Gatekeeper prompt, a path policy, or a Seatbelt denial — and those are different conversations. This repo tries to keep those conversations separate by default, and to make it easy to attach evidence to claims (for example, capturing `Sandbox:` deny lines when requested, and shipping signed “static evidence” inside the bundle).
+## What This Repo Optimizes For
 
-It also tries to keep “entitlements as an experimental variable” structurally clean. Rather than staging binaries into writable locations and trying to exec them by path (a pattern that is commonly blocked and easy to misattribute), EntitlementJail runs probes **in-process** inside launchd-managed XPC services. Each `.xpc` is its own signed target with its own entitlements, so you can run the same probe code path under different entitlement profiles.
+It’s most useful when you treat a “permission-shaped failure” as a *routing problem*: missing files, signing validity, quarantine/Gatekeeper, launchd/XPC behavior, filesystem permissions, and Seatbelt/App Sandbox can all produce similar-looking symptoms. This repo tries to keep those layers explicit and keep the output contract stable enough for downstream tooling.
 
-## What’s in the box
+- **Entitlements as a real experimental variable**: the “thing you run” isn’t one binary; it’s an app bundle that embeds many separately signed executables. The core research targets are launchd-managed XPC services, each signed with a distinct entitlement profile.
+- **Outcomes first; attribution second**: probes emit outcomes (rc/errno/paths/timing) as JSON envelopes. If you want deny evidence, use an explicit outside-the-sandbox witness (`sandbox-log-observer`) rather than baking attribution into every probe.
+- **Deterministic attachment**: `xpc session` exposes a deliberate, lifecycle-aware service session surface (PID, readiness events, and a wait barrier) so debuggers/tracers can attach without racing startup.
+- **Reverse-engineer-friendly code**: the Swift/Rust code is written to be read directly (and to be easy to instrument), not to hide control flow behind clever abstractions.
 
-The shipped app bundle (`EntitlementJail.app`) contains a plain-signed host-side CLI launcher and a “process zoo” of embedded sandboxed XPC services:
+## The Product Shape
 
-`EntitlementJail.app/Contents/MacOS/entitlement-jail` (Rust; see `runner/`) is the main entrypoint. `EntitlementJail.app/Contents/XPCServices/*.xpc` (Swift; see `xpc/`) are the research targets: the same probes, signed over and over with different entitlements.
+The intended distribution artifact is only the set of:
 
-For “compare across witnesses” work, `experiments/` contains a tri-run harness that can execute the same probe three ways: a baseline run (unsandboxed substrate), a policy run (`sandbox-exec -f …`; hypothesis only, and `sandbox-exec` is deprecated), and an entitlement run (via `EntitlementJail.app … run-xpc …`, with the probe executed inside an XPC service). The result is an `atlas.json` mismatch map with explicit attribution rules; see `experiments/README.md`.
+- `EntitlementJail.app` (the bundle) + [`EntitlementJail.md`](EntitlementJail.md) (the user guide)
 
-For reproducibility and downstream inspection, the app bundle also ships signed evidence files under `Contents/Resources/Evidence/` (hashes, entitlements, profile definitions, and stable `ej_*` marker symbols). The user-facing inspection commands live in `EntitlementJail.md`; the developer-facing behavior reference lives in `runner/README.md`.
+Inside the bundle:
 
-## Doc map
+- `Contents/MacOS/entitlement-jail` — the host-side launcher (Rust; plain-signed; not sandboxed).
+- `Contents/XPCServices/*.xpc` — the process zoo (Swift; sandboxed; entitlements vary per-service).
+- `Contents/Resources/Evidence/*` — signed “static evidence” for inspection (entitlements, hashes, profiles, trace symbols).
 
-- If you’re trying to *use the tool*, start with `EntitlementJail.md`.
-- If you’re trying to understand *what the CLI claims/measures*, read `runner/README.md`.
-- If you want to add or modify XPC targets (entitlements as the variable), read `xpc/README.md`.
-- If you’re building/signing/notarizing, `SIGNING.md` is the canonical reference.
-- If you’re extending or reporting on results, read `AGENTS.md`.
+The user guide is written deliberately as the only window (outside of CLI `--help`) into intent for the end user. 
 
-A quick repo layout:
+## The Core Model (Profiles → Sessions → Probes → Witnesses)
 
-- `runner/` — Rust CLI (builds `EntitlementJail.app/Contents/MacOS/entitlement-jail`)
-- `xpc/` — Swift XPC substrate + in-process probes + XPC clients
-- `experiments/` — tri-run harness + unsandboxed substrate + policy profiles
-- `tests/` — smoke harness + preflight gate + fixtures
-- `build-macos.sh` — builds/signs the `.app`, generates evidence, produces `EntitlementJail.zip`
-- `SIGNING.md` — signing/notarization policy, procedure, and troubleshooting
-- `EntitlementJail.md` — self-contained user guide for distribution
+Most work in EntitlementJail has the same shape:
 
-## Use
+1. Pick a **profile** (an embedded XPC service signed with a specific entitlement set).
+2. Open a **session** (`entitlement-jail xpc session`) if you need deterministic attach/liveness, or use `entitlement-jail xpc run` for a one-shot run.
+3. Run one or more **probes** (by `probe_id`) inside the service.
+4. Read the resulting **witness record** (JSON). If you need deny evidence, collect it separately with `sandbox-log-observer`.
 
-The intended distribution artifact is the notarized `.app` zip in GitHub releases. For downstream use you should only need `EntitlementJail.app` and `EntitlementJail.md`.
+The “unit of variation” is a whole separately-signed, launchd-managed service — not a transient child process that inherits a grab bag of state.
 
-## Build
+If you want a 3-witness comparison (baseline vs `sandbox-exec` vs XPC), the tri-run harness lives under [`experiments/`](experiments/) (see [`experiments/README.md`](experiments/README.md)) and produces a mismatch atlas.
 
-All build, signing, packaging, and notarization steps are intentionally centralized in [SIGNING.md](SIGNING.md). This README does not repeat commands or signing order; if you need to build or re-sign anything, follow that doc rather than improvising.
+## Where To Start (Documents)
 
-## Test
-
-Run everything:
-
-```sh
-make test
-```
-
-`make test` starts with a read-only preflight (`tests/preflight.sh`) that verifies signatures and extracts entitlements into `tests/out/preflight.json`, so higher-level tests can skip cleanly when signing is stale or missing. It then runs runner unit tests and CLI integration tests (`EJ_INTEGRATION=1`), followed by the smoke harness (`tests/ej-smoke.sh`), which writes artifacts under `experiments/out/test` (overwritten each run).
-
-If you set `EJ_DLOPEN_TESTS=1`, the `dlopen_external` integration test is enabled and will execute a signed test dylib initializer; treat that as intentional code execution.
+- If you’re using the built artifact: [`EntitlementJail.md`](EntitlementJail.md)
+- If you’re contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- If you’re changing signing/distribution: [`SIGNING.md`](SIGNING.md)
+- If you’re changing CLI behavior/output contracts: [`runner/README.md`](runner/README.md)
+- If you’re changing XPC services, probes, or session semantics: [`xpc/README.md`](xpc/README.md)
+- If you’re changing the tri-run experiment harness: [`experiments/README.md`](experiments/README.md)
+- If you’re trying to orient yourself in the repo (layout + invariants): [`AGENTS.md`](AGENTS.md)

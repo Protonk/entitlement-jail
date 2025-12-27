@@ -106,7 +106,7 @@ The `-D HOME=...` parameter is required because the SBPL profiles reference `(pa
 
 The entitlement witness uses the shipped CLI and the XPC services specified by the node:
 
-- probe rows → `EntitlementJail.app/.../entitlement-jail run-xpc <service> <probe-id> ...`
+- probe rows → `EntitlementJail.app/.../entitlement-jail xpc run --service <service> <probe-id> ...`
 - quarantine-lab rows → `EntitlementJail.app/.../entitlement-jail quarantine-lab <service> <payload-class> ...`
 
 Those commands rely on a built and signed `EntitlementJail.app` with the expected embedded services. See [SIGNING.md](../SIGNING.md).
@@ -138,7 +138,7 @@ A plan is a list of probe rows. Minimal schema (matches `ProbePlan`/`ProbeRow` i
 
 `inputs.kind`:
 
-- `probe` → runs `witness-substrate probe <probe-id> ...` for baseline/policy and `entitlement-jail run-xpc ...` for entitlement
+- `probe` → runs `witness-substrate probe <probe-id> ...` for baseline/policy and `entitlement-jail xpc run ...` for entitlement
 - `quarantine-lab` → runs `witness-substrate quarantine-lab ...` for baseline/policy and `entitlement-jail quarantine-lab ...` for entitlement
 
 `row_id`:

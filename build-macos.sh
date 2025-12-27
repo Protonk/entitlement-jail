@@ -30,6 +30,8 @@ BUILD_XPC="${BUILD_XPC:-1}"                            # set to 0 to skip buildi
 XPC_ROOT="xpc"
 XPC_API_FILE="${XPC_ROOT}/ProbeAPI.swift"
 XPC_PROBE_CORE_FILE="${XPC_ROOT}/InProcessProbeCore.swift"
+XPC_SESSION_HOST_FILE="${XPC_ROOT}/ProbeServiceSessionHost.swift"
+XPC_QUARANTINE_SERVICE_HOST_FILE="${XPC_ROOT}/QuarantineLabServiceHost.swift"
 XPC_CLIENT_MAIN="${XPC_ROOT}/client/main.swift"
 XPC_QUARANTINE_CLIENT_MAIN="${XPC_ROOT}/quarantine-client/main.swift"
 XPC_SERVICES_DIR="${XPC_ROOT}/services"
@@ -164,7 +166,7 @@ if [[ "${BUILD_XPC}" == "1" ]]; then
     exit 2
   fi
   SWIFTC=(/usr/bin/xcrun --sdk macosx swiftc)
-  if [[ ! -f "${XPC_API_FILE}" ]] || [[ ! -f "${XPC_PROBE_CORE_FILE}" ]] || [[ ! -f "${XPC_CLIENT_MAIN}" ]]; then
+  if [[ ! -f "${XPC_API_FILE}" ]] || [[ ! -f "${XPC_PROBE_CORE_FILE}" ]] || [[ ! -f "${XPC_SESSION_HOST_FILE}" ]] || [[ ! -f "${XPC_QUARANTINE_SERVICE_HOST_FILE}" ]] || [[ ! -f "${XPC_CLIENT_MAIN}" ]]; then
     echo "ERROR: BUILD_XPC=1 but XPC sources are missing under ${XPC_ROOT}/" 1>&2
     exit 2
   fi
@@ -201,7 +203,18 @@ if [[ "${BUILD_XPC}" == "1" ]]; then
 
       mkdir -p "${svc_bundle}/Contents/MacOS"
       cp "${svc_info}" "${svc_bundle}/Contents/Info.plist"
-      "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${svc_bundle}/Contents/MacOS/${svc_name}" "${XPC_API_FILE}" "${XPC_PROBE_CORE_FILE}" "${svc_main}"
+
+      svc_sources=()
+      if [[ "${svc_name}" == ProbeService_* ]]; then
+        svc_sources=("${XPC_API_FILE}" "${XPC_PROBE_CORE_FILE}" "${XPC_SESSION_HOST_FILE}" "${svc_main}")
+      elif [[ "${svc_name}" == QuarantineLab_* ]]; then
+        svc_sources=("${XPC_API_FILE}" "${XPC_QUARANTINE_SERVICE_HOST_FILE}" "${svc_main}")
+      else
+        echo "ERROR: unknown XPC service family: ${svc_name} (expected ProbeService_* or QuarantineLab_*)" 1>&2
+        exit 2
+      fi
+
+      "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${svc_bundle}/Contents/MacOS/${svc_name}" "${svc_sources[@]}"
       chmod +x "${svc_bundle}/Contents/MacOS/${svc_name}"
     done
   fi

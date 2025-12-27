@@ -54,8 +54,7 @@ public enum InProcessProbeCore {
                     "probe_family": "bad_request",
                     "probe_id": req.probe_id,
                 ]),
-                layer_attribution: nil,
-                sandbox_log_excerpt_ref: nil
+                layer_attribution: nil
             )
             let ended = Date()
             return decorate(response, req: req, started: started, ended: ended)
@@ -66,110 +65,6 @@ public enum InProcessProbeCore {
             response = probeHelpResponse(probeId: req.probe_id)
             let ended = Date()
             return decorate(response, req: req, started: started, ended: ended)
-        }
-
-        var waitDetails: [String: String] = [:]
-        if let waitSpec = req.wait_spec {
-            let waitOutcome = performWaitFromSpec(waitSpec)
-            waitDetails = waitOutcome.details
-            if waitOutcome.result.normalizedOutcome != "ok" {
-                let response = RunProbeResponse(
-                    rc: waitOutcome.rc,
-                    stdout: "",
-                    stderr: waitOutcome.stderr,
-                    normalized_outcome: waitOutcome.result.normalizedOutcome,
-                    errno: waitOutcome.result.errno.map { Int($0) },
-                    error: waitOutcome.result.error,
-                    details: baseDetails(waitDetails.merging([
-                        "probe_family": "wait",
-                    ], uniquingKeysWith: { cur, _ in cur })),
-                    layer_attribution: nil,
-                    sandbox_log_excerpt_ref: nil
-                )
-                let ended = Date()
-                return decorate(response, req: req, started: started, ended: ended)
-            }
-        }
-
-        // Optional instrumentation hookpoint: preload a dylib before probe dispatch.
-        // This executes dylib initializers by design; use intentionally.
-        var preloadDetails: [String: String] = [:]
-        if let preloadPath = req.preload_dylib_path {
-            preloadDetails["preload_dylib_path"] = preloadPath
-            preloadDetails["preload_dylib_mode"] = "RTLD_NOW"
-
-            let hasDisableLibraryValidation = entitlementBool("com.apple.security.cs.disable-library-validation")
-            preloadDetails["preload_has_disable_library_validation"] = hasDisableLibraryValidation ? "true" : "false"
-
-            guard preloadPath.hasPrefix("/") else {
-                let response = badRequest("invalid preload_dylib_path (expected absolute path)")
-                let ended = Date()
-                return decorate(response, req: req, started: started, ended: ended)
-            }
-
-            guard hasDisableLibraryValidation else {
-                let refusalReason = "preload_dylib requires com.apple.security.cs.disable-library-validation"
-                let response = RunProbeResponse(
-                    rc: 1,
-                    stdout: "",
-                    stderr: "",
-                    normalized_outcome: "preload_refused",
-                    errno: nil,
-                    error: refusalReason,
-                    details: baseDetails(preloadDetails.merging([
-                        "probe_family": "preload_dylib",
-                    ], uniquingKeysWith: { cur, _ in cur })),
-                    layer_attribution: LayerAttribution(service_refusal: refusalReason),
-                    sandbox_log_excerpt_ref: nil
-                )
-                let ended = Date()
-                return decorate(response, req: req, started: started, ended: ended)
-            }
-
-            guard FileManager.default.fileExists(atPath: preloadPath) else {
-                let response = RunProbeResponse(
-                    rc: 1,
-                    stdout: "",
-                    stderr: "",
-                    normalized_outcome: "not_found",
-                    errno: Int(ENOENT),
-                    error: "file not found",
-                    details: baseDetails(preloadDetails.merging([
-                        "probe_family": "preload_dylib",
-                    ], uniquingKeysWith: { cur, _ in cur })),
-                    layer_attribution: nil,
-                    sandbox_log_excerpt_ref: nil
-                )
-                let ended = Date()
-                return decorate(response, req: req, started: started, ended: ended)
-            }
-
-            dlerror()
-            let handle = preloadPath.withCString { ptr in
-                ej_dlopen(ptr, Int32(RTLD_NOW))
-            }
-            if handle == nil {
-                let errPtr = dlerror()
-                let dlopenError = errPtr.map { String(cString: $0) } ?? "dlopen failed (no error string)"
-                preloadDetails["preload_dylib_error"] = dlopenError
-                let response = RunProbeResponse(
-                    rc: 1,
-                    stdout: "",
-                    stderr: "",
-                    normalized_outcome: "dlopen_failed",
-                    errno: nil,
-                    error: dlopenError,
-                    details: baseDetails(preloadDetails.merging([
-                        "probe_family": "preload_dylib",
-                    ], uniquingKeysWith: { cur, _ in cur })),
-                    layer_attribution: nil,
-                    sandbox_log_excerpt_ref: nil
-                )
-                let ended = Date()
-                return decorate(response, req: req, started: started, ended: ended)
-            }
-
-            preloadDetails["preload_dylib_outcome"] = "ok"
         }
 
         switch req.probe_id {
@@ -213,17 +108,6 @@ public enum InProcessProbeCore {
             response = unknownProbeResponse(req.probe_id)
         }
 
-        if !waitDetails.isEmpty || !preloadDetails.isEmpty {
-            var details = response.details ?? [:]
-            for (k, v) in waitDetails {
-                details[k] = v
-            }
-            for (k, v) in preloadDetails {
-                details[k] = v
-            }
-            response.details = details
-        }
-
         let ended = Date()
         return decorate(response, req: req, started: started, ended: ended)
     }
@@ -239,7 +123,6 @@ public enum InProcessProbeCore {
         response.correlation_id = correlationId
         response.probe_id = req.probe_id
         response.argv = req.argv
-        response.expected_outcome = req.expected_outcome ?? response.expected_outcome
         response.service_bundle_id = Bundle.main.bundleIdentifier ?? response.service_bundle_id
         response.service_name = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? response.service_name
         response.service_version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? response.service_version
@@ -247,7 +130,7 @@ public enum InProcessProbeCore {
         response.started_at_iso8601 = iso8601(started)
         response.ended_at_iso8601 = iso8601(ended)
         response.thread_id = threadIdString()
-        response.schema_version = 1
+        response.schema_version = 2
 
         var details = response.details ?? [:]
         details["correlation_id"] = correlationId
@@ -279,8 +162,8 @@ public enum InProcessProbeCore {
             "tmp_dir": NSTemporaryDirectory(),
             "cwd": FileManager.default.currentDirectoryPath,
         ]
-	        for (k, v) in extra {
-	            out[k] = v
+        for (k, v) in extra {
+            out[k] = v
         }
         return out
     }
@@ -709,7 +592,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 
     private static func probeCatalog() -> RunProbeResponse {
         let catalog = ProbeCatalog(
-            schema_version: 1,
+            schema_version: 2,
             generated_at_iso8601: ISO8601DateFormatter().string(from: Date()),
             probes: probeSpecs,
             trace_symbols: traceSymbols
@@ -728,8 +611,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
                     "probe_family": "probe_catalog",
                     "probe_count": "\(probeSpecs.count)"
                 ]),
-                layer_attribution: nil,
-                sandbox_log_excerpt_ref: nil
+                layer_attribution: nil
             )
         } catch {
             return RunProbeResponse(
@@ -742,8 +624,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
                 details: baseDetails([
                     "probe_family": "probe_catalog"
                 ]),
-                layer_attribution: nil,
-                sandbox_log_excerpt_ref: nil
+                layer_attribution: nil
             )
         }
     }
@@ -764,8 +645,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
                 "probe_family": "probe_help",
                 "probe_id": probeId
             ]),
-            layer_attribution: nil,
-            sandbox_log_excerpt_ref: nil
+            layer_attribution: nil
         )
     }
 
@@ -831,8 +711,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
                 "probe_family": "unknown_probe",
                 "probe_id": probeId,
             ]),
-            layer_attribution: nil,
-            sandbox_log_excerpt_ref: nil
+            layer_attribution: nil
         )
     }
 
@@ -862,8 +741,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
             errno: nil,
             error: nil,
             details: details,
-            layer_attribution: LayerAttribution(world_shape_change: worldShapeChange),
-            sandbox_log_excerpt_ref: nil
+            layer_attribution: LayerAttribution(world_shape_change: worldShapeChange)
         )
     }
 
@@ -904,8 +782,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
                 errno: Int(e),
                 error: String(cString: strerror(e)),
                 details: detailsBase,
-                layer_attribution: nil,
-                sandbox_log_excerpt_ref: nil
+                layer_attribution: nil
             )
         }
         defer { close(fd) }
@@ -926,8 +803,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
                 errno: nil,
                 error: nil,
                 details: detailsBase.merging(["connect": "ok"], uniquingKeysWith: { cur, _ in cur }),
-                layer_attribution: nil,
-                sandbox_log_excerpt_ref: nil
+                layer_attribution: nil
             )
         }
 
@@ -954,8 +830,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
             errno: Int(e),
             error: String(cString: strerror(e)),
             details: detailsBase.merging(["connect": "failed"], uniquingKeysWith: { cur, _ in cur }),
-            layer_attribution: nil,
-            sandbox_log_excerpt_ref: nil
+            layer_attribution: nil
         )
     }
 
@@ -974,8 +849,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
                 errno: nil,
                 error: "failed to resolve downloads directory",
                 details: detailsBase,
-                layer_attribution: nil,
-                sandbox_log_excerpt_ref: nil
+                layer_attribution: nil
             )
         }
 
@@ -999,8 +873,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
                 errno: e,
                 error: "\(error)",
                 details: details,
-                layer_attribution: nil,
-                sandbox_log_excerpt_ref: nil
+                layer_attribution: nil
             )
         }
 
@@ -1048,8 +921,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	            errno: nil,
 	            error: cleanupError,
 	            details: details,
-	            layer_attribution: nil,
-	            sandbox_log_excerpt_ref: nil
+	            layer_attribution: nil
 	        )
 	    }
 
@@ -1092,94 +964,11 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
             var error: String?
         }
 
-        private struct WaitOutcome {
-            var result: WaitResult
-            var details: [String: String]
-            var rc: Int
-            var stderr: String
-        }
-
         private struct WaitConfig {
             var mode: String
             var path: String
-            var pathClass: String?
-            var name: String?
             var timeoutMs: Int?
             var intervalMs: Int
-            var create: Bool
-        }
-
-        private struct WaitSpecError: Error {
-            var message: String
-        }
-
-        private static func performWaitFromSpec(_ spec: WaitSpec) -> WaitOutcome {
-            let resolved = resolveWaitSpec(spec)
-            switch resolved {
-            case .failure(let err):
-                return WaitOutcome(
-                    result: WaitResult(normalizedOutcome: "bad_request", errno: nil, error: nil),
-                    details: ["wait_error": err.message],
-                    rc: 2,
-                    stderr: err.message
-                )
-            case .success(let config):
-                let (result, details) = performWait(config)
-                let rc = (result.normalizedOutcome == "ok") ? 0 : 1
-                return WaitOutcome(result: result, details: details, rc: rc, stderr: "")
-            }
-        }
-
-        private static func resolveWaitSpec(_ spec: WaitSpec) -> Result<WaitConfig, WaitSpecError> {
-            guard let mode = spec.mode, !mode.isEmpty else {
-                return .failure(WaitSpecError(message: "missing wait_spec.mode (expected fifo|exists)"))
-            }
-            if mode != "fifo" && mode != "exists" {
-                return .failure(WaitSpecError(message: "invalid wait_spec.mode (expected fifo|exists)"))
-            }
-            if let timeoutMs = spec.timeout_ms, timeoutMs < 0 {
-                return .failure(WaitSpecError(message: "wait_spec.timeout_ms must be >= 0"))
-            }
-            if let intervalMs = spec.interval_ms, intervalMs < 1 {
-                return .failure(WaitSpecError(message: "wait_spec.interval_ms must be >= 1"))
-            }
-            if spec.create == true && mode != "fifo" {
-                return .failure(WaitSpecError(message: "wait_spec.create is only valid with mode=fifo"))
-            }
-            if spec.path != nil && (spec.path_class != nil || spec.name != nil) {
-                return .failure(WaitSpecError(message: "wait_spec.path cannot be combined with wait_spec.path_class/name"))
-            }
-
-            var resolvedPath = spec.path
-            if resolvedPath == nil {
-                guard let pathClass = spec.path_class, let name = spec.name else {
-                    return .failure(WaitSpecError(message: "wait_spec.path or (wait_spec.path_class + wait_spec.name) is required"))
-                }
-                guard isSinglePathComponent(name) else {
-                    return .failure(WaitSpecError(message: "wait_spec.name must be a single path component"))
-                }
-                guard let base = resolveStandardDirectory(pathClass) else {
-                    return .failure(WaitSpecError(message: "invalid wait_spec.path_class: \(pathClass) (expected: home|tmp|downloads|desktop|documents|app_support|caches)"))
-                }
-                resolvedPath = base.appendingPathComponent(name, isDirectory: false).path
-            }
-
-            guard let resolvedPath, resolvedPath.hasPrefix("/") else {
-                return .failure(WaitSpecError(message: "wait path must be absolute"))
-            }
-
-            let intervalMs = spec.interval_ms ?? 200
-            let create = spec.create ?? false
-
-            return .success(WaitConfig(
-                mode: mode,
-                path: resolvedPath,
-                pathClass: spec.path_class,
-                name: spec.name,
-                timeoutMs: spec.timeout_ms,
-                intervalMs: intervalMs,
-                create: create
-            ))
         }
 
         private static func performWait(_ config: WaitConfig) -> (WaitResult, [String: String]) {
@@ -1187,23 +976,14 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
                 "wait_mode": config.mode,
                 "wait_path": config.path,
             ]
-            if let pathClass = config.pathClass { details["wait_path_class"] = pathClass }
-            if let name = config.name { details["wait_name"] = name }
             if let timeoutMs = config.timeoutMs { details["wait_timeout_ms"] = "\(timeoutMs)" }
             if config.mode == "exists" { details["wait_interval_ms"] = "\(config.intervalMs)" }
-            if config.create { details["wait_create"] = "true" }
 
             let waitStartNs = DispatchTime.now().uptimeNanoseconds
             details["wait_started_at_ns"] = "\(waitStartNs)"
 
             let result: WaitResult
             if config.mode == "fifo" {
-                if config.create, let err = ensureFifo(path: config.path) {
-                    let waitEndNs = DispatchTime.now().uptimeNanoseconds
-                    details["wait_ended_at_ns"] = "\(waitEndNs)"
-                    details["wait_duration_ms"] = "\(Int((waitEndNs - waitStartNs) / 1_000_000))"
-                    return (err, details)
-                }
                 result = waitForFifo(path: config.path, timeoutMs: config.timeoutMs)
             } else {
                 result = waitForPathExists(path: config.path, timeoutMs: config.timeoutMs, intervalMs: config.intervalMs)
@@ -1213,34 +993,6 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
             details["wait_ended_at_ns"] = "\(waitEndNs)"
             details["wait_duration_ms"] = "\(Int((waitEndNs - waitStartNs) / 1_000_000))"
             return (result, details)
-        }
-
-        private static func ensureFifo(path: String) -> WaitResult? {
-            var st = stat()
-            if lstat(path, &st) == 0 {
-                if (st.st_mode & S_IFMT) != S_IFIFO {
-                    return WaitResult(normalizedOutcome: "wait_failed", errno: nil, error: "wait path exists and is not a fifo")
-                }
-                return nil
-            }
-            let e = errno
-            if e != ENOENT {
-                return WaitResult(normalizedOutcome: "wait_failed", errno: e, error: String(cString: strerror(e)))
-            }
-            let rc = path.withCString { ptr in
-                mkfifo(ptr, 0o600)
-            }
-            if rc != 0 {
-                let e2 = errno
-                if e2 == EEXIST {
-                    if lstat(path, &st) == 0, (st.st_mode & S_IFMT) == S_IFIFO {
-                        return nil
-                    }
-                    return WaitResult(normalizedOutcome: "wait_failed", errno: nil, error: "wait path exists and is not a fifo")
-                }
-                return WaitResult(normalizedOutcome: "wait_failed", errno: e2, error: String(cString: strerror(e2)))
-            }
-            return nil
         }
 
 	    // MARK: - fs_op_wait (delayed fs_op for attach)
@@ -1296,11 +1048,8 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	        let config = WaitConfig(
 	            mode: waitMode,
 	            path: waitPath,
-	            pathClass: nil,
-	            name: nil,
 	            timeoutMs: timeoutMs,
-	            intervalMs: intervalMs,
-	            create: false
+	            intervalMs: intervalMs
 	        )
 	        let (waitResult, waitDetailsBase) = performWait(config)
 	        var waitDetails = waitDetailsBase
@@ -1321,8 +1070,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                errno: waitResult.errno.map { Int($0) },
 	                error: waitResult.error,
 	                details: details,
-	                layer_attribution: nil,
-	                sandbox_log_excerpt_ref: nil
+	                layer_attribution: nil
 	            )
 	        }
 
@@ -1505,8 +1253,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
                 errno: nil,
                 error: "refusing potentially destructive op=\(op.rawValue) on non-harness path (use --path-class <...> or a path under */entitlement-jail-harness/*; use --allow-unsafe-path to override)",
                 details: details,
-                layer_attribution: nil,
-                sandbox_log_excerpt_ref: nil
+                layer_attribution: nil
             )
         }
 
@@ -1527,8 +1274,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                errno: errno,
 	                error: error,
 	                details: details,
-	                layer_attribution: nil,
-	                sandbox_log_excerpt_ref: nil
+	                layer_attribution: nil
 	            )
 	        }
 
@@ -1906,8 +1652,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                    errno: nil,
 	                    error: String(cString: gai_strerror(rc)),
 	                    details: details,
-	                    layer_attribution: nil,
-	                    sandbox_log_excerpt_ref: nil
+	                    layer_attribution: nil
 	                )
 	            }
 	            defer { freeaddrinfo(res) }
@@ -1934,8 +1679,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                errno: nil,
 	                error: nil,
 	                details: details,
-	                layer_attribution: nil,
-	                sandbox_log_excerpt_ref: nil
+	                layer_attribution: nil
 	            )
 
 	        case .tcp_connect, .udp_send:
@@ -1968,8 +1712,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                    errno: nil,
 	                    error: String(cString: gai_strerror(gai)),
 	                    details: details,
-	                    layer_attribution: nil,
-	                    sandbox_log_excerpt_ref: nil
+	                    layer_attribution: nil
 	                )
 	            }
 	            defer { freeaddrinfo(res) }
@@ -1992,7 +1735,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
                     if ej_connect(fd, ai.ai_addr, ai.ai_addrlen) == 0 {
 	                        details["attempts"] = "\(attempts)"
 	                        details["connect"] = "ok"
-	                        return RunProbeResponse(rc: 0, stdout: "", stderr: "", normalized_outcome: "ok", errno: nil, error: nil, details: details, layer_attribution: nil, sandbox_log_excerpt_ref: nil)
+	                        return RunProbeResponse(rc: 0, stdout: "", stderr: "", normalized_outcome: "ok", errno: nil, error: nil, details: details, layer_attribution: nil)
 	                    }
 	                    lastErrno = errno
 	                } else {
@@ -2003,7 +1746,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                    if sent == 1 {
 	                        details["attempts"] = "\(attempts)"
 	                        details["bytes_sent"] = "1"
-	                        return RunProbeResponse(rc: 0, stdout: "", stderr: "", normalized_outcome: "ok", errno: nil, error: nil, details: details, layer_attribution: nil, sandbox_log_excerpt_ref: nil)
+	                        return RunProbeResponse(rc: 0, stdout: "", stderr: "", normalized_outcome: "ok", errno: nil, error: nil, details: details, layer_attribution: nil)
 	                    }
 	                    lastErrno = errno
 	                }
@@ -2034,8 +1777,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                errno: Int(lastErrno),
 	                error: String(cString: strerror(lastErrno)),
 	                details: details,
-	                layer_attribution: nil,
-	                sandbox_log_excerpt_ref: nil
+	                layer_attribution: nil
 	            )
 	        }
 	    }
@@ -2067,8 +1809,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                errno: nil,
 	                error: "file not found",
 	                details: details,
-	                layer_attribution: nil,
-	                sandbox_log_excerpt_ref: nil
+	                layer_attribution: nil
 	            )
 	        }
 
@@ -2086,8 +1827,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                errno: nil,
 	                error: nil,
 	                details: details,
-	                layer_attribution: nil,
-	                sandbox_log_excerpt_ref: nil
+	                layer_attribution: nil
 	            )
 	        }
 
@@ -2102,8 +1842,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	            errno: nil,
 	            error: errStr,
 	            details: details,
-	            layer_attribution: nil,
-	            sandbox_log_excerpt_ref: nil
+	            layer_attribution: nil
 	        )
 	    }
 
@@ -2136,8 +1875,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                errno: Int(e),
 	                error: String(cString: strerror(e)),
 	                details: details,
-	                layer_attribution: nil,
-	                sandbox_log_excerpt_ref: nil
+	                layer_attribution: nil
 	            )
 	        }
 
@@ -2164,8 +1902,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	            errno: nil,
 	            error: nil,
 	            details: details,
-	            layer_attribution: nil,
-	            sandbox_log_excerpt_ref: nil
+	            layer_attribution: nil
 	        )
 	    }
 
@@ -2198,8 +1935,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                errno: Int(e),
 	                error: String(cString: strerror(e)),
 	                details: details,
-	                layer_attribution: nil,
-	                sandbox_log_excerpt_ref: nil
+	                layer_attribution: nil
 	            )
 	        }
 
@@ -2221,8 +1957,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	            errno: nil,
 	            error: nil,
 	            details: details,
-	            layer_attribution: nil,
-	            sandbox_log_excerpt_ref: nil
+	            layer_attribution: nil
 	        )
 	    }
 
@@ -2272,8 +2007,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
                     "op": fsOp.rawValue,
                     "bookmark_is_stale": isStale ? "true" : "false",
                 ]),
-                layer_attribution: hint.map { LayerAttribution(service_refusal: $0) },
-                sandbox_log_excerpt_ref: nil
+                layer_attribution: hint.map { LayerAttribution(service_refusal: $0) }
             )
         }
 
@@ -2307,8 +2041,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	            errno: resp.errno,
 	            error: resp.error,
 	            details: merged,
-	            layer_attribution: resp.layer_attribution,
-	            sandbox_log_excerpt_ref: resp.sandbox_log_excerpt_ref
+	            layer_attribution: resp.layer_attribution
 	        )
 	    }
 
@@ -2420,8 +2153,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                    "probe_family": "bookmark_make",
 	                    "file_path": path,
 	                ]),
-	                layer_attribution: nil,
-	                sandbox_log_excerpt_ref: nil
+	                layer_attribution: nil
 	            )
 	        }
 
@@ -2451,8 +2183,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                    "security_scope": useSecurityScope ? "true" : "false",
 	                    "read_only": args.has("--read-only") ? "true" : "false",
 	                ]),
-	                layer_attribution: nil,
-	                sandbox_log_excerpt_ref: nil
+	                layer_attribution: nil
 	            )
         } catch {
             let e = extractErrno(error)
@@ -2471,8 +2202,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
                     "security_scope": useSecurityScope ? "true" : "false",
                     "read_only": args.has("--read-only") ? "true" : "false",
                 ]),
-                layer_attribution: hint.map { LayerAttribution(service_refusal: $0) },
-                sandbox_log_excerpt_ref: nil
+                layer_attribution: hint.map { LayerAttribution(service_refusal: $0) }
             )
         }
     }
@@ -2509,8 +2239,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
                     "probe_family": "bookmark_roundtrip",
                     "file_path": path,
                 ]),
-                layer_attribution: nil,
-                sandbox_log_excerpt_ref: nil
+                layer_attribution: nil
             )
         }
 
@@ -2543,8 +2272,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
                     "security_scope": useSecurityScope ? "true" : "false",
                     "read_only": args.has("--read-only") ? "true" : "false",
                 ]),
-                layer_attribution: hint.map { LayerAttribution(service_refusal: $0) },
-                sandbox_log_excerpt_ref: nil
+                layer_attribution: hint.map { LayerAttribution(service_refusal: $0) }
             )
         }
 
@@ -2575,8 +2303,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
                     "security_scope": useSecurityScope ? "true" : "false",
                     "read_only": args.has("--read-only") ? "true" : "false",
                 ]),
-                layer_attribution: hint.map { LayerAttribution(service_refusal: $0) },
-                sandbox_log_excerpt_ref: nil
+                layer_attribution: hint.map { LayerAttribution(service_refusal: $0) }
             )
         }
 
@@ -2613,8 +2340,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
             errno: resp.errno,
             error: resp.error,
             details: merged,
-            layer_attribution: resp.layer_attribution,
-            sandbox_log_excerpt_ref: resp.sandbox_log_excerpt_ref
+            layer_attribution: resp.layer_attribution
         )
     }
 
@@ -2693,7 +2419,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                let outcome = isPermissionError(error) ? "permission_error" : "setup_failed"
 	                bestEffortCleanup(resolvedTarget.cleanupRoots)
 	                details["cleanup_error"] = cleanupErrors.joined(separator: "; ")
-	                return RunProbeResponse(rc: 1, stdout: "", stderr: "", normalized_outcome: outcome, errno: e, error: "\(error)", details: details, layer_attribution: nil, sandbox_log_excerpt_ref: nil)
+	                return RunProbeResponse(rc: 1, stdout: "", stderr: "", normalized_outcome: outcome, errno: e, error: "\(error)", details: details, layer_attribution: nil)
 	            }
 	        }
 
@@ -2738,7 +2464,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	            else { outcome = "coordination_failed" }
 	            bestEffortCleanup(resolvedTarget.cleanupRoots)
 	            if !cleanupErrors.isEmpty { details["cleanup_error"] = cleanupErrors.joined(separator: "; ") }
-	            return RunProbeResponse(rc: 1, stdout: "", stderr: "", normalized_outcome: outcome, errno: e, error: "\(coordError)", details: details, layer_attribution: nil, sandbox_log_excerpt_ref: nil)
+	            return RunProbeResponse(rc: 1, stdout: "", stderr: "", normalized_outcome: outcome, errno: e, error: "\(coordError)", details: details, layer_attribution: nil)
 	        }
 	        if let opError {
 	            let e = extractErrno(opError)
@@ -2748,7 +2474,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	            else { outcome = "op_failed" }
 	            bestEffortCleanup(resolvedTarget.cleanupRoots)
 	            if !cleanupErrors.isEmpty { details["cleanup_error"] = cleanupErrors.joined(separator: "; ") }
-	            return RunProbeResponse(rc: 1, stdout: "", stderr: "", normalized_outcome: outcome, errno: e, error: "\(opError)", details: details, layer_attribution: nil, sandbox_log_excerpt_ref: nil)
+	            return RunProbeResponse(rc: 1, stdout: "", stderr: "", normalized_outcome: outcome, errno: e, error: "\(opError)", details: details, layer_attribution: nil)
 	        }
 
 	        if let bytesRead { details["bytes_read"] = "\(bytesRead)" }
@@ -2756,7 +2482,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	        bestEffortCleanup(resolvedTarget.cleanupRoots)
 	        if !cleanupErrors.isEmpty { details["cleanup_error"] = cleanupErrors.joined(separator: "; ") }
 	        let outcome = cleanupErrors.isEmpty ? "ok" : "ok_cleanup_failed"
-	        return RunProbeResponse(rc: 0, stdout: "", stderr: "", normalized_outcome: outcome, errno: nil, error: cleanupErrors.isEmpty ? nil : cleanupErrors.joined(separator: "; "), details: details, layer_attribution: nil, sandbox_log_excerpt_ref: nil)
+	        return RunProbeResponse(rc: 0, stdout: "", stderr: "", normalized_outcome: outcome, errno: nil, error: cleanupErrors.isEmpty ? nil : cleanupErrors.joined(separator: "; "), details: details, layer_attribution: nil)
 	    }
 
 	    // MARK: - capabilities_snapshot (observer)
@@ -2802,8 +2528,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	            errno: nil,
 	            error: nil,
 	            details: details,
-	            layer_attribution: LayerAttribution(world_shape_change: worldShapeChange),
-	            sandbox_log_excerpt_ref: nil
+	            layer_attribution: LayerAttribution(world_shape_change: worldShapeChange)
 	        )
 	    }
 
@@ -2844,8 +2569,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                    "sandbox_check_operation": operation,
 	                    "sandbox_check_path": path ?? "",
 	                ]),
-	                layer_attribution: nil,
-	                sandbox_log_excerpt_ref: nil
+	                layer_attribution: nil
 	            )
 	        }
 
@@ -2898,8 +2622,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	            errno: nil,
 	            error: nil,
 	            details: details,
-	            layer_attribution: nil,
-	            sandbox_log_excerpt_ref: nil
+	            layer_attribution: nil
 	        )
 	    }
 
@@ -2944,8 +2667,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                errno: nil,
 	                error: nil,
 	                details: details,
-	                layer_attribution: nil,
-	                sandbox_log_excerpt_ref: nil
+	                layer_attribution: nil
 	            )
 	        }
 
@@ -3003,8 +2725,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
                     "op": op.rawValue,
                     "file_path": path,
                 ]),
-	                layer_attribution: nil,
-	                sandbox_log_excerpt_ref: nil
+	                layer_attribution: nil
 	            )
 	        }
 
@@ -3025,8 +2746,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	                errno: errno,
 	                error: error,
 	                details: details,
-	                layer_attribution: nil,
-	                sandbox_log_excerpt_ref: nil
+	                layer_attribution: nil
 	            )
 	        }
 
@@ -3118,8 +2838,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
             details: baseDetails([
                 "probe_family": "bad_request",
             ]),
-            layer_attribution: nil,
-            sandbox_log_excerpt_ref: nil
+            layer_attribution: nil
         )
     }
 

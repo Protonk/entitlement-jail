@@ -2,194 +2,6 @@ import Foundation
 import Security
 import Darwin
 
-private func printUsage() {
-    let exe = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "witness-substrate"
-    fputs(
-        """
-        usage:
-          \(exe) probe <probe-id> [probe-args...]
-          \(exe) quarantine-lab <payload-class> [options...]
-
-        probe-id:
-          probe_catalog
-          world_shape
-          network_tcp_connect   --host <ipv4> --port <1..65535>
-          downloads_rw          [--name <file-name>]
-          fs_op                 --op <stat|open_read|open_write|create|truncate|rename|unlink|mkdir|rmdir|listdir|readlink|realpath>
-                               (--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches>)
-                               [--target <base|harness_dir|run_dir|specimen_file>] [--name <file-name>] [--to <path>] [--to-name <file-name>]
-                               [--max-entries <n>] [--allow-unsafe-path]
-          fs_op_wait            --op <stat|open_read|open_write|create|truncate|rename|unlink|mkdir|rmdir|listdir|readlink|realpath>
-                               (--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches>)
-                               [--target <base|harness_dir|run_dir|specimen_file>] [--name <file-name>] [--to <path>] [--to-name <file-name>]
-                               [--max-entries <n>] [--allow-unsafe-path]
-                               (--wait-fifo <path> | --wait-exists <path>) [--wait-timeout-ms <n>] [--wait-interval-ms <n>]
-          net_op                --op <getaddrinfo|tcp_connect|udp_send> --host <host> [--port <1..65535>] [--numeric]
-          dlopen_external       --path <abs> (or set EJ_DLOPEN_PATH)
-          jit_map_jit           [--size <bytes>]
-          jit_rwx_legacy        [--size <bytes>]
-          bookmark_op           --bookmark-b64 <base64> | --bookmark-path <path>
-                               [--relative <rel>] [--op <fs_op-op>] [--allow-unsafe-path]
-          bookmark_make         --path <abs> [--no-security-scope] [--read-only] [--allow-missing]
-          bookmark_roundtrip    --path <abs> [--op <fs_op-op>] [--relative <rel>] [--no-security-scope] [--read-only] [--allow-missing] [--allow-unsafe-path]
-          capabilities_snapshot
-          sandbox_check         --operation <sandbox-op> [--path <abs>] [--repeat <n>]
-          userdefaults_op       --op <read|write|remove|sync> [--key <k>] [--value <v>] [--suite <suite>]
-          fs_xattr              --op <get|list|set|remove> --path <abs> [--name <xattr>] [--value <v>] [--allow-write] [--allow-unsafe-path]
-          fs_coordinated_op     --op <read|write> (--path <abs> | --path-class <...>) [--allow-unsafe-path]
-
-        tip:
-          use "<probe-id> --help" for per-probe usage (help text is returned in JSON stdout)
-
-        payload-class:
-          shell_script | command_file | text | webarchive_like
-
-        quarantine-lab options:
-          --operation <create_new|open_only|open_existing_save>
-          --existing-path <path>        (required for open_existing_save; optional for open_only)
-          --dir <tmp|app_support>
-          --name <file-name>
-          --selection <string>          (annotation only; does not grant access)
-          --test-case-id <id>
-          --exec | --no-exec
-        """,
-        stderr
-    )
-}
-
-enum SubstrateExit {
-    static func json<T: Encodable>(_ value: T, rc: Int32) -> Never {
-        do {
-            let data = try encodeJSON(value)
-            if let s = String(data: data, encoding: .utf8) {
-                print(s)
-            } else {
-                fputs("failed to encode utf8 json\n", stderr)
-            }
-            exit(rc)
-        } catch {
-            fputs("failed to encode json: \(error)\n", stderr)
-            exit(2)
-        }
-    }
-}
-
-let args = CommandLine.arguments
-guard args.count >= 2 else {
-    printUsage()
-    exit(2)
-}
-
-switch args[1] {
-case "probe":
-	    guard args.count >= 3 else {
-	        printUsage()
-	        exit(2)
-	    }
-	    let probeId = args[2]
-	    let probeArgs = Array(args.dropFirst(3))
-	    let req = RunProbeRequest(plan_id: nil, probe_id: probeId, argv: probeArgs)
-	    let resp = InProcessProbeCore.run(req)
-	    SubstrateExit.json(resp, rc: Int32(clamping: resp.rc))
-
-case "quarantine-lab":
-    guard args.count >= 3 else {
-        printUsage()
-        exit(2)
-    }
-
-    let payloadClass = args[2]
-
-    var pathClass: String? = "tmp"
-    var operation: String? = "create_new"
-    var existingPath: String?
-    var fileName: String?
-    var selectionMechanism: String?
-    var testCaseId: String?
-    var makeExecutable: Bool?
-
-    var i = 3
-    while i < args.count {
-        switch args[i] {
-        case "-h", "--help":
-            printUsage()
-            exit(0)
-        case "--dir":
-            guard i + 1 < args.count else {
-                fputs("missing value for --dir\n", stderr)
-                exit(2)
-            }
-            pathClass = args[i + 1]
-            i += 2
-        case "--operation":
-            guard i + 1 < args.count else {
-                fputs("missing value for --operation\n", stderr)
-                exit(2)
-            }
-            operation = args[i + 1]
-            i += 2
-        case "--existing-path":
-            guard i + 1 < args.count else {
-                fputs("missing value for --existing-path\n", stderr)
-                exit(2)
-            }
-            existingPath = args[i + 1]
-            i += 2
-        case "--name":
-            guard i + 1 < args.count else {
-                fputs("missing value for --name\n", stderr)
-                exit(2)
-            }
-            fileName = args[i + 1]
-            i += 2
-        case "--selection":
-            guard i + 1 < args.count else {
-                fputs("missing value for --selection\n", stderr)
-                exit(2)
-            }
-            selectionMechanism = args[i + 1]
-            i += 2
-        case "--test-case-id":
-            guard i + 1 < args.count else {
-                fputs("missing value for --test-case-id\n", stderr)
-                exit(2)
-            }
-            testCaseId = args[i + 1]
-            i += 2
-        case "--exec":
-            makeExecutable = true
-            i += 1
-        case "--no-exec":
-            makeExecutable = false
-            i += 1
-        default:
-            fputs("unknown option: \(args[i])\n", stderr)
-            printUsage()
-            exit(2)
-        }
-    }
-
-    let request = QuarantineWriteRequest(
-        test_case_id: testCaseId,
-        selection_mechanism: selectionMechanism,
-        path_class: pathClass,
-        operation: operation,
-        payload_class: payloadClass,
-        existing_path: existingPath,
-        file_name: fileName,
-        make_executable: makeExecutable
-    )
-
-    let resp = QuarantineLabLocal().write(request)
-    SubstrateExit.json(resp, rc: Int32(clamping: resp.rc))
-
-default:
-    printUsage()
-    exit(2)
-}
-
-// MARK: - Local Quarantine Lab implementation (unsandboxed baseline/policy witness)
-
 enum QuarantineLabError: LocalizedError {
     case invalidPathClass(String)
     case invalidFileName(String)
@@ -219,7 +31,36 @@ enum QuarantineLabError: LocalizedError {
     }
 }
 
-final class QuarantineLabLocal {
+final class QuarantineLabService: NSObject, QuarantineLabProtocol {
+    func writeArtifact(_ request: Data, withReply reply: @escaping (Data) -> Void) {
+        let response: QuarantineWriteResponse
+        do {
+            let decoded = try decodeJSON(QuarantineWriteRequest.self, from: request)
+            response = write(decoded)
+        } catch {
+            response = QuarantineWriteResponse(
+                rc: 2,
+                normalized_outcome: "bad_request",
+                error: "bad request: \(error)",
+                has_app_sandbox: entitlementBool("com.apple.security.app-sandbox"),
+                has_user_selected_executable: entitlementBool("com.apple.security.files.user-selected.executable"),
+                service_bundle_id: Bundle.main.bundleIdentifier,
+                layer_attribution: LayerAttribution(
+                    quarantine_delta: "not_written",
+                    gatekeeper_signal: "not_tested",
+                    other: "seatbelt:process_exec_not_attempted"
+                )
+            )
+        }
+
+        do {
+            reply(try encodeJSON(response))
+        } catch {
+            let fallback = #"{"schema_version":2,"rc":2,"normalized_outcome":"encode_failed"}"#
+            reply(Data(fallback.utf8))
+        }
+    }
+
     private struct QuarantineSnapshot {
         var exists: Bool
         var present: Bool
@@ -227,7 +68,101 @@ final class QuarantineLabLocal {
         var error: String?
     }
 
-    func write(_ req: QuarantineWriteRequest) -> QuarantineWriteResponse {
+    private func quarantineSnapshot(path: String) -> QuarantineSnapshot {
+        let exists = FileManager.default.fileExists(atPath: path)
+        if !exists {
+            return QuarantineSnapshot(exists: false, present: false, raw: nil, error: nil)
+        }
+        switch readXattr(path: path, name: "com.apple.quarantine") {
+        case .present(let v):
+            return QuarantineSnapshot(exists: true, present: true, raw: v, error: nil)
+        case .absent:
+            return QuarantineSnapshot(exists: true, present: false, raw: nil, error: nil)
+        case .error(let e):
+            return QuarantineSnapshot(exists: true, present: false, raw: nil, error: e)
+        }
+    }
+
+    private func quarantineDelta(before: QuarantineSnapshot, after: QuarantineSnapshot) -> String {
+        if before.error != nil || after.error != nil {
+            return "xattr_error"
+        }
+        if !before.exists && after.exists {
+            return after.present ? "added" : "absent"
+        }
+        if before.present && !after.present {
+            return "removed"
+        }
+        if !before.present && after.present {
+            return "added"
+        }
+        if before.present && after.present {
+            return before.raw == after.raw ? "unchanged" : "changed"
+        }
+        return "absent"
+    }
+
+    private func parseQuarantineXattr(raw: String) -> QuarantineXattrParsed {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fields = trimmed.split(separator: ";", omittingEmptySubsequences: false).map(String.init)
+
+        let flagsRaw = fields.indices.contains(0) ? fields[0] : nil
+        let (flagsInt, flagsHex): (Int?, String?) = {
+            guard let flagsRaw else { return (nil, nil) }
+            let s = flagsRaw.hasPrefix("0x") ? String(flagsRaw.dropFirst(2)) : flagsRaw
+            guard let v = Int(s, radix: 16) else { return (nil, nil) }
+            return (v, String(format: "0x%X", v))
+        }()
+
+        let timestampRaw = fields.indices.contains(1) ? fields[1] : nil
+        let (timestampUnix, timestampIso): (Int?, String?) = {
+            guard let timestampRaw else { return (nil, nil) }
+            let s = timestampRaw.hasPrefix("0x") ? String(timestampRaw.dropFirst(2)) : timestampRaw
+
+            let hasHexLetter = s.range(of: "[A-Fa-f]", options: .regularExpression) != nil
+            let preferHex = hasHexLetter || s.count <= 8
+
+            let hexCandidate = Int(s, radix: 16)
+            let decCandidate = Int(s, radix: 10)
+
+            func plausible(_ t: Int) -> Bool {
+                // 2000-01-01T00:00:00Z .. 2100-01-01T00:00:00Z
+                t >= 946684800 && t <= 4102444800
+            }
+
+            let candidates: [Int?] = preferHex ? [hexCandidate, decCandidate] : [decCandidate, hexCandidate]
+            guard let unix = candidates.compactMap({ $0 }).first(where: plausible) ?? candidates.compactMap({ $0 }).first else {
+                return (nil, nil)
+            }
+
+            let date = Date(timeIntervalSince1970: TimeInterval(unix))
+            let fmt = ISO8601DateFormatter()
+            fmt.formatOptions = [.withInternetDateTime]
+            return (unix, fmt.string(from: date))
+        }()
+
+        let agent = fields.indices.contains(2) ? fields[2] : nil
+        let uuid = fields.indices.contains(3) ? fields[3] : nil
+
+        return QuarantineXattrParsed(
+            raw: trimmed,
+            fields: fields,
+            flags_raw: flagsRaw,
+            flags_hex: flagsHex,
+            flags_int: flagsInt,
+            timestamp_raw: timestampRaw,
+            timestamp_unix: timestampUnix,
+            timestamp_iso8601: timestampIso,
+            agent: agent,
+            uuid: uuid
+        )
+    }
+
+    private func parsedQuarantine(_ raw: String?) -> QuarantineXattrParsed? {
+        raw.map { parseQuarantineXattr(raw: $0) }
+    }
+
+    private func write(_ req: QuarantineWriteRequest) -> QuarantineWriteResponse {
         let serviceBundleId = Bundle.main.bundleIdentifier
         let hasAppSandbox = entitlementBool("com.apple.security.app-sandbox")
         let hasUserSelectedExecutable = entitlementBool("com.apple.security.files.user-selected.executable")
@@ -440,26 +375,28 @@ final class QuarantineLabLocal {
                     targetBefore: before,
                     targetAfter: after,
                     targetPath: destPath,
-                    writtenPath: nil
+                    writtenPath: destPath
                 )
             }
 
-            let makeExecutable = req.make_executable ?? FileManager.default.isExecutableFile(atPath: sourcePath)
+            let defaultExec = FileManager.default.isExecutableFile(atPath: sourcePath)
+            let makeExecutable = req.make_executable ?? defaultExec
             if makeExecutable {
                 _ = addExecuteBits(destPath)
             }
+
             let after = quarantineSnapshot(path: destPath)
             let qDelta = quarantineDelta(before: before, after: after)
 
             return QuarantineWriteResponse(
                 rc: 0,
-                normalized_outcome: "opened_existing_saved",
+                normalized_outcome: "saved_copy",
                 test_case_id: req.test_case_id,
                 selection_mechanism: req.selection_mechanism,
                 path_class: req.path_class,
                 operation: operation,
                 payload_class: payloadClass,
-                existing_path: req.existing_path,
+                existing_path: sourcePath,
                 existing_quarantine_present: existing.present,
                 existing_quarantine_raw: existing.raw,
                 existing_quarantine_parsed: parsedQuarantine(existing.raw),
@@ -582,40 +519,43 @@ final class QuarantineLabLocal {
             }
             base = requested
         } else {
-            base = "quarantine-lab"
+            base = "artifact-\(UUID().uuidString)"
         }
 
-        let ext: String
         switch payloadClass {
-        case "shell_script":
-            ext = "sh"
         case "command_file":
-            ext = "command"
+            return base.hasSuffix(".command") ? base : "\(base).command"
+        case "shell_script":
+            return base.hasSuffix(".sh") ? base : "\(base).sh"
         case "text":
-            ext = "txt"
+            return base.hasSuffix(".txt") ? base : "\(base).txt"
         case "webarchive_like":
-            ext = "webarchive"
+            return base.hasSuffix(".webarchive") ? base : "\(base).webarchive"
         default:
             throw QuarantineLabError.invalidPayloadClass(payloadClass)
         }
-
-        if base.contains(".") {
-            return base
-        }
-        return "\(base).\(ext)"
     }
 
     private func makePayload(payloadClass: String, testCaseId: String?) throws -> (Data, Bool) {
-        let idSuffix = testCaseId.map { " # \(String($0.prefix(80)))" } ?? ""
+        let tag = testCaseId ?? ""
         switch payloadClass {
-        case "shell_script":
-            return (Data("#!/bin/sh\necho hello\(idSuffix)\n".utf8), true)
-        case "command_file":
-            return (Data("#!/bin/sh\necho hello\(idSuffix)\n".utf8), true)
+        case "shell_script", "command_file":
+            let script = """
+            #!/bin/sh
+            echo "entitlement-jail quarantine-lab \(tag)"
+            exit 0
+            """
+            return (Data(script.utf8), true)
         case "text":
-            return (Data("hello\(idSuffix)\n".utf8), false)
+            return (Data("entitlement-jail quarantine-lab \(tag)\n".utf8), false)
         case "webarchive_like":
-            let s = """
+            // Minimal plist-ish payload; intended for quarantine/writing experiments, not for correctness as a WebArchive.
+            let html = """
+            <!DOCTYPE html>
+            <html><body>entitlement-jail quarantine-lab \(tag)</body></html>
+            """
+            let b64 = Data(html.utf8).base64EncodedString()
+            let plist = """
             <?xml version="1.0" encoding="UTF-8"?>
             <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
             <plist version="1.0">
@@ -623,111 +563,24 @@ final class QuarantineLabLocal {
               <key>WebMainResource</key>
               <dict>
                 <key>WebResourceData</key>
-                <data>SGVsbG8=\n</data>
+                <data>\(b64)</data>
                 <key>WebResourceMIMEType</key>
                 <string>text/html</string>
+                <key>WebResourceTextEncodingName</key>
+                <string>utf-8</string>
               </dict>
             </dict>
             </plist>
             """
-            return (Data(s.utf8), false)
+            return (Data(plist.utf8), false)
         default:
             throw QuarantineLabError.invalidPayloadClass(payloadClass)
         }
     }
 
-    private func quarantineSnapshot(path: String) -> QuarantineSnapshot {
-        let exists = FileManager.default.fileExists(atPath: path)
-        if !exists {
-            return QuarantineSnapshot(exists: false, present: false, raw: nil, error: nil)
-        }
-        switch readXattr(path: path, name: "com.apple.quarantine") {
-        case .present(let v):
-            return QuarantineSnapshot(exists: true, present: true, raw: v, error: nil)
-        case .absent:
-            return QuarantineSnapshot(exists: true, present: false, raw: nil, error: nil)
-        case .error(let e):
-            return QuarantineSnapshot(exists: true, present: false, raw: nil, error: e)
-        }
-    }
-
-    private func quarantineDelta(before: QuarantineSnapshot, after: QuarantineSnapshot) -> String {
-        if before.error != nil || after.error != nil {
-            return "xattr_error"
-        }
-        if !before.exists && after.exists {
-            return after.present ? "added" : "absent"
-        }
-        if before.present && !after.present {
-            return "removed"
-        }
-        if !before.present && after.present {
-            return "added"
-        }
-        if before.present && after.present {
-            return before.raw == after.raw ? "unchanged" : "changed"
-        }
-        return "absent"
-    }
-
-    private func parseQuarantineXattr(raw: String) -> QuarantineXattrParsed {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        let fields = trimmed.split(separator: ";", omittingEmptySubsequences: false).map(String.init)
-
-        let flagsRaw = fields.indices.contains(0) ? fields[0] : nil
-        let (flagsInt, flagsHex): (Int?, String?) = {
-            guard let flagsRaw else { return (nil, nil) }
-            let s = flagsRaw.hasPrefix("0x") ? String(flagsRaw.dropFirst(2)) : flagsRaw
-            guard let v = Int(s, radix: 16) else { return (nil, nil) }
-            return (v, String(format: "0x%X", v))
-        }()
-
-        let timestampRaw = fields.indices.contains(1) ? fields[1] : nil
-        let (timestampUnix, timestampIso): (Int?, String?) = {
-            guard let timestampRaw else { return (nil, nil) }
-            let s = timestampRaw.hasPrefix("0x") ? String(timestampRaw.dropFirst(2)) : timestampRaw
-
-            let hasHexLetter = s.range(of: "[A-Fa-f]", options: .regularExpression) != nil
-            let preferHex = s.hasPrefix("0x") || hasHexLetter
-
-            let unix: Int?
-            if preferHex {
-                unix = Int(s, radix: 16)
-            } else {
-                unix = Int(s)
-            }
-
-            guard let unix else { return (nil, nil) }
-
-            let date = Date(timeIntervalSince1970: TimeInterval(unix))
-            let fmt = ISO8601DateFormatter()
-            return (unix, fmt.string(from: date))
-        }()
-
-        let agent = fields.indices.contains(2) ? fields[2] : nil
-        let uuid = fields.indices.contains(3) ? fields[3] : nil
-
-        return QuarantineXattrParsed(
-            raw: trimmed,
-            fields: fields,
-            flags_raw: flagsRaw,
-            flags_hex: flagsHex,
-            flags_int: flagsInt,
-            timestamp_raw: timestampRaw,
-            timestamp_unix: timestampUnix,
-            timestamp_iso8601: timestampIso,
-            agent: agent,
-            uuid: uuid
-        )
-    }
-
-    private func parsedQuarantine(_ raw: String?) -> QuarantineXattrParsed? {
-        raw.map { parseQuarantineXattr(raw: $0) }
-    }
-
     private enum XattrRead {
-        case absent
         case present(String)
+        case absent
         case error(String)
     }
 
@@ -738,7 +591,7 @@ final class QuarantineLabLocal {
             }
         }
         if size < 0 {
-            if errno == ENOATTR {
+            if errno == ENOATTR || errno == ENODATA {
                 return .absent
             }
             return .error(String(cString: strerror(errno)))
@@ -803,5 +656,14 @@ final class QuarantineLabLocal {
             return n.boolValue
         }
         return false
+    }
+}
+
+final class QuarantineLabServiceDelegate: NSObject, NSXPCListenerDelegate {
+    func listener(_ listener: NSXPCListener, shouldAcceptNewConnection newConnection: NSXPCConnection) -> Bool {
+        newConnection.exportedInterface = NSXPCInterface(with: QuarantineLabProtocol.self)
+        newConnection.exportedObject = QuarantineLabService()
+        newConnection.resume()
+        return true
     }
 }
