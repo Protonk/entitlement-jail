@@ -170,12 +170,11 @@ $EJ xpc run --profile fully_injectable_extensions --ack-risk fully_injectable_ex
 Example: issue a read extension for a harness file, consume it in `minimal`, then re-run the read:
 
 ```sh
-$EJ xpc run --profile fully_injectable_extensions --ack-risk fully_injectable_extensions fs_op --op create --path-class tmp --target specimen_file --name ej_extension.txt > /tmp/ej_issue_file.json
-FILE_PATH=$(plutil -extract data.details.file_path raw -o - /tmp/ej_issue_file.json)
-
 $EJ xpc run --profile fully_injectable_extensions --ack-risk fully_injectable_extensions sandbox_extension \
-  --op issue_file --class com.apple.app-sandbox.read --path "$FILE_PATH" > /tmp/ej_issue_token.json
-TOKEN=$(plutil -extract data.stdout raw -o - /tmp/ej_issue_token.json)
+  --op issue_file --class com.apple.app-sandbox.read \
+  --path-class tmp --target specimen_file --name ej_extension.txt --create > /tmp/ej_issue_token.json
+FILE_PATH=$(plutil -extract data.details.file_path raw -o - /tmp/ej_issue_token.json)
+TOKEN=$(plutil -extract data.details.token raw -o - /tmp/ej_issue_token.json)
 
 $EJ xpc run --profile minimal fs_op --op open_read --path "$FILE_PATH"
 $EJ xpc run --profile minimal sandbox_extension --op consume --token "$TOKEN"
@@ -186,7 +185,15 @@ $EJ xpc run --profile minimal sandbox_extension --op release --token "$TOKEN"
 Notes:
 
 - If you want to issue extensions for a non-harness path, pass `--allow-unsafe-path` to `sandbox_extension --op issue_file`.
+- Tokens are returned in `data.details.token` and also in `data.stdout`.
+- If consume/release fails with invalid-token style errors, try `--token-format prefix`.
 - For read/write testing, issue `com.apple.app-sandbox.read-write` and use a write op (for example `fs_op --op open_write`) after consuming the token.
+- For a clear “denied → allowed” witness, use a world-readable file that App Sandbox blocks by default (for example `/private/var/db/launchd.db/com.apple.launchd/overrides.plist`). On Sonoma, `/etc/hosts` is often already readable, so it won’t show a before/after change.
+- If you need to keep a harness file across rename/truncate during `update_file_by_fileid` experiments, add `fs_op --no-cleanup` so the harness path isn’t removed.
+- To issue directly to a target process, use `sandbox_extension --op issue_file_to_pid --pid <pid|self>`; the service pid is included as `data.details.service_pid` on every probe response.
+- Consume/release auto-try wrapper symbols when available; use `--call-symbol`/`--call-variant` to pin a specific ABI path for debugging.
+- On Sonoma 14.4.1, `release`/`release_file` did not revoke access inside the same process; access cleared after the process exited. Treat release as best-effort cleanup and verify on your target OS.
+- Advanced: `issue_extension`/`issue_fs_extension`/`issue_fs_rw_extension` are wrapper issue calls. `update_file` (path + flags) and `update_file_by_fileid` (token + file id + flags; some hosts expect a fileid pointer, try `--call-variant fileid_ptr_token`, or a selector via `--call-variant payload_ptr_selector --selector <u64>`) are experimental maintenance calls that may not affect access in-process. On Sonoma 14.4.1, kernel disassembly suggests `update_file_by_fileid` expects an internal id (low 32 bits of an 8-byte payload) and requires field2 = 0, so success may require a handle not exposed via the public token string.
 
 ### Deterministic debugger attach (`xpc session`)
 

@@ -269,7 +269,7 @@ public enum InProcessProbeCore {
 fs_op --op <stat|open_read|open_write|create|truncate|rename|unlink|mkdir|rmdir|listdir|readlink|realpath>
       (--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches>)
       [--target <base|harness_dir|run_dir|specimen_file>] [--name <file-name>]
-      [--to <path>|--to-path <path>|--to-name <file-name>] [--max-entries <n>] [--allow-unsafe-path]
+      [--to <path>|--to-path <path>|--to-name <file-name>] [--max-entries <n>] [--allow-unsafe-path] [--no-cleanup]
 """,
             required_args: [
                 "--op <stat|open_read|open_write|create|truncate|rename|unlink|mkdir|rmdir|listdir|readlink|realpath>",
@@ -280,7 +280,8 @@ fs_op --op <stat|open_read|open_write|create|truncate|rename|unlink|mkdir|rmdir|
                 "--name <file-name>",
                 "--to <path> | --to-path <path> | --to-name <file-name>",
                 "--max-entries <n>",
-                "--allow-unsafe-path"
+                "--allow-unsafe-path",
+                "--no-cleanup"
             ],
             examples: [
                 "fs_op --op stat --path-class downloads",
@@ -288,7 +289,8 @@ fs_op --op <stat|open_read|open_write|create|truncate|rename|unlink|mkdir|rmdir|
             ],
             entitlement_hints: ["path-dependent (file access entitlements)"],
             notes: [
-                "Destructive direct-path ops are refused unless you use --path-class/--target (or a path under */entitlement-jail-harness/*) or set --allow-unsafe-path."
+                "Destructive direct-path ops are refused unless you use --path-class/--target (or a path under */entitlement-jail-harness/*) or set --allow-unsafe-path.",
+                "Use --no-cleanup to keep harness artifacts after rename/truncate for update_file_by_fileid experiments."
             ]
         ),
         ProbeSpec(
@@ -298,7 +300,7 @@ fs_op --op <stat|open_read|open_write|create|truncate|rename|unlink|mkdir|rmdir|
 fs_op_wait --op <stat|open_read|open_write|create|truncate|rename|unlink|mkdir|rmdir|listdir|readlink|realpath>
           (--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches>)
           [--target <base|harness_dir|run_dir|specimen_file>] [--name <file-name>]
-          [--to <path>|--to-path <path>|--to-name <file-name>] [--max-entries <n>] [--allow-unsafe-path]
+          [--to <path>|--to-path <path>|--to-name <file-name>] [--max-entries <n>] [--allow-unsafe-path] [--no-cleanup]
           (--wait-fifo <path> | --wait-exists <path>) [--wait-timeout-ms <n>] [--wait-interval-ms <n>]
 """,
             required_args: [
@@ -312,6 +314,7 @@ fs_op_wait --op <stat|open_read|open_write|create|truncate|rename|unlink|mkdir|r
                 "--to <path> | --to-path <path> | --to-name <file-name>",
                 "--max-entries <n>",
                 "--allow-unsafe-path",
+                "--no-cleanup",
                 "--wait-timeout-ms <n>",
                 "--wait-interval-ms <n>"
             ],
@@ -524,32 +527,85 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 sandbox_extension --op issue_file --class <extension-class>
                  (--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches>)
                  [--target <base|harness_dir|run_dir|specimen_file>] [--name <filename>]
-                 [--flags <int>] [--allow-unsafe-path]
-sandbox_extension --op consume --token <token>
-sandbox_extension --op release --token <token>
+                 [--flags <int>] [--create] [--allow-unsafe-path] [--introspect]
+sandbox_extension --op issue_file_to_pid --pid <int|self> --class <extension-class>
+                 (--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches>)
+                 [--target <base|harness_dir|run_dir|specimen_file>] [--name <filename>]
+                 [--flags <int>] [--create] [--allow-unsafe-path] [--introspect]
+sandbox_extension --op issue_extension
+                 (--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches>)
+                 [--target <base|harness_dir|run_dir|specimen_file>] [--name <filename>]
+                 [--create] [--allow-unsafe-path] [--introspect]
+sandbox_extension --op issue_fs_extension [--flags <int>]
+                 (--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches>)
+                 [--target <base|harness_dir|run_dir|specimen_file>] [--name <filename>]
+                 [--create] [--allow-unsafe-path] [--introspect]
+sandbox_extension --op issue_fs_rw_extension
+                 (--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches>)
+                 [--target <base|harness_dir|run_dir|specimen_file>] [--name <filename>]
+                 [--create] [--allow-unsafe-path] [--introspect]
+sandbox_extension --op consume --token <token> [--token-format <full|prefix>]
+                 [--call-symbol <symbol>] [--call-variant <one_arg|two_arg|token_second|token_and_ptr|auto>] [--flags <int>] [--introspect]
+sandbox_extension --op release --token <token> [--token-format <full|prefix>]
+                 [--call-symbol <symbol>] [--call-variant <one_arg|two_arg|token_and_ptr|auto>] [--flags <int>] [--introspect]
+sandbox_extension --op release_file --token <token> [--token-format <full|prefix>]
+                 [--introspect]
+sandbox_extension --op update_file (--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches>)
+                 [--target <base|harness_dir|run_dir|specimen_file>] [--name <filename>]
+                 [--flags <int>] [--allow-unsafe-path] [--introspect]
+sandbox_extension --op update_file_by_fileid --token <token> (--file-id <u64> | --path <abs>)
+                 [--flags <int>] [--selector <u64>] [--call-variant <token_fileid|fileid_token|fileid_ptr_token|token_ptr_fileid|fileid_ptr_selector|payload_ptr_selector|auto>] [--introspect]
 """,
             required_args: [
-                "--op <issue_file|consume|release>"
+                "--op <issue_file|issue_file_to_pid|issue_extension|issue_fs_extension|issue_fs_rw_extension|consume|release|release_file|update_file|update_file_by_fileid>"
             ],
             optional_args: [
-                "--class <extension-class> (required for issue_file)",
-                "--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches> (required for issue_file)",
+                "--class <extension-class> (required for issue_file/issue_file_to_pid)",
+                "--pid <int|self> (required for issue_file_to_pid)",
+                "--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches> (required for issue_file/issue_file_to_pid/issue_*/update_file)",
+                "--file-id <u64> (required for update_file_by_fileid unless --path is provided)",
+                "--selector <u64> (required for update_file_by_fileid payload_ptr_selector)",
                 "--target <base|harness_dir|run_dir|specimen_file> (default: specimen_file)",
                 "--name <filename>",
-                "--flags <int> (default: 0)",
+                "--flags <int> (default: 0; issue_file/issue_fs_extension/update_file/update_file_by_fileid or consume/release with two_arg)",
+                "--create (create a harness file/dir for issue_file if missing)",
                 "--allow-unsafe-path",
-                "--token <token> (required for consume/release)"
+                "--introspect (emit symbol presence + image path in details)",
+                "--token <token> (required for consume/release/release_file/update_file_by_fileid)",
+                "--token-format <full|prefix> (default: full; consume/release/update_file_by_fileid)",
+                "--call-symbol <symbol> (override consume/release symbol; advanced)",
+                "--call-variant <one_arg|two_arg|token_second|token_and_ptr|token_fileid|fileid_token|fileid_ptr_token|token_ptr_fileid|fileid_ptr_selector|payload_ptr_selector|auto> (default: auto; consume/release/update_file_by_fileid)"
             ],
             examples: [
                 "sandbox_extension --op issue_file --class com.apple.app-sandbox.read --path /etc/hosts --allow-unsafe-path",
-                "sandbox_extension --op consume --token <token>"
+                "sandbox_extension --op issue_file --class com.apple.app-sandbox.read --path-class tmp --target specimen_file --name ej_extension.txt --create",
+                "sandbox_extension --op issue_file_to_pid --pid self --class com.apple.app-sandbox.read --path /etc/hosts --allow-unsafe-path",
+                "sandbox_extension --op issue_extension --path-class tmp --target specimen_file --name ej_extension.txt --create",
+                "sandbox_extension --op issue_fs_extension --flags 8 --path /etc/hosts --allow-unsafe-path",
+                "sandbox_extension --op consume --token <token> --token-format full",
+                "sandbox_extension --op consume --token <token> --call-variant token_second --call-symbol sandbox_consume_extension",
+                "sandbox_extension --op consume --token <token> --call-variant token_and_ptr --call-symbol sandbox_consume_fs_extension",
+                "sandbox_extension --op release_file --token <token>",
+                "sandbox_extension --op update_file --path /etc/hosts --flags 0 --allow-unsafe-path",
+                "sandbox_extension --op update_file_by_fileid --token <token> --path /etc/hosts --flags 0",
+                "sandbox_extension --op update_file_by_fileid --token <token> --file-id <u64> --selector 2 --call-variant payload_ptr_selector",
+                "sandbox_extension --op issue_file --class com.apple.app-sandbox.read --path /etc/hosts --allow-unsafe-path --introspect"
             ],
             entitlement_hints: [
                 "com.apple.security.temporary-exception.sbpl (allow file-issue-extension for extension class)"
             ],
             notes: [
-                "issue_file returns the token in stdout.",
-                "Direct-path issuance outside */entitlement-jail-harness/* is refused unless you pass --allow-unsafe-path."
+                "issue_file returns the token in stdout and in details.token.",
+                "issue_file_to_pid issues a token scoped to another process via sandbox_extension_issue_file_to_process_by_pid.",
+                "issue_extension/issue_fs_extension/issue_fs_rw_extension are thin wrappers around sandbox_extension_issue_file.",
+                "Direct-path issuance outside */entitlement-jail-harness/* is refused unless you pass --allow-unsafe-path.",
+                "If consume/release fails with invalid-token style errors, try --token-format prefix (uses the substring before the first ';').",
+                "Consume/release auto-tries common symbols when --call-symbol is not set; use --call-symbol/--call-variant to pin behavior.",
+                "release_file calls sandbox_extension_release_file with the provided token only.",
+                "update_file passes path + flags into sandbox_extension_update_file; update_file_by_fileid is experimental and supports multiple ABI variants, including pointer-based forms.",
+                "payload_ptr_selector uses an 8-byte payload buffer + selector and forces field2 to 0 (Sonoma 14.4.1 ABI).",
+                "If update_file_by_fileid returns invalid-arg/Bad address, try --call-variant payload_ptr_selector and a selector of 0/1/2.",
+                "Wrapper symbols use specific variants: sandbox_consume_extension=token_second, sandbox_consume_fs_extension=token_and_ptr, sandbox_release_fs_extension=one_arg."
             ]
         ),
         ProbeSpec(
@@ -1241,9 +1297,10 @@ sandbox_extension --op release --token <token>
 	            return badRequest("missing/invalid --op (expected: \(expectedOps))")
 	        }
 
-	        let allowUnsafe = args.has("--allow-unsafe-path") || args.has("--unsafe-path")
-	        let directPath = args.value("--path")
-	        let pathClass = args.value("--path-class")
+        let allowUnsafe = args.has("--allow-unsafe-path") || args.has("--unsafe-path")
+        let skipCleanup = args.has("--no-cleanup")
+        let directPath = args.value("--path")
+        let pathClass = args.value("--path-class")
 
 	        if (directPath == nil) == (pathClass == nil) {
 	            return badRequest("provide exactly one of --path or --path-class")
@@ -1283,8 +1340,9 @@ sandbox_extension --op release --token <token>
 	            "file_path": resolvedTarget.path,
 	            "base_dir": resolvedTarget.baseDir ?? "",
 	            "harness_dir": resolvedTarget.harnessDir ?? "",
-	            "run_dir": resolvedTarget.runDir ?? "",
-	        ])
+            "run_dir": resolvedTarget.runDir ?? "",
+        ])
+        details["cleanup_mode"] = skipCleanup ? "disabled" : "default"
 
         let destructiveOps: Set<FsOp> = [.open_write, .create, .truncate, .rename, .unlink, .mkdir, .rmdir]
         if directPath != nil, destructiveOps.contains(op), !allowUnsafe, !isSafeWritePath(resolvedTarget.path) {
@@ -1321,10 +1379,14 @@ sandbox_extension --op release --token <token>
 	            )
 	        }
 
-	        func bestEffortCleanup(_ roots: [String]) {
-	            for p in roots {
-	                do {
-	                    try FileManager.default.removeItem(atPath: p)
+        func bestEffortCleanup(_ roots: [String]) {
+            if skipCleanup {
+                details["cleanup_skipped"] = "true"
+                return
+            }
+            for p in roots {
+                do {
+                    try FileManager.default.removeItem(atPath: p)
 	                } catch {
 	                    if let e = extractErrno(error), e == ENOENT { continue }
 	                    cleanupErrors.append("\(p): \(error)")
@@ -2673,19 +2735,85 @@ sandbox_extension --op release --token <token>
 
 	    private enum SandboxExtensionOp: String, CaseIterable {
 	        case issue_file
+	        case issue_file_to_pid
+	        case issue_extension
+	        case issue_fs_extension
+	        case issue_fs_rw_extension
 	        case consume
 	        case release
+	        case release_file
+	        case update_file
+	        case update_file_by_fileid
 	    }
 
 	    private typealias SandboxExtensionIssueFileFn = @convention(c) (UnsafePointer<CChar>, UnsafePointer<CChar>, Int32) -> UnsafeMutablePointer<CChar>?
+	    private typealias SandboxExtensionIssueFileToPidFn = @convention(c) (UnsafePointer<CChar>, UnsafePointer<CChar>, Int32, pid_t) -> UnsafeMutablePointer<CChar>?
+	    private typealias SandboxIssueExtensionFn = @convention(c) (UnsafePointer<CChar>, UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) -> Int32
+	    private typealias SandboxIssueFsExtensionFn = @convention(c) (UnsafePointer<CChar>, UInt64, UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) -> Int32
+	    private typealias SandboxIssueFsRwExtensionFn = @convention(c) (UnsafePointer<CChar>, UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) -> Int32
 	    private typealias SandboxExtensionConsumeFn = @convention(c) (UnsafePointer<CChar>) -> Int32
 	    private typealias SandboxExtensionReleaseFn = @convention(c) (UnsafePointer<CChar>) -> Int32
+	    private typealias SandboxExtensionConsumeFlagsFn = @convention(c) (UnsafePointer<CChar>, Int32) -> Int32
+	    private typealias SandboxExtensionReleaseFlagsFn = @convention(c) (UnsafePointer<CChar>, Int32) -> Int32
+	    private typealias SandboxExtensionUpdateFileFn = @convention(c) (UnsafePointer<CChar>, UInt32) -> Int32
+	    private typealias SandboxExtensionUpdateFileByFileidFn = @convention(c) (UnsafePointer<CChar>, UInt64, UInt32) -> Int32
+	    private typealias SandboxExtensionUpdateFileByFileidAltFn = @convention(c) (UInt64, UnsafePointer<CChar>, UInt32) -> Int32
+	    private typealias SandboxExtensionUpdateFileByFileidPtrFn = @convention(c) (UnsafePointer<UInt64>, UnsafePointer<CChar>?, UInt32) -> Int32
+	    private typealias SandboxExtensionUpdateFileByFileidPtrAltFn = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<UInt64>, UInt32) -> Int32
+	    private typealias SandboxExtensionUpdateFileByFileidPtrValueFn = @convention(c) (UnsafePointer<UInt64>, UInt64, UInt32) -> Int32
+	    private typealias SandboxConsumeExtensionFn = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> Int32
+	    private typealias SandboxConsumeFsExtensionFn = @convention(c) (UnsafePointer<CChar>?, UnsafeMutablePointer<UnsafePointer<CChar>?>?) -> Int32
+	    private typealias SandboxReleaseFsExtensionFn = @convention(c) (UnsafePointer<CChar>?, UnsafeMutablePointer<UnsafePointer<CChar>?>?) -> Int32
 	    private typealias SandboxExtensionFreeFn = @convention(c) (UnsafeMutablePointer<CChar>?) -> Void
 
 	    private static func resolveSandboxExtensionSymbol(_ name: String) -> UnsafeMutableRawPointer? {
 	        let rtldDefault = UnsafeMutableRawPointer(bitPattern: -2)
 	        return name.withCString { sym in
 	            dlsym(rtldDefault, sym)
+	        }
+	    }
+
+	    private static func resolveSandboxExtensionSymbolInfo(_ name: String) -> (Bool, String?, String?) {
+	        guard let sym = resolveSandboxExtensionSymbol(name) else {
+	            return (false, nil, nil)
+	        }
+	        let addr = String(format: "0x%llx", UInt64(UInt(bitPattern: sym)))
+	        var info = Dl_info()
+	        if dladdr(UnsafeRawPointer(sym), &info) != 0, let fname = info.dli_fname {
+	            return (true, String(cString: fname), addr)
+	        }
+	        return (true, nil, addr)
+	    }
+
+	    private static func appendSandboxExtensionSymbolIntrospection(_ details: inout [String: String]) {
+	        let symbols = [
+	            "sandbox_extension_issue_file",
+	            "sandbox_extension_issue_file_to_self",
+	            "sandbox_extension_issue_file_to_process",
+	            "sandbox_extension_issue_file_to_process_by_pid",
+	            "sandbox_issue_extension",
+	            "sandbox_issue_fs_extension",
+	            "sandbox_issue_fs_rw_extension",
+	            "sandbox_extension_consume",
+	            "sandbox_extension_release",
+	            "sandbox_extension_release_file",
+	            "sandbox_extension_update_file",
+	            "sandbox_extension_update_file_by_fileid",
+	            "sandbox_extension_free",
+	            "sandbox_consume_extension",
+	            "sandbox_consume_fs_extension",
+	            "sandbox_release_fs_extension",
+	        ]
+
+	        for name in symbols {
+	            let (present, image, addr) = resolveSandboxExtensionSymbolInfo(name)
+	            details["symbol_\(name)"] = present ? "present" : "missing"
+	            if let image {
+	                details["symbol_\(name)_image"] = image
+	            }
+	            if let addr {
+	                details["symbol_\(name)_addr"] = addr
+	            }
 	        }
 	    }
 
@@ -2701,9 +2829,12 @@ sandbox_extension --op release --token <token>
 	            "probe_family": "sandbox_extension",
 	            "op": op.rawValue,
 	        ])
+	        if args.has("--introspect") {
+	            appendSandboxExtensionSymbolIntrospection(&details)
+	        }
 
 	        switch op {
-	        case .issue_file:
+	        case .issue_file, .issue_file_to_pid:
 	            guard let extClass = args.value("--class"), !extClass.isEmpty else {
 	                return badRequest("missing --class <extension-class>")
 	            }
@@ -2715,13 +2846,35 @@ sandbox_extension --op release --token <token>
 	                return badRequest("provide exactly one of --path or --path-class")
 	            }
 
-	            if args.has("--flags"), args.intValue("--flags") == nil {
-	                return badRequest("invalid --flags (expected integer)")
-	            }
-	            let flags = Int32(args.intValue("--flags") ?? 0)
+            if args.has("--flags"), args.intValue("--flags") == nil {
+                return badRequest("invalid --flags (expected integer)")
+            }
+            let flags = Int32(args.intValue("--flags") ?? 0)
 
-	            let targetStr = args.value("--target")
-	            let target: FsTarget = targetStr.flatMap { FsTarget(rawValue: $0) } ?? .specimen_file
+            let targetPid: pid_t?
+            if op == .issue_file_to_pid {
+                guard let pidStr = args.value("--pid"), !pidStr.isEmpty else {
+                    return badRequest("missing --pid <int|self> (required for issue_file_to_pid)")
+                }
+                if pidStr == "self" || pidStr == "current" {
+                    targetPid = getpid()
+                } else if let pidVal = Int32(pidStr) {
+                    targetPid = pidVal
+                } else {
+                    return badRequest("invalid --pid (expected integer or 'self')")
+                }
+            } else if args.has("--pid") {
+                return badRequest("--pid is only supported with --op issue_file_to_pid")
+            } else {
+                targetPid = nil
+            }
+
+            let targetStr = args.value("--target")
+            let target: FsTarget = targetStr.flatMap { FsTarget(rawValue: $0) } ?? .specimen_file
+            let create = args.has("--create")
+            if create && target == .base {
+                return badRequest("--create is not supported with --target base")
+            }
 
 	            let (resolvedTarget, resolveErr) = resolveFsTarget(
 	                directPath: directPath,
@@ -2735,52 +2888,128 @@ sandbox_extension --op release --token <token>
 	            }
 
 	            let targetPath = resolvedTarget.path
-	            details["extension_class"] = extClass
-	            details["path_mode"] = (directPath != nil) ? "direct_path" : "path_class"
-	            details["path_class"] = pathClass ?? ""
-	            details["target"] = target.rawValue
-	            details["file_path"] = targetPath
-	            details["base_dir"] = resolvedTarget.baseDir ?? ""
+            details["extension_class"] = extClass
+            details["issue_variant"] = (op == .issue_file_to_pid) ? "issue_file_to_pid" : "issue_file"
+            if let targetPid {
+                details["target_pid"] = "\(targetPid)"
+            }
+            details["path_mode"] = (directPath != nil) ? "direct_path" : "path_class"
+            details["path_class"] = pathClass ?? ""
+            details["target"] = target.rawValue
+            details["file_path"] = targetPath
+            details["base_dir"] = resolvedTarget.baseDir ?? ""
 	            details["harness_dir"] = resolvedTarget.harnessDir ?? ""
 	            details["run_dir"] = resolvedTarget.runDir ?? ""
-	            details["flags"] = "\(flags)"
-	            details["allow_unsafe_path"] = allowUnsafe ? "true" : "false"
+            details["flags"] = "\(flags)"
+            details["allow_unsafe_path"] = allowUnsafe ? "true" : "false"
+            details["create"] = create ? "true" : "false"
 
-	            if directPath != nil, !allowUnsafe, !isSafeWritePath(targetPath) {
-	                return RunProbeResponse(
-	                    rc: 2,
-	                    stdout: "",
+            if directPath != nil, !allowUnsafe, !isSafeWritePath(targetPath) {
+                return RunProbeResponse(
+                    rc: 2,
+                    stdout: "",
 	                    stderr: "",
 	                    normalized_outcome: "bad_request",
 	                    errno: nil,
 	                    error: "refusing to issue extension for non-harness path (use --path-class <...> or a path under */entitlement-jail-harness/*; use --allow-unsafe-path to override)",
 	                    details: details,
-	                    layer_attribution: nil
-	                )
-	            }
+                    layer_attribution: nil
+                )
+            }
 
-	            guard let issueSym = resolveSandboxExtensionSymbol("sandbox_extension_issue_file") else {
-	                return RunProbeResponse(
-	                    rc: 1,
-	                    stdout: "",
+            if create {
+                let targetIsDir = (target == .harness_dir || target == .run_dir)
+                var isDir: ObjCBool = false
+                let exists = FileManager.default.fileExists(atPath: targetPath, isDirectory: &isDir)
+
+                if exists {
+                    if targetIsDir && !isDir.boolValue {
+                        return RunProbeResponse(
+                            rc: 2,
+                            stdout: "",
+                            stderr: "target path exists but is not a directory (use --target specimen_file or remove --create)",
+                            normalized_outcome: "bad_request",
+                            errno: nil,
+                            error: nil,
+                            details: details,
+                            layer_attribution: nil
+                        )
+                    }
+                    if !targetIsDir && isDir.boolValue {
+                        return RunProbeResponse(
+                            rc: 2,
+                            stdout: "",
+                            stderr: "target path exists but is a directory (use --target run_dir/harness_dir or remove --create)",
+                            normalized_outcome: "bad_request",
+                            errno: nil,
+                            error: nil,
+                            details: details,
+                            layer_attribution: nil
+                        )
+                    }
+                    details["target_kind"] = isDir.boolValue ? "directory" : "file"
+                    details["target_created"] = "false"
+                } else {
+                    do {
+                        if targetIsDir {
+                            try FileManager.default.createDirectory(atPath: targetPath, withIntermediateDirectories: true, attributes: nil)
+                            details["target_created"] = "true"
+                            details["target_kind"] = "directory"
+                        } else {
+                            let url = URL(fileURLWithPath: targetPath)
+                            let parent = url.deletingLastPathComponent()
+                            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true, attributes: nil)
+                            let payload = Data("entitlement-jail sandbox_extension\n".utf8)
+                            try payload.write(to: url, options: [.atomic])
+                            details["target_created"] = "true"
+                            details["target_kind"] = "file"
+                        }
+                    } catch {
+                        let e = extractErrno(error)
+                        let outcome = isPermissionError(error) ? "permission_error" : "create_failed"
+                        return RunProbeResponse(
+                            rc: 1,
+                            stdout: "",
+                            stderr: "",
+                            normalized_outcome: outcome,
+                            errno: e,
+                            error: "\(error)",
+                            details: details,
+                            layer_attribution: nil
+                        )
+                    }
+                }
+            }
+
+            let issueSymbol = (op == .issue_file_to_pid) ? "sandbox_extension_issue_file_to_process_by_pid" : "sandbox_extension_issue_file"
+            details["issue_symbol"] = issueSymbol
+            guard let issueSym = resolveSandboxExtensionSymbol(issueSymbol) else {
+                return RunProbeResponse(
+                    rc: 1,
+                    stdout: "",
 	                    stderr: "",
 	                    normalized_outcome: "symbol_missing",
 	                    errno: nil,
-	                    error: "sandbox_extension_issue_file symbol not found via dlsym(RTLD_DEFAULT, \"sandbox_extension_issue_file\")",
+	                    error: "\(issueSymbol) symbol not found via dlsym(RTLD_DEFAULT, \"\(issueSymbol)\")",
 	                    details: details,
-	                    layer_attribution: nil
-	                )
-	            }
+                    layer_attribution: nil
+                )
+            }
 
-	            let issueFn = unsafeBitCast(issueSym, to: SandboxExtensionIssueFileFn.self)
-	            let tokenPtr = extClass.withCString { classPtr in
-	                targetPath.withCString { pathPtr in
-	                    issueFn(classPtr, pathPtr, flags)
-	                }
-	            }
+            errno = 0
+            let tokenPtr = extClass.withCString { classPtr in
+                targetPath.withCString { pathPtr in
+                    if let targetPid {
+                        let issueFn = unsafeBitCast(issueSym, to: SandboxExtensionIssueFileToPidFn.self)
+                        return issueFn(classPtr, pathPtr, flags, targetPid)
+                    }
+                    let issueFn = unsafeBitCast(issueSym, to: SandboxExtensionIssueFileFn.self)
+                    return issueFn(classPtr, pathPtr, flags)
+                }
+            }
 
-	            guard let tokenPtr else {
-	                let e = errno
+            guard let tokenPtr else {
+                let e = errno
 	                let outcome = (e == EPERM || e == EACCES) ? "permission_error" : "issue_failed"
 	                return RunProbeResponse(
 	                    rc: 1,
@@ -2792,14 +3021,24 @@ sandbox_extension --op release --token <token>
 	                    details: details,
 	                    layer_attribution: nil
 	                )
-	            }
+            }
 
-	            let token = String(cString: tokenPtr)
-	            details["token_len"] = "\(token.utf8.count)"
+            let token = String(cString: tokenPtr)
+            details["token_len"] = "\(token.utf8.count)"
+            details["token"] = token
+            details["token_format"] = "full"
+            if let idx = token.firstIndex(of: ";") {
+                details["token_prefix"] = String(token[..<idx])
+            }
+            let tokenFields = token.split(separator: ";", omittingEmptySubsequences: false)
+            details["token_fields_count"] = "\(tokenFields.count)"
+            if tokenFields.count > 8 { details["token_field_8"] = String(tokenFields[8]) }
+            if tokenFields.count > 9 { details["token_field_9"] = String(tokenFields[9]) }
+            if tokenFields.count > 10 { details["token_field_10"] = String(tokenFields[10]) }
 
-	            if let freeSym = resolveSandboxExtensionSymbol("sandbox_extension_free") {
-	                let freeFn = unsafeBitCast(freeSym, to: SandboxExtensionFreeFn.self)
-	                freeFn(tokenPtr)
+            if let freeSym = resolveSandboxExtensionSymbol("sandbox_extension_free") {
+                let freeFn = unsafeBitCast(freeSym, to: SandboxExtensionFreeFn.self)
+                freeFn(tokenPtr)
 	            } else {
 	                free(UnsafeMutableRawPointer(tokenPtr))
 	            }
@@ -2815,62 +3054,932 @@ sandbox_extension --op release --token <token>
 	                layer_attribution: nil
 	            )
 
-	        case .consume, .release:
-	            guard let token = args.value("--token"), !token.isEmpty else {
-	                return badRequest("missing --token <token>")
-	            }
-	            details["token_len"] = "\(token.utf8.count)"
+        case .issue_extension, .issue_fs_extension, .issue_fs_rw_extension:
+            if args.has("--class") {
+                return badRequest("--class is only supported with --op issue_file or issue_file_to_pid")
+            }
+            if args.has("--pid") {
+                return badRequest("--pid is only supported with --op issue_file_to_pid")
+            }
 
-	            let symbolName = (op == .consume) ? "sandbox_extension_consume" : "sandbox_extension_release"
-	            guard let sym = resolveSandboxExtensionSymbol(symbolName) else {
-	                return RunProbeResponse(
-	                    rc: 1,
-	                    stdout: "",
-	                    stderr: "",
-	                    normalized_outcome: "symbol_missing",
-	                    errno: nil,
-	                    error: "\(symbolName) symbol not found via dlsym(RTLD_DEFAULT, \"\(symbolName)\")",
-	                    details: details,
-	                    layer_attribution: nil
-	                )
-	            }
+            let allowUnsafe = args.has("--allow-unsafe-path") || args.has("--unsafe-path")
+            let directPath = args.value("--path")
+            let pathClass = args.value("--path-class")
+            if (directPath == nil) == (pathClass == nil) {
+                return badRequest("provide exactly one of --path or --path-class")
+            }
 
-	            let rc: Int32 = token.withCString { tokenPtr in
-	                if op == .consume {
-	                    let fn = unsafeBitCast(sym, to: SandboxExtensionConsumeFn.self)
-	                    return fn(tokenPtr)
-	                }
-	                let fn = unsafeBitCast(sym, to: SandboxExtensionReleaseFn.self)
-	                return fn(tokenPtr)
-	            }
+            var issueFlags: UInt64 = 0
+            if op == .issue_fs_extension {
+                if args.has("--flags"), args.intValue("--flags") == nil {
+                    return badRequest("invalid --flags (expected integer)")
+                }
+                issueFlags = UInt64(args.intValue("--flags") ?? 0)
+            } else if args.has("--flags") {
+                return badRequest("--flags is only supported with --op issue_fs_extension")
+            }
 
-	            if rc != 0 {
-	                let e = errno
-	                let outcome = (e == EPERM || e == EACCES) ? "permission_error" : (op == .consume ? "consume_failed" : "release_failed")
-	                return RunProbeResponse(
-	                    rc: 1,
-	                    stdout: "",
-	                    stderr: "",
-	                    normalized_outcome: outcome,
-	                    errno: Int(e),
-	                    error: String(cString: strerror(e)),
-	                    details: details,
-	                    layer_attribution: nil
-	                )
-	            }
+            let targetStr = args.value("--target")
+            let target: FsTarget = targetStr.flatMap { FsTarget(rawValue: $0) } ?? .specimen_file
+            let create = args.has("--create")
+            if create && target == .base {
+                return badRequest("--create is not supported with --target base")
+            }
 
-	            return RunProbeResponse(
-	                rc: 0,
-	                stdout: "",
-	                stderr: "",
-	                normalized_outcome: "ok",
-	                errno: nil,
-	                error: nil,
-	                details: details,
-	                layer_attribution: nil
-	            )
-	        }
-	    }
+            let (resolvedTarget, resolveErr) = resolveFsTarget(
+                directPath: directPath,
+                pathClass: pathClass,
+                target: target,
+                requestedName: args.value("--name")
+            )
+            if let resolveErr { return resolveErr }
+            guard let resolvedTarget else {
+                return badRequest("internal: failed to resolve target path")
+            }
+
+            let targetPath = resolvedTarget.path
+            details["issue_variant"] = op.rawValue
+            details["path_mode"] = (directPath != nil) ? "direct_path" : "path_class"
+            details["path_class"] = pathClass ?? ""
+            details["target"] = target.rawValue
+            details["file_path"] = targetPath
+            details["base_dir"] = resolvedTarget.baseDir ?? ""
+            details["harness_dir"] = resolvedTarget.harnessDir ?? ""
+            details["run_dir"] = resolvedTarget.runDir ?? ""
+            details["allow_unsafe_path"] = allowUnsafe ? "true" : "false"
+            details["create"] = create ? "true" : "false"
+            if op == .issue_fs_extension {
+                details["flags"] = "\(issueFlags)"
+            }
+
+            if directPath != nil, !allowUnsafe, !isSafeWritePath(targetPath) {
+                return RunProbeResponse(
+                    rc: 2,
+                    stdout: "",
+                    stderr: "",
+                    normalized_outcome: "bad_request",
+                    errno: nil,
+                    error: "refusing to issue extension for non-harness path (use --path-class <...> or a path under */entitlement-jail-harness/*; use --allow-unsafe-path to override)",
+                    details: details,
+                    layer_attribution: nil
+                )
+            }
+
+            if create {
+                let targetIsDir = (target == .harness_dir || target == .run_dir)
+                var isDir: ObjCBool = false
+                let exists = FileManager.default.fileExists(atPath: targetPath, isDirectory: &isDir)
+
+                if exists {
+                    if targetIsDir && !isDir.boolValue {
+                        return RunProbeResponse(
+                            rc: 2,
+                            stdout: "",
+                            stderr: "target path exists but is not a directory (use --target specimen_file or remove --create)",
+                            normalized_outcome: "bad_request",
+                            errno: nil,
+                            error: nil,
+                            details: details,
+                            layer_attribution: nil
+                        )
+                    }
+                    if !targetIsDir && isDir.boolValue {
+                        return RunProbeResponse(
+                            rc: 2,
+                            stdout: "",
+                            stderr: "target path exists but is a directory (use --target run_dir/harness_dir or remove --create)",
+                            normalized_outcome: "bad_request",
+                            errno: nil,
+                            error: nil,
+                            details: details,
+                            layer_attribution: nil
+                        )
+                    }
+                    details["target_kind"] = isDir.boolValue ? "directory" : "file"
+                    details["target_created"] = "false"
+                } else {
+                    do {
+                        if targetIsDir {
+                            try FileManager.default.createDirectory(atPath: targetPath, withIntermediateDirectories: true, attributes: nil)
+                            details["target_created"] = "true"
+                            details["target_kind"] = "directory"
+                        } else {
+                            let url = URL(fileURLWithPath: targetPath)
+                            let parent = url.deletingLastPathComponent()
+                            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true, attributes: nil)
+                            let payload = Data("entitlement-jail sandbox_extension\n".utf8)
+                            try payload.write(to: url, options: [.atomic])
+                            details["target_created"] = "true"
+                            details["target_kind"] = "file"
+                        }
+                    } catch {
+                        let e = extractErrno(error)
+                        let outcome = isPermissionError(error) ? "permission_error" : "create_failed"
+                        return RunProbeResponse(
+                            rc: 1,
+                            stdout: "",
+                            stderr: "",
+                            normalized_outcome: outcome,
+                            errno: e,
+                            error: "\(error)",
+                            details: details,
+                            layer_attribution: nil
+                        )
+                    }
+                }
+            }
+
+            let issueSymbol: String
+            switch op {
+            case .issue_extension:
+                issueSymbol = "sandbox_issue_extension"
+            case .issue_fs_extension:
+                issueSymbol = "sandbox_issue_fs_extension"
+            case .issue_fs_rw_extension:
+                issueSymbol = "sandbox_issue_fs_rw_extension"
+            default:
+                issueSymbol = "sandbox_issue_extension"
+            }
+            details["issue_symbol"] = issueSymbol
+            guard let issueSym = resolveSandboxExtensionSymbol(issueSymbol) else {
+                return RunProbeResponse(
+                    rc: 1,
+                    stdout: "",
+                    stderr: "",
+                    normalized_outcome: "symbol_missing",
+                    errno: nil,
+                    error: "\(issueSymbol) symbol not found via dlsym(RTLD_DEFAULT, \"\(issueSymbol)\")",
+                    details: details,
+                    layer_attribution: nil
+                )
+            }
+
+            var tokenPtr: UnsafeMutablePointer<CChar>? = nil
+            errno = 0
+            let rc: Int32 = targetPath.withCString { pathPtr in
+                return withUnsafeMutablePointer(to: &tokenPtr) { tokenOutPtr in
+                    switch op {
+                    case .issue_extension:
+                        let fn = unsafeBitCast(issueSym, to: SandboxIssueExtensionFn.self)
+                        return fn(pathPtr, tokenOutPtr)
+                    case .issue_fs_extension:
+                        let fn = unsafeBitCast(issueSym, to: SandboxIssueFsExtensionFn.self)
+                        return fn(pathPtr, issueFlags, tokenOutPtr)
+                    case .issue_fs_rw_extension:
+                        let fn = unsafeBitCast(issueSym, to: SandboxIssueFsRwExtensionFn.self)
+                        return fn(pathPtr, tokenOutPtr)
+                    default:
+                        return -1
+                    }
+                }
+            }
+            let callErrno = errno
+            details["call_rc"] = "\(rc)"
+
+            guard let tokenPtr else {
+                var e = callErrno
+                if e == 0 && rc > 0 {
+                    e = rc
+                }
+                let outcome = (e == EPERM || e == EACCES) ? "permission_error" : "issue_failed"
+                let errorMsg = (e > 0) ? String(cString: strerror(e)) : "sandbox issue wrapper returned \(rc)"
+                return RunProbeResponse(
+                    rc: 1,
+                    stdout: "",
+                    stderr: "",
+                    normalized_outcome: outcome,
+                    errno: e > 0 ? Int(e) : nil,
+                    error: errorMsg,
+                    details: details,
+                    layer_attribution: nil
+                )
+            }
+
+            let token = String(cString: tokenPtr)
+            details["token_len"] = "\(token.utf8.count)"
+            details["token"] = token
+            details["token_format"] = "full"
+            if let idx = token.firstIndex(of: ";") {
+                details["token_prefix"] = String(token[..<idx])
+            }
+
+            if let freeSym = resolveSandboxExtensionSymbol("sandbox_extension_free") {
+                let freeFn = unsafeBitCast(freeSym, to: SandboxExtensionFreeFn.self)
+                freeFn(tokenPtr)
+            } else {
+                free(UnsafeMutableRawPointer(tokenPtr))
+            }
+
+            return RunProbeResponse(
+                rc: 0,
+                stdout: token,
+                stderr: "",
+                normalized_outcome: "ok",
+                errno: nil,
+                error: nil,
+                details: details,
+                layer_attribution: nil
+            )
+
+        case .release_file:
+            guard let rawToken = args.value("--token"), !rawToken.isEmpty else {
+                return badRequest("missing --token <token>")
+            }
+            let token = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            let tokenFormat = args.value("--token-format") ?? "full"
+            var tokenUsed = token
+            if tokenFormat == "prefix" {
+                if let idx = token.firstIndex(of: ";") {
+                    tokenUsed = String(token[..<idx])
+                }
+            } else if tokenFormat != "full" {
+                return badRequest("invalid --token-format (expected: full|prefix)")
+            }
+
+            details["token_len"] = "\(token.utf8.count)"
+            details["token_used_len"] = "\(tokenUsed.utf8.count)"
+            details["token_format"] = tokenFormat
+            if let idx = token.firstIndex(of: ";") {
+                details["token_prefix"] = String(token[..<idx])
+            }
+            if args.has("--path") || args.has("--path-class") || args.has("--target") || args.has("--name") {
+                return badRequest("--op release_file only accepts a token; path args are not used by this symbol")
+            }
+            if args.has("--flags") {
+                return badRequest("--op release_file does not accept --flags")
+            }
+
+            let symbolName = "sandbox_extension_release_file"
+            details["call_symbol"] = symbolName
+            guard let sym = resolveSandboxExtensionSymbol(symbolName) else {
+                return RunProbeResponse(
+                    rc: 1,
+                    stdout: "",
+                    stderr: "",
+                    normalized_outcome: "symbol_missing",
+                    errno: nil,
+                    error: "\(symbolName) symbol not found via dlsym(RTLD_DEFAULT, \"\(symbolName)\")",
+                    details: details,
+                    layer_attribution: nil
+                )
+            }
+
+            errno = 0
+            let rc: Int32 = tokenUsed.withCString { tokenPtr in
+                let fn = unsafeBitCast(sym, to: SandboxExtensionReleaseFn.self)
+                return fn(tokenPtr)
+            }
+            let callErrno = errno
+            details["call_variant_selected"] = "one_arg"
+            details["call_rc"] = "\(rc)"
+
+            if rc != 0 {
+                var e = callErrno
+                if e == 0 && rc > 0 {
+                    e = rc
+                }
+                let outcome: String
+                if e == EINVAL {
+                    outcome = "invalid_token"
+                    details["token_state"] = "invalid"
+                } else if e == EPERM || e == EACCES {
+                    outcome = "permission_error"
+                } else {
+                    outcome = "release_file_failed"
+                }
+                let errorMsg = (e > 0) ? String(cString: strerror(e)) : "sandbox_extension_release_file returned \(rc)"
+                return RunProbeResponse(
+                    rc: 1,
+                    stdout: "",
+                    stderr: "",
+                    normalized_outcome: outcome,
+                    errno: e > 0 ? Int(e) : nil,
+                    error: errorMsg,
+                    details: details,
+                    layer_attribution: nil
+                )
+            }
+
+            details["token_state"] = "released"
+            return RunProbeResponse(
+                rc: 0,
+                stdout: "",
+                stderr: "",
+                normalized_outcome: "release_ok",
+                errno: nil,
+                error: nil,
+                details: details,
+                layer_attribution: nil
+            )
+
+        case .update_file:
+            let allowUnsafe = args.has("--allow-unsafe-path") || args.has("--unsafe-path")
+            let directPath = args.value("--path")
+            let pathClass = args.value("--path-class")
+            if (directPath == nil) == (pathClass == nil) {
+                return badRequest("provide exactly one of --path or --path-class")
+            }
+            if args.has("--create") {
+                return badRequest("--create is not supported with --op update_file")
+            }
+            if args.has("--token") || args.has("--token-format") {
+                return badRequest("--op update_file expects a path; do not pass --token/--token-format")
+            }
+
+            if args.has("--flags"), args.intValue("--flags") == nil {
+                return badRequest("invalid --flags (expected integer)")
+            }
+            let flags = UInt32(args.intValue("--flags") ?? 0)
+
+            let targetStr = args.value("--target")
+            let target: FsTarget = targetStr.flatMap { FsTarget(rawValue: $0) } ?? .specimen_file
+
+            let (resolvedTarget, resolveErr) = resolveFsTarget(
+                directPath: directPath,
+                pathClass: pathClass,
+                target: target,
+                requestedName: args.value("--name")
+            )
+            if let resolveErr { return resolveErr }
+            guard let resolvedTarget else {
+                return badRequest("internal: failed to resolve target path")
+            }
+
+            let targetPath = resolvedTarget.path
+            details["path_mode"] = (directPath != nil) ? "direct_path" : "path_class"
+            details["path_class"] = pathClass ?? ""
+            details["target"] = target.rawValue
+            details["file_path"] = targetPath
+            details["base_dir"] = resolvedTarget.baseDir ?? ""
+            details["harness_dir"] = resolvedTarget.harnessDir ?? ""
+            details["run_dir"] = resolvedTarget.runDir ?? ""
+            details["flags"] = "\(flags)"
+            details["allow_unsafe_path"] = allowUnsafe ? "true" : "false"
+
+            if directPath != nil, !allowUnsafe, !isSafeWritePath(targetPath) {
+                return RunProbeResponse(
+                    rc: 2,
+                    stdout: "",
+                    stderr: "",
+                    normalized_outcome: "bad_request",
+                    errno: nil,
+                    error: "refusing update_file for non-harness path (use --path-class <...> or a path under */entitlement-jail-harness/*; use --allow-unsafe-path to override)",
+                    details: details,
+                    layer_attribution: nil
+                )
+            }
+
+            let symbolName = "sandbox_extension_update_file"
+            details["call_symbol"] = symbolName
+            guard let sym = resolveSandboxExtensionSymbol(symbolName) else {
+                return RunProbeResponse(
+                    rc: 1,
+                    stdout: "",
+                    stderr: "",
+                    normalized_outcome: "symbol_missing",
+                    errno: nil,
+                    error: "\(symbolName) symbol not found via dlsym(RTLD_DEFAULT, \"\(symbolName)\")",
+                    details: details,
+                    layer_attribution: nil
+                )
+            }
+
+            errno = 0
+            let rc: Int32 = targetPath.withCString { pathPtr in
+                let fn = unsafeBitCast(sym, to: SandboxExtensionUpdateFileFn.self)
+                return fn(pathPtr, flags)
+            }
+            let callErrno = errno
+            details["call_rc"] = "\(rc)"
+
+            if rc != 0 {
+                var e = callErrno
+                if e == 0 && rc > 0 {
+                    e = rc
+                }
+                let outcome: String
+                if e == EINVAL {
+                    outcome = "invalid_token"
+                    details["token_state"] = "invalid"
+                } else if e == EPERM || e == EACCES {
+                    outcome = "permission_error"
+                } else {
+                    outcome = "update_failed"
+                }
+                let errorMsg = (e > 0) ? String(cString: strerror(e)) : "\(symbolName) returned \(rc)"
+                return RunProbeResponse(
+                    rc: 1,
+                    stdout: "",
+                    stderr: "",
+                    normalized_outcome: outcome,
+                    errno: e > 0 ? Int(e) : nil,
+                    error: errorMsg,
+                    details: details,
+                    layer_attribution: nil
+                )
+            }
+
+            return RunProbeResponse(
+                rc: 0,
+                stdout: "",
+                stderr: "",
+                normalized_outcome: "update_ok",
+                errno: nil,
+                error: nil,
+                details: details,
+                layer_attribution: nil
+            )
+
+        case .update_file_by_fileid:
+            guard let rawToken = args.value("--token"), !rawToken.isEmpty else {
+                return badRequest("missing --token <token>")
+            }
+            let token = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            let tokenFormat = args.value("--token-format") ?? "full"
+            var tokenUsed = token
+            if tokenFormat == "prefix" {
+                if let idx = token.firstIndex(of: ";") {
+                    tokenUsed = String(token[..<idx])
+                }
+            } else if tokenFormat != "full" {
+                return badRequest("invalid --token-format (expected: full|prefix)")
+            }
+
+            if args.has("--flags"), args.intValue("--flags") == nil {
+                return badRequest("invalid --flags (expected integer)")
+            }
+            let flags = UInt32(args.intValue("--flags") ?? 0)
+
+            var selectorValue: UInt64? = nil
+            if let selectorStr = args.value("--selector"), !selectorStr.isEmpty {
+                if let parsed = UInt64(selectorStr) {
+                    selectorValue = parsed
+                    details["selector"] = "\(parsed)"
+                    details["selector_hex"] = String(format: "0x%llx", parsed)
+                } else {
+                    return badRequest("invalid --selector (expected u64)")
+                }
+            }
+
+            var fileId: UInt64? = nil
+            if let fileIdStr = args.value("--file-id"), !fileIdStr.isEmpty {
+                if let parsed = UInt64(fileIdStr) {
+                    fileId = parsed
+                    details["file_id_source"] = "arg"
+                } else {
+                    return badRequest("invalid --file-id (expected u64)")
+                }
+            } else if let path = args.value("--path"), !path.isEmpty {
+                var st = stat()
+                if stat(path, &st) != 0 {
+                    let e = errno
+                    return RunProbeResponse(
+                        rc: 1,
+                        stdout: "",
+                        stderr: "",
+                        normalized_outcome: "stat_failed",
+                        errno: Int(e),
+                        error: String(cString: strerror(e)),
+                        details: details,
+                        layer_attribution: nil
+                    )
+                }
+                fileId = UInt64(st.st_ino)
+                details["file_id_source"] = "stat"
+                details["file_id_stat_dev"] = "\(st.st_dev)"
+                details["file_id_stat_dev_hex"] = String(format: "0x%llx", st.st_dev)
+                details["file_id_stat_ino"] = "\(st.st_ino)"
+                details["file_id_stat_ino_hex"] = String(format: "0x%llx", st.st_ino)
+                details["file_path"] = path
+            } else {
+                return badRequest("missing --file-id <u64> or --path <abs> (required for update_file_by_fileid)")
+            }
+
+            if args.has("--path-class") || args.has("--target") || args.has("--name") {
+                return badRequest("update_file_by_fileid does not accept --path-class/--target/--name")
+            }
+
+            details["token_len"] = "\(token.utf8.count)"
+            details["token_used_len"] = "\(tokenUsed.utf8.count)"
+            details["token_format"] = tokenFormat
+            details["flags"] = "\(flags)"
+            if let idx = token.firstIndex(of: ";") {
+                details["token_prefix"] = String(token[..<idx])
+            }
+
+            let callVariant = args.value("--call-variant") ?? "auto"
+            let allowedVariants: Set<String> = ["token_fileid", "fileid_token", "fileid_ptr_token", "token_ptr_fileid", "fileid_ptr_selector", "payload_ptr_selector", "auto"]
+            if !allowedVariants.contains(callVariant) {
+                let allowed = allowedVariants.sorted().joined(separator: "|")
+                return badRequest("invalid --call-variant (expected: \(allowed))")
+            }
+            details["call_variant"] = callVariant
+            if (callVariant == "fileid_ptr_selector" || callVariant == "payload_ptr_selector") && selectorValue == nil {
+                return badRequest("missing --selector <u64> (required for --call-variant \(callVariant))")
+            }
+
+            let symbolName = "sandbox_extension_update_file_by_fileid"
+            details["call_symbol"] = symbolName
+            guard let sym = resolveSandboxExtensionSymbol(symbolName) else {
+                return RunProbeResponse(
+                    rc: 1,
+                    stdout: "",
+                    stderr: "",
+                    normalized_outcome: "symbol_missing",
+                    errno: nil,
+                    error: "\(symbolName) symbol not found via dlsym(RTLD_DEFAULT, \"\(symbolName)\")",
+                    details: details,
+                    layer_attribution: nil
+                )
+            }
+
+            if let fileId {
+                details["file_id"] = "\(fileId)"
+                details["file_id_hex"] = String(format: "0x%llx", fileId)
+                let low32 = UInt32(truncatingIfNeeded: fileId)
+                details["file_id_low32"] = "\(low32)"
+                details["file_id_low32_hex"] = String(format: "0x%08x", low32)
+            }
+
+            func callUpdateByFileid(_ variant: String) -> (Int32, Int32) {
+                errno = 0
+                let idValue = fileId ?? 0
+                var idValueCopy = idValue
+                let rc: Int32 = withUnsafePointer(to: &idValueCopy) { idPtr in
+                    tokenUsed.withCString { tokenPtr in
+                        switch variant {
+                        case "payload_ptr_selector", "fileid_ptr_selector":
+                            guard let selectorValue else {
+                                return -1
+                            }
+                            let fn = unsafeBitCast(sym, to: SandboxExtensionUpdateFileByFileidPtrValueFn.self)
+                            return fn(idPtr, selectorValue, 0)
+                        case "fileid_ptr_token":
+                            let fn = unsafeBitCast(sym, to: SandboxExtensionUpdateFileByFileidPtrFn.self)
+                            return fn(idPtr, tokenPtr, flags)
+                        case "token_ptr_fileid":
+                            let fn = unsafeBitCast(sym, to: SandboxExtensionUpdateFileByFileidPtrAltFn.self)
+                            return fn(tokenPtr, idPtr, flags)
+                        case "fileid_token":
+                            let fn = unsafeBitCast(sym, to: SandboxExtensionUpdateFileByFileidAltFn.self)
+                            return fn(idValue, tokenPtr, flags)
+                        default:
+                            let fn = unsafeBitCast(sym, to: SandboxExtensionUpdateFileByFileidFn.self)
+                            return fn(tokenPtr, idValue, flags)
+                        }
+                    }
+                }
+                return (rc, errno)
+            }
+
+            var rc: Int32 = -1
+            var callErrno: Int32 = 0
+            var selectedVariant: String? = nil
+            if callVariant == "auto" {
+                var variants: [String] = []
+                if selectorValue != nil {
+                    variants.append("payload_ptr_selector")
+                }
+                variants.append(contentsOf: ["fileid_ptr_token", "token_fileid", "fileid_token", "token_ptr_fileid"])
+                for variant in variants {
+                    let (rcCandidate, errnoCandidate) = callUpdateByFileid(variant)
+                    details["variant_\(variant)_rc"] = "\(rcCandidate)"
+                    details["variant_\(variant)_errno"] = "\(errnoCandidate)"
+                    rc = rcCandidate
+                    callErrno = errnoCandidate
+                    if rcCandidate == 0 {
+                        selectedVariant = variant
+                        break
+                    }
+                }
+            } else {
+                let (rcCandidate, errnoCandidate) = callUpdateByFileid(callVariant)
+                rc = rcCandidate
+                callErrno = errnoCandidate
+                selectedVariant = callVariant
+            }
+
+            details["call_variant_selected"] = selectedVariant ?? "none"
+            if selectedVariant == "payload_ptr_selector" || selectedVariant == "fileid_ptr_selector" {
+                details["call_flags_forced_zero"] = "true"
+            }
+            details["call_rc"] = "\(rc)"
+
+            if rc != 0 {
+                var e = callErrno
+                if e == 0 && rc > 0 {
+                    e = rc
+                }
+                let outcome: String
+                if e == EINVAL {
+                    outcome = "invalid_token"
+                    details["token_state"] = "invalid"
+                } else if e == EPERM || e == EACCES {
+                    outcome = "permission_error"
+                } else {
+                    outcome = "update_failed"
+                }
+                let errorMsg = (e > 0) ? String(cString: strerror(e)) : "\(symbolName) returned \(rc)"
+                return RunProbeResponse(
+                    rc: 1,
+                    stdout: "",
+                    stderr: "",
+                    normalized_outcome: outcome,
+                    errno: e > 0 ? Int(e) : nil,
+                    error: errorMsg,
+                    details: details,
+                    layer_attribution: nil
+                )
+            }
+
+            return RunProbeResponse(
+                rc: 0,
+                stdout: "",
+                stderr: "",
+                normalized_outcome: "update_ok",
+                errno: nil,
+                error: nil,
+                details: details,
+                layer_attribution: nil
+            )
+
+        case .consume, .release:
+            guard let rawToken = args.value("--token"), !rawToken.isEmpty else {
+                return badRequest("missing --token <token>")
+            }
+            let token = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            let tokenFormat = args.value("--token-format") ?? "full"
+            var tokenUsed = token
+            if tokenFormat == "prefix" {
+                if let idx = token.firstIndex(of: ";") {
+                    tokenUsed = String(token[..<idx])
+                }
+            } else if tokenFormat != "full" {
+                return badRequest("invalid --token-format (expected: full|prefix)")
+            }
+
+            if args.has("--flags"), args.intValue("--flags") == nil {
+                return badRequest("invalid --flags (expected integer)")
+            }
+            let callFlags = Int32(args.intValue("--flags") ?? 0)
+
+            let callVariant = args.value("--call-variant") ?? "auto"
+            let allowedVariants: Set<String>
+            if op == .consume {
+                allowedVariants = ["one_arg", "two_arg", "token_second", "token_and_ptr", "auto"]
+            } else {
+                allowedVariants = ["one_arg", "two_arg", "token_and_ptr", "auto"]
+            }
+            if !allowedVariants.contains(callVariant) {
+                let allowed = allowedVariants.sorted().joined(separator: "|")
+                return badRequest("invalid --call-variant (expected: \(allowed))")
+            }
+
+            details["token_len"] = "\(token.utf8.count)"
+            details["token_used_len"] = "\(tokenUsed.utf8.count)"
+            details["token_format"] = tokenFormat
+            details["call_variant"] = callVariant
+            details["call_flags"] = "\(callFlags)"
+            if let idx = token.firstIndex(of: ";") {
+                details["token_prefix"] = String(token[..<idx])
+            }
+
+            let defaultSymbol = (op == .consume) ? "sandbox_extension_consume" : "sandbox_extension_release"
+            let callSymbolArg = args.value("--call-symbol")
+            let callSymbolProvided = callSymbolArg != nil
+            let callSymbol = callSymbolArg ?? defaultSymbol
+            if callSymbol.isEmpty {
+                return badRequest("invalid --call-symbol (empty)")
+            }
+            details["call_symbol"] = callSymbol
+            if callSymbolProvided {
+                details["call_symbol_requested"] = callSymbol
+            }
+
+            func callWithVariant(_ sym: UnsafeMutableRawPointer, _ variant: String) -> (Int32, Int32) {
+                errno = 0
+                let rc: Int32 = tokenUsed.withCString { tokenPtr in
+                    switch variant {
+                    case "one_arg":
+                        if op == .consume {
+                            let fn = unsafeBitCast(sym, to: SandboxExtensionConsumeFn.self)
+                            return fn(tokenPtr)
+                        }
+                        let fn = unsafeBitCast(sym, to: SandboxExtensionReleaseFn.self)
+                        return fn(tokenPtr)
+                    case "two_arg":
+                        if op == .consume {
+                            let fn = unsafeBitCast(sym, to: SandboxExtensionConsumeFlagsFn.self)
+                            return fn(tokenPtr, callFlags)
+                        }
+                        let fn = unsafeBitCast(sym, to: SandboxExtensionReleaseFlagsFn.self)
+                        return fn(tokenPtr, callFlags)
+                    case "token_second":
+                        return "".withCString { emptyPtr in
+                            let fn = unsafeBitCast(sym, to: SandboxConsumeExtensionFn.self)
+                            return fn(emptyPtr, tokenPtr)
+                        }
+                    case "token_and_ptr":
+                        var tokenPtrVar: UnsafePointer<CChar>? = tokenPtr
+                        return withUnsafeMutablePointer(to: &tokenPtrVar) { tokenPtrPtr in
+                            if op == .consume {
+                                let fn = unsafeBitCast(sym, to: SandboxConsumeFsExtensionFn.self)
+                                return fn(tokenPtr, tokenPtrPtr)
+                            }
+                            let fn = unsafeBitCast(sym, to: SandboxReleaseFsExtensionFn.self)
+                            return fn(tokenPtr, tokenPtrPtr)
+                        }
+                    default:
+                        return -1
+                    }
+                }
+                return (rc, errno)
+            }
+
+            var rc: Int32 = -1
+            var callErrno: Int32 = 0
+            var selectedSymbol: String? = nil
+            var selectedVariant: String? = nil
+            var attemptIndex = 0
+
+            func recordAttempt(symbolName: String, variant: String, rcCandidate: Int32, errnoCandidate: Int32) {
+                details["attempt_\(attemptIndex)_symbol"] = symbolName
+                details["attempt_\(attemptIndex)_variant"] = variant
+                details["attempt_\(attemptIndex)_rc"] = "\(rcCandidate)"
+                details["attempt_\(attemptIndex)_errno"] = "\(errnoCandidate)"
+                attemptIndex += 1
+            }
+
+            func normalizedErrno(rcCandidate: Int32, errnoCandidate: Int32) -> Int32 {
+                if errnoCandidate != 0 {
+                    return errnoCandidate
+                }
+                if rcCandidate > 0 {
+                    return rcCandidate
+                }
+                return 0
+            }
+
+            func shouldStopAuto(rcCandidate: Int32, errnoCandidate: Int32) -> Bool {
+                if rcCandidate == 0 {
+                    return true
+                }
+                if op == .consume {
+                    let e = normalizedErrno(rcCandidate: rcCandidate, errnoCandidate: errnoCandidate)
+                    if e == EEXIST {
+                        return true
+                    }
+                }
+                return false
+            }
+
+            if callVariant == "auto" {
+                let attemptPlan: [(String, [String])]
+                if callSymbolProvided {
+                    let variants: [String]
+                    switch callSymbol {
+                    case "sandbox_consume_extension":
+                        variants = ["token_second"]
+                    case "sandbox_consume_fs_extension":
+                        variants = ["token_and_ptr"]
+                    case "sandbox_release_fs_extension":
+                        variants = ["one_arg", "token_and_ptr"]
+                    default:
+                        variants = (op == .consume) ? ["one_arg", "two_arg"] : ["one_arg", "two_arg"]
+                    }
+                    attemptPlan = [(callSymbol, variants)]
+                } else {
+                    if op == .consume {
+                        attemptPlan = [
+                            ("sandbox_extension_consume", ["one_arg", "two_arg"]),
+                            ("sandbox_consume_extension", ["token_second"]),
+                            ("sandbox_consume_fs_extension", ["token_and_ptr"]),
+                        ]
+                    } else {
+                        attemptPlan = [
+                            ("sandbox_extension_release", ["one_arg", "two_arg"]),
+                            ("sandbox_release_fs_extension", ["one_arg", "token_and_ptr"]),
+                        ]
+                    }
+                }
+
+                var resolvedAny = false
+                outerLoop: for (symbolName, variants) in attemptPlan {
+                    guard let sym = resolveSandboxExtensionSymbol(symbolName) else {
+                        continue
+                    }
+                    resolvedAny = true
+                    for variant in variants {
+                        let (rcCandidate, errnoCandidate) = callWithVariant(sym, variant)
+                        recordAttempt(symbolName: symbolName, variant: variant, rcCandidate: rcCandidate, errnoCandidate: errnoCandidate)
+                        rc = rcCandidate
+                        callErrno = errnoCandidate
+                        selectedSymbol = symbolName
+                        selectedVariant = variant
+                        if shouldStopAuto(rcCandidate: rcCandidate, errnoCandidate: errnoCandidate) {
+                            break outerLoop
+                        }
+                    }
+                }
+
+                if !resolvedAny {
+                    let attemptedSymbols = attemptPlan.map { $0.0 }.joined(separator: ", ")
+                    return RunProbeResponse(
+                        rc: 1,
+                        stdout: "",
+                        stderr: "",
+                        normalized_outcome: "symbol_missing",
+                        errno: nil,
+                        error: "no sandbox extension symbols available (attempted: \(attemptedSymbols))",
+                        details: details,
+                        layer_attribution: nil
+                    )
+                }
+            } else {
+                guard let sym = resolveSandboxExtensionSymbol(callSymbol) else {
+                    return RunProbeResponse(
+                        rc: 1,
+                        stdout: "",
+                        stderr: "",
+                        normalized_outcome: "symbol_missing",
+                        errno: nil,
+                        error: "\(callSymbol) symbol not found via dlsym(RTLD_DEFAULT, \"\(callSymbol)\")",
+                        details: details,
+                        layer_attribution: nil
+                    )
+                }
+                let (rcCandidate, errnoCandidate) = callWithVariant(sym, callVariant)
+                recordAttempt(symbolName: callSymbol, variant: callVariant, rcCandidate: rcCandidate, errnoCandidate: errnoCandidate)
+                rc = rcCandidate
+                callErrno = errnoCandidate
+                selectedSymbol = callSymbol
+                selectedVariant = callVariant
+            }
+
+            if let selectedSymbol {
+                details["call_symbol"] = selectedSymbol
+                details["call_symbol_selected"] = selectedSymbol
+            } else {
+                details["call_symbol"] = callSymbol
+                details["call_symbol_selected"] = "none"
+            }
+            details["call_variant_selected"] = selectedVariant ?? "none"
+            details["call_rc"] = "\(rc)"
+
+            if rc != 0 {
+                var e = callErrno
+                if e == 0 && rc > 0 {
+                    e = rc
+                }
+                let outcome: String
+                if op == .consume {
+                    if e == EEXIST {
+                        outcome = "already_consumed"
+                        details["token_state"] = "already_consumed"
+                    } else if e == EINVAL {
+                        outcome = "invalid_token"
+                        details["token_state"] = "invalid"
+                    } else if e == EPERM || e == EACCES {
+                        outcome = "permission_error"
+                    } else {
+                        outcome = "consume_failed"
+                    }
+                } else {
+                    if e == EINVAL {
+                        outcome = "invalid_token"
+                        details["token_state"] = "invalid"
+                    } else if e == EPERM || e == EACCES {
+                        outcome = "permission_error"
+                    } else {
+                        outcome = "release_failed"
+                    }
+                }
+                let errorMsg = (e > 0) ? String(cString: strerror(e)) : "sandbox_extension call returned \(rc)"
+                return RunProbeResponse(
+                    rc: 1,
+                    stdout: "",
+                    stderr: "",
+                    normalized_outcome: outcome,
+                    errno: e > 0 ? Int(e) : nil,
+                    error: errorMsg,
+                    details: details,
+                    layer_attribution: nil
+                )
+            }
+
+            details["token_state"] = (op == .consume) ? "consumed" : "released"
+            return RunProbeResponse(
+                rc: 0,
+                stdout: "",
+                stderr: "",
+                normalized_outcome: (op == .consume) ? "consume_ok" : "release_ok",
+                errno: nil,
+                error: nil,
+                details: details,
+                layer_attribution: nil
+            )
+        }
+    }
 
 	    // MARK: - userdefaults_op (containerization + API mediation)
 

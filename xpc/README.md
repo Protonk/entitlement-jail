@@ -33,6 +33,8 @@ For usage/behavior contracts, see:
 
 The build script finds `swiftc` via `xcrun` (Xcode Command Line Tools are required).
 
+Note: `xcrun dyld_info` (not `dyldinfo`) is the tool for dyld cache inspection on this host.
+
 ### Outputs (bundle layout contract)
 
 The build script produces:
@@ -158,6 +160,21 @@ Probe services are *not* a generic “run arbitrary code/path” facility. The c
 - Filesystem probes are safe-by-default: potentially destructive direct-path operations are gated to harness paths unless explicitly overridden.
 
 The reference dispatch and safety gates live in `InProcessProbeCore.swift`.
+
+## Sandbox extension probe (dev note)
+
+The `sandbox_extension` probe’s consume/release path is intentionally defensive:
+
+- When `--call-symbol` is not set, it auto-tries the common symbols (`sandbox_extension_consume`, `sandbox_consume_extension`, `sandbox_consume_fs_extension`, and `sandbox_release_fs_extension` when present) using conservative signature variants.
+- The chosen symbol/variant and each attempt’s rc/errno are recorded in `details` (`call_symbol_selected`, `call_variant_selected`, `attempt_*`) so debugging tools can reproduce the exact path.
+- dyld disassembly on this host indicates `sandbox_extension_release_file` and `sandbox_release_fs_extension` take only a token argument (single-arg); path/flags are not used.
+- Wrapper/maintenance sub-ops map directly to SPI symbols: `issue_extension`, `issue_fs_extension`, `issue_fs_rw_extension`, `update_file` (path + flags), and `update_file_by_fileid` (token + file id + flags; some hosts expect a fileid pointer, see `--call-variant fileid_ptr_token`, or a selector value via `--call-variant payload_ptr_selector --selector <u64>`).
+- Kernel disassembly on Sonoma 14.4.1 suggests `update_file_by_fileid` uses only the low 32 bits of an 8-byte payload (field0) as an internal id, treats field1 as a small selector (compared to 2), and requires field2 to be zero. This implies a plain fileid/token string may not be sufficient to make the call succeed without an internal handle.
+- For a clean “denied → allowed” witness, use a world-readable file that App Sandbox blocks by default (for example `/private/var/db/launchd.db/com.apple.launchd/overrides.plist`). On Sonoma, `/etc/hosts` is often already readable and won’t show a before/after change.
+- `issue_file` now exposes `token_fields_count` plus `token_field_8/9/10` (raw token fields) in `details`, and `update_file_by_fileid` includes `file_id_low32` and `file_id_stat_dev` when deriving ids from `--path`.
+- `fs_op` supports `--no-cleanup` to keep harness artifacts (useful when testing rename/truncate + `update_file_by_fileid` flows).
+
+If you need to pin behavior for ABI investigation, pass `--call-symbol` and `--call-variant` explicitly.
 
 ## Trace markers (`ej_*`)
 
