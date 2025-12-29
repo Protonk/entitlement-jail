@@ -35,6 +35,11 @@ XPC_QUARANTINE_SERVICE_HOST_FILE="${XPC_ROOT}/QuarantineLabServiceHost.swift"
 XPC_CLIENT_MAIN="${XPC_ROOT}/client/main.swift"
 XPC_QUARANTINE_CLIENT_MAIN="${XPC_ROOT}/quarantine-client/main.swift"
 XPC_SERVICES_DIR="${XPC_ROOT}/services"
+XPC_ENTITLEMENTS_OVERLAY_DIR="${XPC_ROOT}/entitlements_overlays"
+INJECTABLE_OVERLAY_PLIST="${XPC_ENTITLEMENTS_OVERLAY_DIR}/injectable.plist"
+INJECTABLE_SUFFIX="__injectable"
+INJECTABLE_BUNDLE_SUFFIX=".injectable"
+INJECTABLE_ENTITLEMENTS_DIR=".tmp/injectable-entitlements"
 # Swift/Clang module cache must be writable; the harness sandbox often blocks the default path under ~/.cache.
 SWIFT_MODULE_CACHE="${SWIFT_MODULE_CACHE:-.tmp/swift-module-cache}"
 SWIFT_OPT_LEVEL="${SWIFT_OPT_LEVEL:-}"
@@ -85,6 +90,75 @@ Then ensure the identity is installed/unlocked (or set IDENTITY to one of the li
 EOF
   exit 2
 fi
+
+validate_injectable_overlay() {
+  if [[ ! -f "${INJECTABLE_OVERLAY_PLIST}" ]]; then
+    echo "ERROR: missing injectable entitlements overlay: ${INJECTABLE_OVERLAY_PLIST}" 1>&2
+    exit 2
+  fi
+  /usr/bin/python3 - "${INJECTABLE_OVERLAY_PLIST}" <<'PY'
+import plistlib
+import sys
+
+path = sys.argv[1]
+with open(path, "rb") as fh:
+    data = plistlib.load(fh)
+if not isinstance(data, dict):
+    print(f"ERROR: injectable overlay is not a plist dict: {path}", file=sys.stderr)
+    sys.exit(2)
+expected = {
+    "com.apple.security.get-task-allow",
+    "com.apple.security.cs.disable-library-validation",
+    "com.apple.security.cs.allow-dyld-environment-variables",
+    "com.apple.security.cs.allow-unsigned-executable-memory",
+}
+keys = set(data.keys())
+if keys != expected:
+    missing = sorted(expected - keys)
+    extra = sorted(keys - expected)
+    print(f"ERROR: injectable overlay keys mismatch in {path}", file=sys.stderr)
+    if missing:
+        print(f"  missing: {', '.join(missing)}", file=sys.stderr)
+    if extra:
+        print(f"  extra: {', '.join(extra)}", file=sys.stderr)
+    sys.exit(2)
+for key in expected:
+    if data.get(key) is not True:
+        print(f"ERROR: injectable overlay key {key} must be true in {path}", file=sys.stderr)
+        sys.exit(2)
+PY
+}
+
+merge_entitlements() {
+  local base_path="$1"
+  local out_path="$2"
+  /usr/bin/python3 - "${base_path}" "${INJECTABLE_OVERLAY_PLIST}" "${out_path}" <<'PY'
+import plistlib
+import sys
+
+base_path, overlay_path, out_path = sys.argv[1:4]
+
+with open(base_path, "rb") as fh:
+    base = plistlib.load(fh)
+if not isinstance(base, dict):
+    print(f"ERROR: base entitlements not a plist dict: {base_path}", file=sys.stderr)
+    sys.exit(2)
+with open(overlay_path, "rb") as fh:
+    overlay = plistlib.load(fh)
+if not isinstance(overlay, dict):
+    print(f"ERROR: overlay entitlements not a plist dict: {overlay_path}", file=sys.stderr)
+    sys.exit(2)
+
+merged = dict(base)
+for key in overlay.keys():
+    merged[key] = True
+
+ordered = {key: merged[key] for key in sorted(merged.keys())}
+with open(out_path, "wb") as fh:
+    plistlib.dump(ordered, fh, fmt=plistlib.FMT_XML, sort_keys=False)
+    fh.write(b"\n")
+PY
+}
 
 echo "==> Building Rust runner + tools"
 cargo build --manifest-path "${RUNNER_MANIFEST}" --release \
@@ -160,6 +234,7 @@ fi
 
 # Optional: build and embed XPC services + client
 if [[ "${BUILD_XPC}" == "1" ]]; then
+  validate_injectable_overlay
   SWIFTC_PATH="$(/usr/bin/xcrun --sdk macosx --find swiftc 2>/dev/null || true)"
   if [[ -z "${SWIFTC_PATH}" ]]; then
     echo "ERROR: BUILD_XPC=1 but swiftc was not found (install Xcode Command Line Tools)" 1>&2
@@ -216,6 +291,24 @@ if [[ "${BUILD_XPC}" == "1" ]]; then
 
       "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${svc_bundle}/Contents/MacOS/${svc_name}" "${svc_sources[@]}"
       chmod +x "${svc_bundle}/Contents/MacOS/${svc_name}"
+
+      twin_name="${svc_name}${INJECTABLE_SUFFIX}"
+      twin_bundle="${APP_BUNDLE}/Contents/XPCServices/${twin_name}.xpc"
+      rm -rf "${twin_bundle}"
+      cp -R "${svc_bundle}" "${twin_bundle}"
+
+      base_bundle_id="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "${svc_info}")"
+      if [[ -z "${base_bundle_id}" ]]; then
+        echo "ERROR: missing CFBundleIdentifier in ${svc_info}" 1>&2
+        exit 2
+      fi
+
+      mv "${twin_bundle}/Contents/MacOS/${svc_name}" "${twin_bundle}/Contents/MacOS/${twin_name}"
+      /usr/libexec/PlistBuddy \
+        -c "Set :CFBundleExecutable ${twin_name}" \
+        -c "Set :CFBundleIdentifier ${base_bundle_id}${INJECTABLE_BUNDLE_SUFFIX}" \
+        -c "Set :CFBundleName ${twin_name}" \
+        "${twin_bundle}/Contents/Info.plist"
     done
   fi
 fi
@@ -296,11 +389,15 @@ sign_macho_plain "${APP_BUNDLE}/Contents/MacOS/sandbox-log-observer"
 
 echo "==> Codesigning embedded XPC services"
 if [[ "${BUILD_XPC}" == "1" ]] && [[ -d "${XPC_SERVICES_DIR}" ]]; then
+  mkdir -p "${INJECTABLE_ENTITLEMENTS_DIR}"
   for svc_dir in "${XPC_SERVICES_DIR}"/*; do
     [[ -d "${svc_dir}" ]] || continue
     svc_name="$(basename "${svc_dir}")"
     svc_entitlements="${svc_dir}/Entitlements.plist"
     svc_bundle="${APP_BUNDLE}/Contents/XPCServices/${svc_name}.xpc"
+    twin_name="${svc_name}${INJECTABLE_SUFFIX}"
+    twin_bundle="${APP_BUNDLE}/Contents/XPCServices/${twin_name}.xpc"
+    twin_entitlements="${INJECTABLE_ENTITLEMENTS_DIR}/${twin_name}.entitlements.plist"
 
     if [[ ! -d "${svc_bundle}" ]]; then
       echo "ERROR: expected XPC service bundle at ${svc_bundle}" 1>&2
@@ -308,6 +405,10 @@ if [[ "${BUILD_XPC}" == "1" ]] && [[ -d "${XPC_SERVICES_DIR}" ]]; then
     fi
     if [[ ! -f "${svc_entitlements}" ]]; then
       echo "ERROR: XPC service ${svc_name} is missing Entitlements.plist" 1>&2
+      exit 2
+    fi
+    if [[ ! -d "${twin_bundle}" ]]; then
+      echo "ERROR: expected injectable XPC service bundle at ${twin_bundle}" 1>&2
       exit 2
     fi
 
@@ -318,6 +419,15 @@ if [[ "${BUILD_XPC}" == "1" ]] && [[ -d "${XPC_SERVICES_DIR}" ]]; then
       --entitlements "${svc_entitlements}" \
       -s "${IDENTITY}" \
       "${svc_bundle}"
+
+    merge_entitlements "${svc_entitlements}" "${twin_entitlements}"
+    codesign \
+      --force \
+      --options runtime \
+      --timestamp \
+      --entitlements "${twin_entitlements}" \
+      -s "${IDENTITY}" \
+      "${twin_bundle}"
   done
 fi
 

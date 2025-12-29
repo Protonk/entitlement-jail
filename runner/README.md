@@ -86,7 +86,7 @@ If you add fields or change shapes, treat it as a contract change: update docs a
 Risk tiers/warnings are not hand-curated in the Rust code.
 
 - The build generates `Evidence/profiles.json` by extracting **signed** entitlements via `codesign` (`tests/build-evidence.py`).
-- The launcher uses `risk_tier` and `risk_reasons` from that manifest to warn/require acknowledgement.
+- The launcher uses per-variant `risk_tier`/`risk_reasons` from that manifest to warn/require acknowledgement.
 
 If you add a “high concern” entitlement, update the risk classifier so the tier stays honest.
 
@@ -101,18 +101,18 @@ For CLI development, it’s useful to keep the raw subcommand surface area in vi
 ```sh
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-system <absolute-platform-binary> [args...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-embedded <tool-name> [args...]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail xpc run (--profile <id> | --service <bundle-id>) [--ack-risk <id|bundle-id>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] <probe-id> [probe-args...]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail xpc session (--profile <id> | --service <bundle-id>) [--ack-risk <id|bundle-id>] [--plan-id <id>] [--correlation-id <id>] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--ack-risk <id|profile@variant|bundle-id>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] <probe-id> [probe-args...]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--ack-risk <id|profile@variant|bundle-id>] [--plan-id <id>] [--correlation-id <id>] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail verify-evidence
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail inspect-macho <service-id|main|path>
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail list-profiles
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail list-services
-./EntitlementJail.app/Contents/MacOS/entitlement-jail show-profile <id>
-./EntitlementJail.app/Contents/MacOS/entitlement-jail describe-service <id>
-./EntitlementJail.app/Contents/MacOS/entitlement-jail health-check [--profile <id>]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail show-profile <id[@variant]> [--variant <base|injectable>]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail describe-service <id[@variant]> [--variant <base|injectable>]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail health-check [--profile <id[@variant]>] [--variant <base|injectable>]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail bundle-evidence [--out <dir>] [--include-health-check] [--ack-risk <id|bundle-id>]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail run-matrix --group <name> [--out <dir>] [--ack-risk <id|bundle-id>] <probe-id> [probe-args...]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail run-matrix --group <name> [--variant <base|injectable>] [--out <dir>] [--ack-risk <id|profile@variant|bundle-id>] <probe-id> [probe-args...]
 ```
 
 ## JSON output contract (envelope + kinds)
@@ -121,7 +121,7 @@ All JSON emitters in this repo (CLI outputs, XPC client outputs, and helper tool
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "kind": "probe_response",
   "generated_at_unix_ms": 1700000000000,
   "result": {
@@ -143,6 +143,8 @@ Rules:
 - Keys are lexicographically sorted for stability (see `runner/src/json_contract.rs`).
 - `result.rc` is used by probes/quarantine; `result.exit_code` is used by CLI/tools. Unused fields are `null`.
 - All command-specific fields live under `data` (no extra top-level keys).
+
+Note: Rust-emitted envelopes currently use `schema_version: 3`. XPC probe/quarantine responses emitted by the embedded Swift clients still use `schema_version: 2`.
 
 Envelope `kind` values used by the launcher and helpers:
 
@@ -219,8 +221,9 @@ Wiring (who does what):
 
 Service selection:
 
-- `--profile <id>` resolves a profile to a service bundle id via `Evidence/profiles.json`.
-- `--service <bundle-id>` targets an explicit XPC service bundle id.
+- `--profile <id>` resolves a base profile via `Evidence/profiles.json` and selects a variant.
+- `--variant <base|injectable>` selects the variant (default: `base`); `profile@injectable` is accepted as sugar.
+- `--service <bundle-id>` targets an explicit XPC service bundle id (base or injectable).
 
 Exit behavior:
 
@@ -247,15 +250,20 @@ For the authoritative on-the-wire shapes, see `xpc/ProbeAPI.swift` and `xpc/Prob
 
 ## Profiles, services, and health checks
 
-Profiles are short ids mapping to XPC services in the “process zoo”.
+Profiles are short base ids that map to XPC service families in the “process zoo”.
 
 The authoritative inventory is `EntitlementJail.app/Contents/Resources/Evidence/profiles.json`, generated during build by `tests/build-evidence.py`.
+
+Each profile entry contains a `variants` array with at least:
+
+- `variant: base` (canonical entitlements)
+- `variant: injectable` (auto-generated twin with the fixed overlay)
 
 Commands:
 
 - `list-profiles` (`kind: profiles_report`)
-- `list-services` (`kind: services_report`)
-- `show-profile <id>` (`kind: profile_report`)
+- `list-services` (`kind: services_report`; base + injectable variants)
+- `show-profile <id>` (`kind: profile_report`; includes variants)
 - `describe-service <id>` (`kind: describe_service_report`; static entitlements-derived view)
 
 `health-check` runs a small set of safe probes and emits `kind: health_check_report`.
@@ -267,12 +275,12 @@ Commands:
 Default output path (overwritten each run):
 
 ```
-~/Library/Application Support/entitlement-jail/matrix/<group>/latest
+~/Library/Application Support/entitlement-jail/matrix/<group>/<variant>/latest
 ```
 
 Notes:
 
-- Tier 2 profiles in the group are skipped unless you pass `--ack-risk <id|bundle-id>`.
+- Tier 2 variants in the group are skipped unless you pass `--ack-risk <id|profile@variant|bundle-id>`.
 - If you run a sandboxed-launcher build, default output paths resolve under the container home; choose `--out` accordingly.
 
 ## `quarantine-lab`: write/open artifacts and report quarantine metadata (no execution)

@@ -26,6 +26,8 @@ For usage/behavior contracts, see:
   - Shared Quarantine Lab service implementation (identical behavior across `QuarantineLab_*`)
 - `services/<ServiceName>/…`
   - One directory per XPC service target: `Info.plist`, `Entitlements.plist`, `main.swift`
+- `entitlements_overlays/injectable.plist`
+  - Canonical entitlement overlay used to generate injectable twins at build time
 
 ## How it builds into `EntitlementJail.app`
 
@@ -54,6 +56,12 @@ Service discovery/embedding is directory-driven:
 - The service bundle is written to `Contents/XPCServices/<ServiceName>.xpc`.
 - The service executable is named exactly `<ServiceName>` and is placed at `…/<ServiceName>.xpc/Contents/MacOS/<ServiceName>`.
 - Each service directory must contain: `Info.plist`, `Entitlements.plist`, `main.swift`.
+
+Injectable twins are generated during the build:
+
+- For each base service bundle, a sibling `__injectable` bundle is synthesized.
+- The twin’s entitlements are the base entitlements plus the fixed overlay in `entitlements_overlays/injectable.plist`.
+- Twins have distinct executables and bundle identifiers (suffix `__injectable` and `.injectable`).
 
 If you change naming/layout here, you also need to update the build script, Evidence generation, and any docs/tests that assume the bundle layout.
 
@@ -125,9 +133,9 @@ All `ProbeService_*` targets are intended to share the *same* probe behavior. Th
 - `ProbeService_downloads_rw` — `com.apple.security.files.downloads.read-write`
 - `ProbeService_user_selected_executable` — `com.apple.security.files.user-selected.executable`
 - `ProbeService_bookmarks_app_scope` — `com.apple.security.files.bookmarks.app-scope` (scoped bookmarks agent access)
-- `ProbeService_get-task-allow` — `com.apple.security.get-task-allow`
-- `ProbeService_fully_injectable` — debugging/injection-friendly entitlement set (high concern; should require explicit acknowledgement via the repo’s risk gating)
-- `ProbeService_fully_injectable_extensions` — `fully_injectable` + `com.apple.security.temporary-exception.sbpl` for `file-issue-extension` (high concern; extension issuance)
+- `ProbeService_temporary_exception` — `com.apple.security.temporary-exception.sbpl` for `file-issue-extension` (high concern; extension issuance)
+
+Each base probe service gets an automatically generated injectable twin at build time (bundle suffix `__injectable`).
 
 ### 2) Quarantine Lab services (`QuarantineLab_*`)
 
@@ -198,3 +206,7 @@ Checklist for new services:
    - If this is a new ProbeService variant, don’t fork probe logic in the wrapper — keep the change in entitlements.
 3. Rebuild with signing (`make build`), so Evidence (`profiles.json`, entitlements extraction) stays accurate.
 4. If you introduce “high concern” entitlements, update the risk classifier in [`tests/build-evidence.py`](../tests/build-evidence.py) so the CLI’s risk gating remains correct.
+
+##  `allow-jit` vs `allow-unsigned-executable-memory` on Apple Silicon
+
+On Apple Silicon, `com.apple.security.cs.allow-unsigned-executable-memory` offers a superset of the privileges of `com.apple.security.cs.allow-jit`, so carrying both is usually redundant: [apple-developer-forums](https://developer.apple.com/forums/thread/776290)

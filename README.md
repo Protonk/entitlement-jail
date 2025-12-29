@@ -5,15 +5,15 @@ EntitlementJail is a macOS research/teaching repo where the experiment variable 
 Most of what gets maintained here is the “lab surface”:
 
 - the probe implementations and their safety boundaries,
-- the set of entitlement profiles (one per embedded `.xpc` target),
+- the set of base entitlement profiles plus auto-generated injectable twins (one twin per service),
 - the stable JSON output contract (for downstream tooling), and
 - the evidence + tests that keep the bundle and its claims honest.
 
 ## Core commitments
 
-- **Entitlements are the variable**: the unit of variation is a whole separately signed service (not “exec a path” or “inherit whatever state happens to be present”).
+- **Entitlements are the variable**: the unit of variation is a whole separately signed service and each base service has a build-generated injectable twin with a fixed overlay.
 - **Outcomes first; attribution second**: outputs are witness records (rc/errno/paths/timing) without quietly upgrading them into stronger claims about *why* they happened.
-- **Deterministic sessions for attach/debug**: `xpc session` exposes explicit lifecycle events (PID/readiness/wait barriers) so tracing and debugging can coordinate without racing service startup.
+- **Deterministic sessions for attach/debug**: `xpc session` exposes explicit lifecycle events (PID/readiness/wait barriers), so tracing and debugging can coordinate without racing service startup.
 - **Evidence is a first-class artifact**: entitlement profiles are derived from *signed* service entitlements during the build and embedded into the `.app` for inspection/verification.
 
 ## What ships

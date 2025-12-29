@@ -67,9 +67,11 @@ Think of `build.sh` as a pipeline:
 4. **Build Swift clients + XPC services**
    - Compiles embedded XPC client helpers (`xpc-probe-client`, `xpc-quarantine-client`).
    - Enumerates `xpc/services/*` and compiles each directory into `Contents/XPCServices/<ServiceName>.xpc`.
+   - Synthesizes a sibling `__injectable` twin bundle for each base service using `xpc/entitlements_overlays/injectable.plist`.
 5. **Codesign nested code (inside-out)**
    - Signs embedded helpers/tools/services first, then signs the outer `.app` last.
    - Each XPC service is signed with the entitlements in its own `xpc/services/<ServiceName>/Entitlements.plist`.
+   - Each injectable twin is signed with merged entitlements (base + fixed injectable overlay).
 6. **Generate “Evidence” manifests**
    - Runs `tests/build-evidence.py` to write `Contents/Resources/Evidence/{manifest.json,profiles.json,symbols.json}`.
    - `profiles.json` is derived from *actual signed entitlements* (extracted via `codesign -d --entitlements`), not from repo metadata.
@@ -129,6 +131,7 @@ IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' make build
 ```
 
 After rebuilding, the new service will be embedded and signed, and `profiles.json` will gain a new profile derived from its signed entitlements.
+The build will also generate an injectable twin (`<ServiceName>__injectable` with bundle id `<base>.injectable`) automatically; do not create a second entitlements file for it.
 
 ### 5) Make it discoverable (docs)
 

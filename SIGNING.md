@@ -71,6 +71,7 @@ Use this section to orient yourself and treat [build.sh](build.sh) as the author
    - Plain-signs embedded tools under `Contents/Helpers/` (Mach‑O only).
    - Plain-signs host-side tools under `Contents/MacOS/` (`xpc-probe-client`, `xpc-quarantine-client`, `sandbox-log-observer`).
    - Signs each XPC service bundle with its own `xpc/services/<ServiceName>/Entitlements.plist`.
+   - Generates and signs each `__injectable` twin with the merged base entitlements + `xpc/entitlements_overlays/injectable.plist`.
 6. **Generates Evidence**
    - Runs `tests/build-evidence.py` to produce the Evidence manifests inside the bundle.
 7. **Signs the outer `.app`**
@@ -93,6 +94,7 @@ The host-side launcher (`EntitlementJail.app/Contents/MacOS/entitlement-jail`) i
 - `EntitlementJail.entitlements` exists for explicitness and is empty by default.
 The sandbox boundary lives in the embedded XPC services:
 - Each `EntitlementJail.app/Contents/XPCServices/<ServiceName>.xpc` is signed with the entitlements in `xpc/services/<ServiceName>/Entitlements.plist`.
+- Each `EntitlementJail.app/Contents/XPCServices/<ServiceName>__injectable.xpc` is signed with the merged base entitlements + the fixed injectable overlay.
 - Changing entitlements means adding/changing a service under `xpc/services/` (not “run arbitrary code by path”).
 
 ### Inside-out signing

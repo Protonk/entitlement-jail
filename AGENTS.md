@@ -82,6 +82,7 @@ Key build facts worth knowing before you touch anything:
 
 - The launcher is host-side and plain-signed by default; the **sandbox boundary** lives in the XPC services.
 - The preferred “new entitlement” work item is: add a new XPC service target under `xpc/services/`.
+- Injectable twins are build-generated from base services using `xpc/entitlements_overlays/injectable.plist`; do not hand-author separate injectable services or entitlements files.
 
 ### XPC wire format is JSON-over-Data
 
@@ -110,6 +111,7 @@ Key build facts worth knowing before you touch anything:
 - The service bundle is named `<ServiceName>.xpc`.
 - The service executable is named exactly `<ServiceName>` and lives at `Contents/MacOS/<ServiceName>`.
 - Each service directory contains `Info.plist`, `main.swift`, and `Entitlements.plist`.
+- Injectable twins are generated as `<ServiceName>__injectable.xpc`, with executable `<ServiceName>__injectable` and bundle id `<base>.injectable`.
 
 If those don’t line up, the build fails or (worse) XPC lookup fails at runtime.
 
@@ -136,7 +138,7 @@ The reference patterns live in `xpc/InProcessProbeCore.swift`.
 1. Copy an existing service directory under `xpc/services/` (e.g. `ProbeService_minimal/`).
 2. Edit `Entitlements.plist` (this is the variable).
 3. Ensure `Info.plist` has a unique `CFBundleIdentifier`.
-4. Rebuild so evidence/profiles are regenerated (and signing includes the new service).
+4. Rebuild so evidence/profiles are regenerated (and signing includes the new service + its auto-generated injectable twin).
 5. Update docs if the new profile should be discoverable:
    - `xpc/README.md` (service list / purpose)
    - `EntitlementJail.md` (user-visible profile/workflow) if appropriate

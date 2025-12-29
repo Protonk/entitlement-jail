@@ -172,6 +172,7 @@ Notes:
 
 - `policy_profile` is copied into the output bundle under `nodes/<node_id>/policy-profile.sb` so an atlas is self-contained.
 - `xpc_quarantine_service_bundle_id` is optional. If a plan row is `kind=quarantine-lab` and a node omits the quarantine service id, the harness writes a synthetic “service missing” result for that witness (rows are not dropped).
+- Bundle ids may target either base or injectable variants. Injectable twins use the `.injectable` bundle id suffix (for example `com.yourteam.entitlement-jail.ProbeService_minimal.injectable`) and are generated automatically during the app build.
 
 ### Policy profiles (`experiments/policy/*.sb`)
 

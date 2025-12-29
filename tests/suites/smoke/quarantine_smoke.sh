@@ -30,7 +30,7 @@ rm -rf "${OUT_DIR}"
 mkdir -p "${OUT_DIR}"
 
 step "resolve_bundle_id" "resolve quarantine_default bundle id"
-BUNDLE_ID="$("${EJ}" show-profile quarantine_default | /usr/bin/python3 -c 'import json,sys; data=json.load(sys.stdin); print(((data.get("data") or {}).get("profile") or {}).get("bundle_id") or "")')"
+BUNDLE_ID="$("${EJ}" show-profile quarantine_default | /usr/bin/python3 -c 'import json,sys; data=json.load(sys.stdin); print(((data.get("data") or {}).get("variant") or {}).get("bundle_id") or "")')"
 
 if [[ -z "${BUNDLE_ID}" ]]; then
   test_fail "failed to resolve quarantine_default bundle id"

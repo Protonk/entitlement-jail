@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key>
-  <string>ProbeService_fully_injectable</string>
+  <string>ProbeService_temporary_exception</string>
   <key>CFBundleIdentifier</key>
-  <string>com.yourteam.entitlement-jail.ProbeService_fully_injectable</string>
+  <string>com.yourteam.entitlement-jail.ProbeService_temporary_exception</string>
   <key>CFBundleName</key>
-  <string>ProbeService_fully_injectable</string>
+  <string>ProbeService_temporary_exception</string>
   <key>CFBundlePackageType</key>
   <string>XPC!</string>
   <key>CFBundleShortVersionString</key>

@@ -10,6 +10,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+INJECTABLE_SUFFIX = "__injectable"
+INJECTABLE_BUNDLE_SUFFIX = ".injectable"
+INJECTABLE_OVERLAY_KEYS = [
+    "com.apple.security.get-task-allow",
+    "com.apple.security.cs.disable-library-validation",
+    "com.apple.security.cs.allow-dyld-environment-variables",
+    "com.apple.security.cs.allow-unsigned-executable-memory",
+]
+ALLOW_JIT_KEY = "com.apple.security.cs.allow-jit"
+
 
 def sha256_file(path: Path) -> str:
     hasher = hashlib.sha256()
@@ -145,13 +155,13 @@ def label_for_profile(profile_id: str) -> str:
     return profile_id.replace("_", " ")
 
 
-def tags_for_profile(service_name: str, entitlements: Dict[str, Any]) -> list[str]:
+def tags_for_profile(base_service_name: str, entitlements: Dict[str, Any]) -> list[str]:
     tags: list[str] = []
-    kind = "probe" if service_name.startswith("ProbeService_") else "quarantine" if service_name.startswith("QuarantineLab_") else "other"
+    kind = "probe" if base_service_name.startswith("ProbeService_") else "quarantine" if base_service_name.startswith("QuarantineLab_") else "other"
     tags.append(kind)
     if entitlements.get("com.apple.security.app-sandbox") is True:
         tags.append("sandbox")
-    if service_name.endswith("_minimal") or service_name.endswith("_default"):
+    if base_service_name.endswith("_minimal") or base_service_name.endswith("_default"):
         tags.append("baseline")
     if entitlements.get("com.apple.security.network.client") is True:
         tags.append("network_client")
@@ -198,6 +208,21 @@ def risk_for_entitlements(entitlements: Dict[str, Any]) -> Tuple[int, list[str]]
         return 1, tier1_reasons
 
     return 0, []
+
+
+def split_variant(service_name: str, bundle_id: Optional[str]) -> Tuple[str, str]:
+    if service_name.endswith(INJECTABLE_SUFFIX):
+        base_name = service_name[: -len(INJECTABLE_SUFFIX)]
+        if bundle_id and not bundle_id.endswith(INJECTABLE_BUNDLE_SUFFIX):
+            raise ValueError(
+                f"injectable service name without .injectable bundle id: {service_name} ({bundle_id})"
+            )
+        return base_name, "injectable"
+    if bundle_id and bundle_id.endswith(INJECTABLE_BUNDLE_SUFFIX):
+        raise ValueError(
+            f"injectable bundle id without __injectable service name: {service_name} ({bundle_id})"
+        )
+    return service_name, "base"
 
 
 def exported_ej_symbols(path: Path) -> Tuple[list[str], Optional[str]]:
@@ -248,6 +273,8 @@ def main() -> int:
     contents_dir = app_bundle / "Contents"
     evidence_dir = contents_dir / "Resources" / "Evidence"
     xpc_dir = contents_dir / "XPCServices"
+    repo_root = Path(__file__).resolve().parents[1]
+    xpc_services_root = repo_root / "xpc" / "services"
 
     if not contents_dir.exists():
         print(f"ERROR: missing app bundle Contents: {contents_dir}", file=sys.stderr)
@@ -344,32 +371,152 @@ def main() -> int:
         "sha256": sha256_file(symbols_path),
     })
 
-    profiles = []
+    profiles_by_id: Dict[str, Dict[str, Any]] = {}
     for entry in entries:
         if entry.get("kind") != "xpc-service":
             continue
         service_name = entry.get("service_name") or ""
         if not service_name:
             continue
+        bundle_id = entry.get("bundle_id") or entry["id"]
+        try:
+            base_service_name, variant = split_variant(service_name, bundle_id)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
         entitlements = entry.get("entitlements") or {}
         risk_tier, risk_reasons = risk_for_entitlements(entitlements)
         if entry.get("entitlements_error"):
             risk_tier = max(risk_tier, 2)
             if "entitlements_error" not in risk_reasons:
                 risk_reasons.append("entitlements_error")
-        profile_id = profile_id_for_service(service_name)
-        profiles.append({
-            "profile_id": profile_id,
-            "bundle_id": entry.get("bundle_id") or entry["id"],
+        profile_id = profile_id_for_service(base_service_name)
+        profile = profiles_by_id.get(profile_id)
+        if profile is None:
+            profile = {
+                "profile_id": profile_id,
+                "kind": "probe" if base_service_name.startswith("ProbeService_") else "quarantine" if base_service_name.startswith("QuarantineLab_") else "other",
+                "label": label_for_profile(profile_id),
+                "variants": [],
+            }
+            profiles_by_id[profile_id] = profile
+        variant_tags = tags_for_profile(base_service_name, entitlements)
+        if variant == "injectable":
+            variant_tags.append("injectable")
+        profile["variants"].append({
+            "variant": variant,
+            "bundle_id": bundle_id,
             "service_name": service_name,
-            "kind": "probe" if service_name.startswith("ProbeService_") else "quarantine" if service_name.startswith("QuarantineLab_") else "other",
-            "label": label_for_profile(profile_id),
-            "tags": tags_for_profile(service_name, entitlements),
+            "tags": sorted(set(variant_tags)),
             "risk_tier": risk_tier,
             "risk_reasons": risk_reasons,
             "entitlements": entitlements,
             "entitlements_error": entry.get("entitlements_error"),
         })
+
+    profiles = []
+    for profile_id in sorted(profiles_by_id.keys()):
+        profile = profiles_by_id[profile_id]
+        variants = profile.get("variants", [])
+        variants.sort(key=lambda v: 0 if v.get("variant") == "base" else 1)
+        profile["variants"] = variants
+        profiles.append(profile)
+
+    overlay_keys = set(INJECTABLE_OVERLAY_KEYS)
+    for profile in profiles:
+        variants = {v.get("variant"): v for v in profile.get("variants", [])}
+        if "base" not in variants or "injectable" not in variants:
+            print(
+                f"ERROR: profile {profile.get('profile_id')} missing base or injectable variant",
+                file=sys.stderr,
+            )
+            return 2
+        base_variant = variants["base"]
+        injectable_variant = variants["injectable"]
+        base_entitlements = base_variant.get("entitlements") or {}
+        injectable_entitlements = injectable_variant.get("entitlements") or {}
+        if base_variant.get("entitlements_error") or injectable_variant.get("entitlements_error"):
+            print(
+                f"ERROR: entitlements extraction failed for profile {profile.get('profile_id')}",
+                file=sys.stderr,
+            )
+            return 2
+        if not isinstance(base_entitlements, dict) or not isinstance(injectable_entitlements, dict):
+            print(
+                f"ERROR: entitlements missing for profile {profile.get('profile_id')}",
+                file=sys.stderr,
+            )
+            return 2
+
+        for key in INJECTABLE_OVERLAY_KEYS:
+            if injectable_entitlements.get(key) is not True:
+                print(
+                    f"ERROR: injectable variant missing {key} for profile {profile.get('profile_id')}",
+                    file=sys.stderr,
+                )
+                return 2
+
+        missing_base_keys = set(base_entitlements.keys()) - set(injectable_entitlements.keys())
+        if missing_base_keys:
+            missing = ", ".join(sorted(missing_base_keys))
+            print(
+                f"ERROR: injectable variant missing base entitlements for profile {profile.get('profile_id')}: {missing}",
+                file=sys.stderr,
+            )
+            return 2
+
+        mismatched_keys = []
+        for key, value in base_entitlements.items():
+            if key in overlay_keys:
+                continue
+            if injectable_entitlements.get(key) != value:
+                mismatched_keys.append(key)
+        if mismatched_keys:
+            mismatched = ", ".join(sorted(mismatched_keys))
+            print(
+                f"ERROR: injectable variant changed base entitlements for profile {profile.get('profile_id')}: {mismatched}",
+                file=sys.stderr,
+            )
+            return 2
+
+        extra_keys = set(injectable_entitlements.keys()) - set(base_entitlements.keys()) - overlay_keys
+        if extra_keys:
+            extras = ", ".join(sorted(extra_keys))
+            print(
+                f"ERROR: injectable variant has unexpected entitlements for profile {profile.get('profile_id')}: {extras}",
+                file=sys.stderr,
+            )
+            return 2
+
+        if injectable_entitlements.get(ALLOW_JIT_KEY) is True and base_entitlements.get(ALLOW_JIT_KEY) is not True:
+            print(
+                f"ERROR: injectable variant introduced {ALLOW_JIT_KEY} for profile {profile.get('profile_id')}",
+                file=sys.stderr,
+            )
+            return 2
+
+        base_service_name = base_variant.get("service_name")
+        if not base_service_name:
+            print(
+                f"ERROR: base variant missing service_name for profile {profile.get('profile_id')}",
+                file=sys.stderr,
+            )
+            return 2
+        base_entitlements_path = xpc_services_root / base_service_name / "Entitlements.plist"
+        if not base_entitlements_path.exists():
+            print(
+                f"ERROR: missing base entitlements file for {base_service_name}: {base_entitlements_path}",
+                file=sys.stderr,
+            )
+            return 2
+        base_entitlements_source = read_plist(base_entitlements_path)
+        for key in INJECTABLE_OVERLAY_KEYS:
+            if base_entitlements.get(key) is True and base_entitlements_source.get(key) is not True:
+                print(
+                    f"ERROR: base variant gained {key} without source entitlement for profile {profile.get('profile_id')}",
+                    file=sys.stderr,
+                )
+                return 2
 
     profiles_manifest = {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

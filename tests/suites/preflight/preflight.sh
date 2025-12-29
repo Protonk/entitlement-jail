@@ -124,7 +124,7 @@ ENT_KEYS = {
     "cs_debugger": "com.apple.security.cs.debugger",
 }
 
-def service_record(profile_id, service_name, kind=None, bundle_id=None):
+def service_record(profile_id, service_name, kind=None, bundle_id=None, variant=None):
     bin_path = os.path.join(
         app_path,
         "Contents",
@@ -144,6 +144,7 @@ def service_record(profile_id, service_name, kind=None, bundle_id=None):
                 ent_map[alias] = bool(entitlements.get(key))
     return {
         "profile_id": profile_id,
+        "variant": variant,
         "kind": kind,
         "bundle_id": bundle_id,
         "service_name": service_name,
@@ -166,15 +167,22 @@ if os.path.exists(profiles_manifest_path):
         if isinstance(profiles, list):
             for entry in profiles:
                 profile_id = entry.get("profile_id")
-                service_name = entry.get("service_name")
-                if not profile_id or not service_name:
+                variants = entry.get("variants")
+                if not profile_id or not isinstance(variants, list):
                     continue
-                services[profile_id] = service_record(
-                    profile_id=profile_id,
-                    service_name=service_name,
-                    kind=entry.get("kind"),
-                    bundle_id=entry.get("bundle_id"),
-                )
+                services.setdefault(profile_id, {})
+                for variant in variants:
+                    variant_name = variant.get("variant")
+                    service_name = variant.get("service_name")
+                    if not variant_name or not service_name:
+                        continue
+                    services[profile_id][variant_name] = service_record(
+                        profile_id=profile_id,
+                        service_name=service_name,
+                        kind=entry.get("kind"),
+                        bundle_id=variant.get("bundle_id"),
+                        variant=variant_name,
+                    )
         else:
             profiles_manifest_error = "profiles.json missing 'profiles' array"
     except Exception as e:
@@ -184,10 +192,24 @@ else:
 
 if not services:
     services = {
-        "minimal": service_record("minimal", "ProbeService_minimal", "probe"),
-        "get-task-allow": service_record("get-task-allow", "ProbeService_get-task-allow", "probe"),
-        "fully_injectable": service_record("fully_injectable", "ProbeService_fully_injectable", "probe"),
-        "net_client": service_record("net_client", "ProbeService_net_client", "probe"),
+        "minimal": {
+            "base": service_record("minimal", "ProbeService_minimal", "probe", variant="base"),
+            "injectable": service_record(
+                "minimal",
+                "ProbeService_minimal__injectable",
+                "probe",
+                variant="injectable",
+            ),
+        },
+        "net_client": {
+            "base": service_record("net_client", "ProbeService_net_client", "probe", variant="base"),
+            "injectable": service_record(
+                "net_client",
+                "ProbeService_net_client__injectable",
+                "probe",
+                variant="injectable",
+            ),
+        },
     }
 
 app_exists = os.path.exists(app_path)
@@ -202,7 +224,7 @@ dylib_exists = os.path.exists(dylib_path)
 dylib_signed, dylib_error = codesign_verify(dylib_path) if dylib_exists else (False, "missing")
 
 report = {
-    "schema_version": 2,
+    "schema_version": 3,
     "profiles_manifest": {
         "path": profiles_manifest_path,
         "exists": os.path.exists(profiles_manifest_path),

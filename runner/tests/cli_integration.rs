@@ -15,6 +15,9 @@ fn dlopen_tests_enabled() -> bool {
     env::var("EJ_DLOPEN_TESTS").ok().as_deref() == Some("1")
 }
 
+const RUST_SCHEMA_VERSION: u64 = 3;
+const PROBE_SCHEMA_VERSION: u64 = 2;
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -307,7 +310,7 @@ fn cli_integration_smoke() {
     let verify_json = parse_json(&verify_out);
     assert_eq!(
         verify_json.get("schema_version").and_then(|v| v.as_u64()),
-        Some(2)
+        Some(RUST_SCHEMA_VERSION)
     );
     assert_eq!(
         verify_json.get("kind").and_then(|v| v.as_str()),
@@ -360,7 +363,7 @@ fn cli_integration_smoke() {
     let list_json = parse_json(&list_out);
     assert_eq!(
         list_json.get("schema_version").and_then(|v| v.as_u64()),
-        Some(2)
+        Some(RUST_SCHEMA_VERSION)
     );
     assert_eq!(
         list_json.get("kind").and_then(|v| v.as_str()),
@@ -372,6 +375,27 @@ fn cli_integration_smoke() {
         .and_then(|v| v.as_array())
         .unwrap_or_else(|| panic!("list-profiles missing profiles array"));
     assert!(!profiles.is_empty(), "list-profiles returned empty list");
+    let minimal = profiles
+        .iter()
+        .find(|entry| {
+            entry
+                .get("profile_id")
+                .and_then(|v| v.as_str())
+                == Some("minimal")
+        })
+        .expect("minimal profile missing from list-profiles");
+    let minimal_variants = minimal
+        .get("variants")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("minimal profile missing variants"));
+    assert!(
+        minimal_variants.iter().any(|v| v.get("variant").and_then(|v| v.as_str()) == Some("base")),
+        "minimal profile missing base variant"
+    );
+    assert!(
+        minimal_variants.iter().any(|v| v.get("variant").and_then(|v| v.as_str()) == Some("injectable")),
+        "minimal profile missing injectable variant"
+    );
 
     let show_out = run_ej(&bin, &["show-profile", "minimal"]);
     assert!(
@@ -382,7 +406,7 @@ fn cli_integration_smoke() {
     let show_json = parse_json(&show_out);
     assert_eq!(
         show_json.get("schema_version").and_then(|v| v.as_u64()),
-        Some(2)
+        Some(RUST_SCHEMA_VERSION)
     );
     assert_eq!(
         show_json.get("kind").and_then(|v| v.as_str()),
@@ -395,6 +419,13 @@ fn cli_integration_smoke() {
         .and_then(|v| v.as_str())
         .unwrap_or("");
     assert_eq!(profile_id, "minimal");
+    let variant = show_json
+        .get("data")
+        .and_then(|v| v.get("variant"))
+        .and_then(|v| v.get("variant"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert_eq!(variant, "base");
 
     let services_out = run_ej(&bin, &["list-services"]);
     assert!(
@@ -412,7 +443,7 @@ fn cli_integration_smoke() {
     let probe_json = parse_json(&probe_out);
     assert_eq!(
         probe_json.get("schema_version").and_then(|v| v.as_u64()),
-        Some(2)
+        Some(PROBE_SCHEMA_VERSION)
     );
     assert_eq!(
         probe_json.get("kind").and_then(|v| v.as_str()),
@@ -421,7 +452,7 @@ fn cli_integration_smoke() {
     let catalog = parse_probe_catalog(&probe_out);
     assert_eq!(
         catalog.get("schema_version").and_then(|v| v.as_u64()),
-        Some(2)
+        Some(PROBE_SCHEMA_VERSION)
     );
 
     let trace = catalog
@@ -472,7 +503,7 @@ fn cli_integration_smoke() {
     let health_json = parse_json(&health_out);
     assert_eq!(
         health_json.get("schema_version").and_then(|v| v.as_u64()),
-        Some(2)
+        Some(RUST_SCHEMA_VERSION)
     );
     assert_eq!(
         health_json.get("kind").and_then(|v| v.as_str()),
@@ -488,7 +519,15 @@ fn cli_integration_smoke() {
 
     let gate_out = run_ej(
         &bin,
-        &["xpc", "run", "--profile", "fully_injectable", "probe_catalog"],
+        &[
+            "xpc",
+            "run",
+            "--profile",
+            "minimal",
+            "--variant",
+            "injectable",
+            "probe_catalog",
+        ],
     );
     assert!(
         !gate_out.status.success(),
@@ -501,9 +540,11 @@ fn cli_integration_smoke() {
             "xpc",
             "run",
             "--profile",
-            "fully_injectable",
+            "minimal",
+            "--variant",
+            "injectable",
             "--ack-risk",
-            "fully_injectable",
+            "minimal@injectable",
             "probe_catalog",
         ],
     );
@@ -525,11 +566,18 @@ fn cli_integration_smoke() {
     let matrix_json = parse_json(&matrix_out);
     assert_eq!(
         matrix_json.get("schema_version").and_then(|v| v.as_u64()),
-        Some(2)
+        Some(RUST_SCHEMA_VERSION)
     );
     assert_eq!(
         matrix_json.get("kind").and_then(|v| v.as_str()),
         Some("run_matrix_report")
+    );
+    assert_eq!(
+        matrix_json
+            .get("data")
+            .and_then(|v| v.get("variant"))
+            .and_then(|v| v.as_str()),
+        Some("base")
     );
     let matrix_output = matrix_json
         .get("data")
@@ -550,7 +598,7 @@ fn cli_integration_smoke() {
     let bundle_json = parse_json(&bundle_out);
     assert_eq!(
         bundle_json.get("schema_version").and_then(|v| v.as_u64()),
-        Some(2)
+        Some(RUST_SCHEMA_VERSION)
     );
     assert_eq!(
         bundle_json.get("kind").and_then(|v| v.as_str()),
@@ -559,15 +607,21 @@ fn cli_integration_smoke() {
 
     if let Some(preflight) = preflight.as_ref() {
         let app_signed = preflight_bool(preflight, &["app", "signed"]) == Some(true);
-        let get_task_allow_entitled = preflight_bool(
+        let injectable_get_task_allow = preflight_bool(
             preflight,
-            &["services", "get-task-allow", "entitlements", "get_task_allow"],
+            &[
+                "services",
+                "minimal",
+                "injectable",
+                "entitlements",
+                "get_task_allow",
+            ],
         ) == Some(true);
         let inspector_signed = preflight_bool(preflight, &["inspector", "signed"]) == Some(true);
         let inspector_debugger = preflight_bool(preflight, &["inspector", "cs_debugger"]) == Some(true);
         let inspector_path = preflight_str(preflight, &["inspector", "path"]).unwrap_or_default();
 
-        if app_signed && get_task_allow_entitled && inspector_signed && inspector_debugger {
+        if app_signed && injectable_get_task_allow && inspector_signed && inspector_debugger {
             let inspector_bin = PathBuf::from(inspector_path);
             assert!(
                 inspector_bin.exists(),
@@ -575,16 +629,18 @@ fn cli_integration_smoke() {
                 inspector_bin.display()
             );
 
-            // get-task-allow should be attachable (task_for_pid allowed).
+            // injectable variant should be attachable (task_for_pid allowed).
             let mut hold = spawn_xpc_session_hold(
                 &bin,
                 &[
                     "xpc",
                     "session",
                     "--profile",
-                    "get-task-allow",
+                    "minimal",
+                    "--variant",
+                    "injectable",
                     "--ack-risk",
-                    "get-task-allow",
+                    "minimal@injectable",
                 ],
             );
             let inspector_out = run_cmd(
@@ -602,7 +658,7 @@ fn cli_integration_smoke() {
                     .and_then(|v| v.get("ok"))
                     .and_then(|v| v.as_bool()),
                 Some(true),
-                "ej-inspector refused get-task-allow pid: {}",
+                "ej-inspector refused injectable pid: {}",
                 String::from_utf8_lossy(&inspector_out.stderr)
             );
 
@@ -612,7 +668,7 @@ fn cli_integration_smoke() {
             let hold_res = finish_session_hold(hold);
             assert!(
                 hold_res.status_ok,
-                "get-task-allow xpc session failed:\n\nstdout:\n{}\n\nstderr:\n{}",
+                "injectable xpc session failed:\n\nstdout:\n{}\n\nstderr:\n{}",
                 hold_res.stdout,
                 hold_res.stderr
             );
@@ -664,7 +720,13 @@ fn cli_integration_smoke() {
             let dylib_path = preflight_str(preflight, &["test_dylib", "path"]).unwrap_or_default();
             let relax_ok = preflight_bool(
                 preflight,
-                &["services", "fully_injectable", "entitlements", "disable_library_validation"],
+                &[
+                    "services",
+                    "minimal",
+                    "injectable",
+                    "entitlements",
+                    "disable_library_validation",
+                ],
             ) == Some(true);
             if dylib_ready && relax_ok {
                 let dylib = PathBuf::from(dylib_path);
@@ -675,9 +737,11 @@ fn cli_integration_smoke() {
                         "xpc",
                         "run",
                         "--profile",
-                        "fully_injectable",
+                        "minimal",
+                        "--variant",
+                        "injectable",
                         "--ack-risk",
-                        "fully_injectable",
+                        "minimal@injectable",
                         "dlopen_external",
                         "--path",
                         dylib.to_str().unwrap_or(""),
@@ -706,13 +770,14 @@ fn cli_integration_smoke() {
 
         let jit_ok = preflight_bool(
             preflight,
-            &["services", "fully_injectable", "entitlements", "allow_jit"],
+            &["services", "minimal", "injectable", "entitlements", "allow_jit"],
         ) == Some(true)
             && preflight_bool(
                 preflight,
                 &[
                     "services",
-                    "fully_injectable",
+                    "minimal",
+                    "injectable",
                     "entitlements",
                     "allow_unsigned_executable_memory",
                 ],
@@ -724,9 +789,11 @@ fn cli_integration_smoke() {
                     "xpc",
                     "run",
                     "--profile",
-                    "fully_injectable",
+                    "minimal",
+                    "--variant",
+                    "injectable",
                     "--ack-risk",
-                    "fully_injectable",
+                    "minimal@injectable",
                     "jit_map_jit",
                 ],
             );
@@ -742,9 +809,11 @@ fn cli_integration_smoke() {
                     "xpc",
                     "run",
                     "--profile",
-                    "fully_injectable",
+                    "minimal",
+                    "--variant",
+                    "injectable",
                     "--ack-risk",
-                    "fully_injectable",
+                    "minimal@injectable",
                     "jit_rwx_legacy",
                 ],
             );
@@ -764,7 +833,7 @@ fn cli_integration_smoke() {
 
         let net_client_ok = preflight_bool(
             preflight,
-            &["services", "net_client", "entitlements", "network_client"],
+            &["services", "net_client", "base", "entitlements", "network_client"],
         ) == Some(true);
         if net_client_ok {
             let net_min_out = run_ej(

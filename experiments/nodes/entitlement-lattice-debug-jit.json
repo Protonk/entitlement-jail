@@ -7,14 +7,9 @@
       "xpc_quarantine_service_bundle_id": "com.yourteam.entitlement-jail.QuarantineLab_default"
     },
     {
-      "node_id": "E5_get_task_allow",
+      "node_id": "E5_minimal_injectable",
       "policy_profile": "experiments/policy/P0_minimal.sb",
-      "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_get-task-allow"
-    },
-    {
-      "node_id": "E8_fully_injectable",
-      "policy_profile": "experiments/policy/P0_minimal.sb",
-      "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_fully_injectable"
+      "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_minimal.injectable"
     }
   ]
 }

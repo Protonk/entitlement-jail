@@ -17,18 +17,18 @@ fn print_usage() {
 usage:
   entitlement-jail run-system <absolute-platform-binary> [args...]
   entitlement-jail run-embedded <tool-name> [args...]
-  entitlement-jail xpc run (--profile <id> | --service <bundle-id>) [--ack-risk <id|bundle-id>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] <probe-id> [probe-args...]
-  entitlement-jail xpc session (--profile <id> | --service <bundle-id>) [--ack-risk <id|bundle-id>] [--plan-id <id>] [--correlation-id <id>] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
+  entitlement-jail xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--ack-risk <id|bundle-id>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] <probe-id> [probe-args...]
+  entitlement-jail xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--ack-risk <id|bundle-id>] [--plan-id <id>] [--correlation-id <id>] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
   entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
   entitlement-jail verify-evidence
   entitlement-jail inspect-macho <service-id|main|path>
   entitlement-jail list-profiles
   entitlement-jail list-services
-  entitlement-jail show-profile <id>
-  entitlement-jail describe-service <id>
-  entitlement-jail health-check [--profile <id>]
+  entitlement-jail show-profile <id[@variant]> [--variant <base|injectable>]
+  entitlement-jail describe-service <id[@variant]> [--variant <base|injectable>]
+  entitlement-jail health-check [--profile <id[@variant]>] [--variant <base|injectable>]
   entitlement-jail bundle-evidence [--out <dir>] [--include-health-check] [--ack-risk <id|bundle-id>]
-  entitlement-jail run-matrix --group <name> [--out <dir>] [--ack-risk <id|bundle-id>] <probe-id> [probe-args...]
+  entitlement-jail run-matrix --group <name> [--variant <base|injectable>] [--out <dir>] [--ack-risk <id|bundle-id>] <probe-id> [probe-args...]
 
 notes:
   - run-system only allows platform-style paths (/bin, /usr/bin, /sbin, /usr/sbin, /usr/libexec, /System/Library)
@@ -68,6 +68,7 @@ struct ProfilesReport {
 struct ProfileReport {
     profiles_path: String,
     profile: profiles::ProfileEntry,
+    variant: profiles::ProfileVariant,
 }
 
 #[derive(Serialize)]
@@ -86,6 +87,7 @@ struct HealthProfileResult {
     profile_id: String,
     bundle_id: String,
     kind: String,
+    variant: String,
     ok: bool,
     probes: Vec<HealthProbeResult>,
 }
@@ -101,7 +103,22 @@ struct HealthCheckReport {
 struct ServicesReport {
     profiles_path: String,
     generated_at: Option<String>,
-    services: Vec<profiles::ProfileEntry>,
+    services: Vec<ServiceEntry>,
+}
+
+#[derive(Serialize)]
+struct ServiceEntry {
+    profile_id: String,
+    kind: String,
+    label: Option<String>,
+    variant: String,
+    bundle_id: String,
+    service_name: String,
+    tags: Option<Vec<String>>,
+    risk_tier: Option<u8>,
+    risk_reasons: Option<Vec<String>>,
+    entitlements: Option<serde_json::Value>,
+    entitlements_error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -130,7 +147,9 @@ struct ServiceCapabilities {
 
 #[derive(Serialize)]
 struct DescribeServiceReport {
-    service: profiles::ProfileEntry,
+    profile: profiles::ProfileEntry,
+    variant: String,
+    service: profiles::ProfileVariant,
     capabilities_source: String,
     capabilities: ServiceCapabilities,
 }
@@ -140,6 +159,7 @@ struct MatrixRun {
     profile_id: String,
     bundle_id: String,
     label: Option<String>,
+    variant: String,
     risk_tier: Option<u8>,
     risk_reasons: Option<Vec<String>>,
     exit_code: i32,
@@ -155,6 +175,7 @@ struct MatrixRun {
 struct MatrixSkip {
     profile_id: String,
     bundle_id: String,
+    variant: String,
     reason: String,
     risk_tier: Option<u8>,
     risk_reasons: Option<Vec<String>>,
@@ -167,6 +188,7 @@ struct RunMatrixReport {
     probe_argv: Vec<String>,
     generated_at_unix_ms: u128,
     output_dir: String,
+    variant: String,
     profiles: Vec<String>,
     runs: Vec<MatrixRun>,
     skipped: Vec<MatrixSkip>,
@@ -176,6 +198,7 @@ struct RunMatrixReport {
 struct BundleProfileSkip {
     profile_id: String,
     bundle_id: String,
+    variant: String,
     reason: String,
     risk_tier: Option<u8>,
     risk_reasons: Option<Vec<String>>,
@@ -203,17 +226,84 @@ enum RiskGate {
     RequireAck,
 }
 
-fn risk_gate_for_profile(profile: Option<&profiles::ProfileEntry>) -> (RiskGate, Vec<String>, Option<String>) {
-    match profile {
+const VARIANT_BASE: &str = "base";
+const VARIANT_INJECTABLE: &str = "injectable";
+
+fn parse_variant(value: &str) -> Result<&'static str, String> {
+    match value {
+        VARIANT_BASE => Ok(VARIANT_BASE),
+        VARIANT_INJECTABLE => Ok(VARIANT_INJECTABLE),
+        _ => Err(format!(
+            "invalid variant {value:?} (expected: {VARIANT_BASE}|{VARIANT_INJECTABLE})"
+        )),
+    }
+}
+
+fn split_profile_selector(selector: &str) -> Result<(String, Option<&'static str>), String> {
+    if let Some((profile_id, variant)) = selector.split_once('@') {
+        if profile_id.is_empty() || variant.is_empty() {
+            return Err(format!(
+                "invalid profile selector {selector:?} (expected <profile>@<variant>)"
+            ));
+        }
+        return Ok((profile_id.to_string(), Some(parse_variant(variant)?)));
+    }
+    Ok((selector.to_string(), None))
+}
+
+fn resolve_profile_variant<'a>(
+    manifest: &'a profiles::ProfilesManifest,
+    selector: &str,
+    variant: Option<&'static str>,
+) -> Result<profiles::ResolvedProfileVariant<'a>, String> {
+    if let Some(profile) = profiles::find_profile_by_id(manifest, selector) {
+        let chosen = variant.unwrap_or(VARIANT_BASE);
+        let chosen_variant = profiles::find_variant(profile, chosen)
+            .ok_or_else(|| format!("profile {selector} missing variant {chosen}"))?;
+        return Ok(profiles::ResolvedProfileVariant {
+            profile,
+            variant: chosen_variant,
+        });
+    }
+
+    if variant.is_some() {
+        return Err(format!(
+            "variant can only be used with profile ids (got selector {selector:?})"
+        ));
+    }
+
+    if let Some(found) = profiles::find_variant_by_bundle_id(manifest, selector) {
+        return Ok(found);
+    }
+    if let Some(found) = profiles::find_variant_by_service_name(manifest, selector) {
+        return Ok(found);
+    }
+
+    Err(format!("unknown profile or service: {selector}"))
+}
+
+fn variant_rank(variant: &str) -> u8 {
+    if variant == VARIANT_BASE {
+        0
+    } else {
+        1
+    }
+}
+
+fn risk_gate_for_variant(
+    profile: Option<&profiles::ProfileEntry>,
+    variant: Option<&profiles::ProfileVariant>,
+) -> (RiskGate, Vec<String>, Option<String>) {
+    match variant {
         None => (
             RiskGate::RequireAck,
             vec!["unknown_profile".to_string()],
             None,
         ),
-        Some(profile) => {
-            let tier = profile.risk_tier.unwrap_or(2);
-            let reasons = profile.risk_reasons.clone().unwrap_or_else(Vec::new);
-            let label = profile.label.clone();
+        Some(variant) => {
+            let tier = variant.risk_tier.unwrap_or(2);
+            let reasons = variant.risk_reasons.clone().unwrap_or_else(Vec::new);
+            let label = profile.and_then(|entry| entry.label.clone());
             match tier {
                 0 => (RiskGate::Allow, reasons, label),
                 1 => (RiskGate::Warn, reasons, label),
@@ -221,16 +311,6 @@ fn risk_gate_for_profile(profile: Option<&profiles::ProfileEntry>) -> (RiskGate,
             }
         }
     }
-}
-
-fn resolve_profile_by_bundle_id<'a>(
-    manifest: &'a profiles::ProfilesManifest,
-    bundle_id: &str,
-) -> Option<&'a profiles::ProfileEntry> {
-    manifest
-        .profiles
-        .iter()
-        .find(|profile| profile.bundle_id == bundle_id)
 }
 
 fn entitlement_bool(entitlements: &Option<serde_json::Value>, key: &str) -> bool {
@@ -269,47 +349,47 @@ fn container_path(base: &Option<PathBuf>, parts: &[&str]) -> String {
     path.display().to_string()
 }
 
-fn build_static_capabilities(profile: &profiles::ProfileEntry) -> ServiceCapabilities {
-    let base = container_base_dir(&profile.bundle_id);
-    let prefs_name = format!("{}.plist", profile.bundle_id);
+fn build_static_capabilities(variant: &profiles::ProfileVariant) -> ServiceCapabilities {
+    let base = container_base_dir(&variant.bundle_id);
+    let prefs_name = format!("{}.plist", variant.bundle_id);
     ServiceCapabilities {
-        has_app_sandbox: entitlement_bool(&profile.entitlements, "com.apple.security.app-sandbox"),
-        has_get_task_allow: entitlement_bool(&profile.entitlements, "com.apple.security.get-task-allow"),
+        has_app_sandbox: entitlement_bool(&variant.entitlements, "com.apple.security.app-sandbox"),
+        has_get_task_allow: entitlement_bool(&variant.entitlements, "com.apple.security.get-task-allow"),
         has_disable_library_validation: entitlement_bool(
-            &profile.entitlements,
+            &variant.entitlements,
             "com.apple.security.cs.disable-library-validation",
         ),
         has_allow_dyld_env: entitlement_bool(
-            &profile.entitlements,
+            &variant.entitlements,
             "com.apple.security.cs.allow-dyld-environment-variables",
         ),
-        has_allow_jit: entitlement_bool(&profile.entitlements, "com.apple.security.cs.allow-jit"),
+        has_allow_jit: entitlement_bool(&variant.entitlements, "com.apple.security.cs.allow-jit"),
         has_allow_unsigned_exec_mem: entitlement_bool(
-            &profile.entitlements,
+            &variant.entitlements,
             "com.apple.security.cs.allow-unsigned-executable-memory",
         ),
         has_network_client: entitlement_bool(
-            &profile.entitlements,
+            &variant.entitlements,
             "com.apple.security.network.client",
         ),
         has_downloads_rw: entitlement_bool(
-            &profile.entitlements,
+            &variant.entitlements,
             "com.apple.security.files.downloads.read-write",
         ),
         has_bookmarks_app_scope: entitlement_bool(
-            &profile.entitlements,
+            &variant.entitlements,
             "com.apple.security.files.bookmarks.app-scope",
         ),
         has_user_selected_read_only: entitlement_bool(
-            &profile.entitlements,
+            &variant.entitlements,
             "com.apple.security.files.user-selected.read-only",
         ),
         has_user_selected_read_write: entitlement_bool(
-            &profile.entitlements,
+            &variant.entitlements,
             "com.apple.security.files.user-selected.read-write",
         ),
         has_user_selected_executable: entitlement_bool(
-            &profile.entitlements,
+            &variant.entitlements,
             "com.apple.security.files.user-selected.executable",
         ),
         home_dir: container_path(&base, &[]),
@@ -326,8 +406,17 @@ fn build_static_capabilities(profile: &profiles::ProfileEntry) -> ServiceCapabil
 fn matrix_groups() -> Vec<(&'static str, &'static [&'static str])> {
     vec![
         ("baseline", &["minimal"]),
-        ("debug", &["minimal", "get-task-allow"]),
-        ("inject", &["minimal", "fully_injectable"]),
+        (
+            "probe",
+            &[
+                "minimal",
+                "net_client",
+                "downloads_rw",
+                "user_selected_executable",
+                "bookmarks_app_scope",
+                "temporary_exception",
+            ],
+        ),
     ]
 }
 
@@ -386,7 +475,7 @@ fn default_bundle_output_dir() -> Result<PathBuf, String> {
         .join("latest"))
 }
 
-fn default_matrix_output_dir(group_id: &str) -> Result<PathBuf, String> {
+fn default_matrix_output_dir(group_id: &str, variant: &str) -> Result<PathBuf, String> {
     let home = env::var("HOME").map_err(|_| "HOME not set".to_string())?;
     Ok(PathBuf::from(home)
         .join("Library")
@@ -394,6 +483,7 @@ fn default_matrix_output_dir(group_id: &str) -> Result<PathBuf, String> {
         .join("entitlement-jail")
         .join("matrix")
         .join(group_id)
+        .join(variant)
         .join("latest"))
 }
 
@@ -506,27 +596,10 @@ fn parse_probe_response(stdout: &str) -> Result<(Option<i64>, Option<String>, Op
     Ok((rc, normalized_outcome, error))
 }
 
-fn build_health_check_report(
-    manifest: &profiles::ProfilesManifest,
+fn build_health_check_report<'a>(
     profiles_path: &Path,
-    profile_filter: Option<&str>,
+    selected: Vec<profiles::ResolvedProfileVariant<'a>>,
 ) -> Result<HealthCheckReport, String> {
-    let mut selected: Vec<profiles::ProfileEntry> = Vec::new();
-    if let Some(filter) = profile_filter {
-        let profile = profiles::find_profile(manifest, filter)
-            .ok_or_else(|| format!("unknown profile: {filter}"))?;
-        if profile.kind != "probe" {
-            return Err(format!(
-                "health-check only supports probe profiles (profile {} is kind={})",
-                profile.profile_id, profile.kind
-            ));
-        }
-        selected.push(profile.clone());
-    } else {
-        for profile in profiles::filter_profiles(manifest, Some("probe")) {
-            selected.push(profile.clone());
-        }
-    }
 
     let probe_plan: [(&str, &[&str]); 3] = [
         ("capabilities_snapshot", &[]),
@@ -535,12 +608,14 @@ fn build_health_check_report(
     ];
 
     let mut profile_reports = Vec::new();
-    for profile in selected {
+    for resolved in selected {
+        let profile = resolved.profile;
+        let variant = resolved.variant;
         let mut probes = Vec::new();
         let mut profile_ok = true;
         for (probe_id, probe_args) in probe_plan {
             let (stdout, exit_code, stderr) =
-                match run_xpc_probe(&profile.bundle_id, probe_id, probe_args) {
+                match run_xpc_probe(&variant.bundle_id, probe_id, probe_args) {
                     Ok(result) => result,
                     Err(err) => {
                         profile_ok = false;
@@ -590,8 +665,9 @@ fn build_health_check_report(
 
         profile_reports.push(HealthProfileResult {
             profile_id: profile.profile_id.clone(),
-            bundle_id: profile.bundle_id.clone(),
+            bundle_id: variant.bundle_id.clone(),
             kind: profile.kind.clone(),
+            variant: variant.variant.clone(),
             ok: profile_ok,
             probes,
         });
@@ -865,8 +941,30 @@ fn main() {
         Some("list-services") => {
             let app_root = resolve_app_root();
             let (manifest, profiles_path) = load_profiles_manifest(&app_root);
-            let mut services = manifest.profiles.clone();
-            services.sort_by(|a, b| a.profile_id.cmp(&b.profile_id));
+            let mut services = Vec::new();
+            for profile in &manifest.profiles {
+                for variant in &profile.variants {
+                    services.push(ServiceEntry {
+                        profile_id: profile.profile_id.clone(),
+                        kind: profile.kind.clone(),
+                        label: profile.label.clone(),
+                        variant: variant.variant.clone(),
+                        bundle_id: variant.bundle_id.clone(),
+                        service_name: variant.service_name.clone(),
+                        tags: variant.tags.clone(),
+                        risk_tier: variant.risk_tier,
+                        risk_reasons: variant.risk_reasons.clone(),
+                        entitlements: variant.entitlements.clone(),
+                        entitlements_error: variant.entitlements_error.clone(),
+                    });
+                }
+            }
+            services.sort_by(|a, b| {
+                a.profile_id
+                    .cmp(&b.profile_id)
+                    .then_with(|| variant_rank(&a.variant).cmp(&variant_rank(&b.variant)))
+                    .then_with(|| a.service_name.cmp(&b.service_name))
+            });
             let report = ServicesReport {
                 profiles_path: profiles_path.display().to_string(),
                 generated_at: manifest.generated_at,
@@ -876,52 +974,192 @@ fn main() {
             return;
         }
         Some("show-profile") => {
-            let selector = match args.get(1).and_then(|s| s.to_str()) {
-                Some(s) => s,
+            let mut selector: Option<String> = None;
+            let mut variant_arg: Option<&'static str> = None;
+            let mut idx = 1usize;
+            while idx < args.len() {
+                let arg = match args.get(idx).and_then(|s| s.to_str()) {
+                    Some(value) => value,
+                    None => break,
+                };
+                match arg {
+                    "-h" | "--help" => {
+                        print_usage();
+                        return;
+                    }
+                    "--variant" => {
+                        let value = args
+                            .get(idx + 1)
+                            .and_then(|s| s.to_str())
+                            .ok_or_else(|| "missing value for --variant".to_string());
+                        match value {
+                            Ok(v) => {
+                                if variant_arg.is_some() {
+                                    eprintln!("--variant specified multiple times");
+                                    print_usage();
+                                    std::process::exit(2);
+                                }
+                                variant_arg = Some(parse_variant(v).unwrap_or_else(|err| {
+                                    eprintln!("{err}");
+                                    std::process::exit(2);
+                                }));
+                            }
+                            Err(err) => {
+                                eprintln!("{err}");
+                                print_usage();
+                                std::process::exit(2);
+                            }
+                        }
+                        idx += 2;
+                    }
+                    other if other.starts_with('-') => {
+                        eprintln!("unknown argument for show-profile: {other}");
+                        print_usage();
+                        std::process::exit(2);
+                    }
+                    _ => {
+                        if selector.is_some() {
+                            eprintln!("show-profile expects a single selector");
+                            print_usage();
+                            std::process::exit(2);
+                        }
+                        selector = Some(arg.to_string());
+                        idx += 1;
+                    }
+                }
+            }
+
+            let selector = match selector {
+                Some(value) => value,
                 None => {
                     eprintln!("missing selector for show-profile\n");
                     print_usage();
                     std::process::exit(2);
                 }
             };
+            let (profile_id, selector_variant) = split_profile_selector(&selector).unwrap_or_else(|err| {
+                eprintln!("{err}");
+                std::process::exit(2);
+            });
+            let variant = match (variant_arg, selector_variant) {
+                (Some(flag_variant), Some(selector_variant)) if flag_variant != selector_variant => {
+                    eprintln!("conflicting variant selection for show-profile");
+                    std::process::exit(2);
+                }
+                (Some(flag_variant), _) => Some(flag_variant),
+                (None, selector_variant) => selector_variant,
+            };
+
             let app_root = resolve_app_root();
             let (manifest, profiles_path) = load_profiles_manifest(&app_root);
-            let profile = profiles::find_profile(&manifest, selector).unwrap_or_else(|| {
-                eprintln!("unknown profile: {selector}");
+            let resolved = resolve_profile_variant(&manifest, &profile_id, variant).unwrap_or_else(|err| {
+                eprintln!("{err}");
                 std::process::exit(2);
             });
             let report = ProfileReport {
                 profiles_path: profiles_path.display().to_string(),
-                profile: profile.clone(),
+                profile: resolved.profile.clone(),
+                variant: resolved.variant.clone(),
             };
             emit_envelope("profile_report", json_contract::JsonResult::from_ok(true), &report);
             return;
         }
         Some("describe-service") => {
-            let selector = match args.get(1).and_then(|s| s.to_str()) {
-                Some(s) => s,
+            let mut selector: Option<String> = None;
+            let mut variant_arg: Option<&'static str> = None;
+            let mut idx = 1usize;
+            while idx < args.len() {
+                let arg = match args.get(idx).and_then(|s| s.to_str()) {
+                    Some(value) => value,
+                    None => break,
+                };
+                match arg {
+                    "-h" | "--help" => {
+                        print_usage();
+                        return;
+                    }
+                    "--variant" => {
+                        let value = args
+                            .get(idx + 1)
+                            .and_then(|s| s.to_str())
+                            .ok_or_else(|| "missing value for --variant".to_string());
+                        match value {
+                            Ok(v) => {
+                                if variant_arg.is_some() {
+                                    eprintln!("--variant specified multiple times");
+                                    print_usage();
+                                    std::process::exit(2);
+                                }
+                                variant_arg = Some(parse_variant(v).unwrap_or_else(|err| {
+                                    eprintln!("{err}");
+                                    std::process::exit(2);
+                                }));
+                            }
+                            Err(err) => {
+                                eprintln!("{err}");
+                                print_usage();
+                                std::process::exit(2);
+                            }
+                        }
+                        idx += 2;
+                    }
+                    other if other.starts_with('-') => {
+                        eprintln!("unknown argument for describe-service: {other}");
+                        print_usage();
+                        std::process::exit(2);
+                    }
+                    _ => {
+                        if selector.is_some() {
+                            eprintln!("describe-service expects a single selector");
+                            print_usage();
+                            std::process::exit(2);
+                        }
+                        selector = Some(arg.to_string());
+                        idx += 1;
+                    }
+                }
+            }
+
+            let selector = match selector {
+                Some(value) => value,
                 None => {
                     eprintln!("missing selector for describe-service\n");
                     print_usage();
                     std::process::exit(2);
                 }
             };
+            let (profile_id, selector_variant) = split_profile_selector(&selector).unwrap_or_else(|err| {
+                eprintln!("{err}");
+                std::process::exit(2);
+            });
+            let variant = match (variant_arg, selector_variant) {
+                (Some(flag_variant), Some(selector_variant)) if flag_variant != selector_variant => {
+                    eprintln!("conflicting variant selection for describe-service");
+                    std::process::exit(2);
+                }
+                (Some(flag_variant), _) => Some(flag_variant),
+                (None, selector_variant) => selector_variant,
+            };
+
             let app_root = resolve_app_root();
             let (manifest, _) = load_profiles_manifest(&app_root);
-            let profile = profiles::find_profile(&manifest, selector).unwrap_or_else(|| {
-                eprintln!("unknown service: {selector}");
+            let resolved = resolve_profile_variant(&manifest, &profile_id, variant).unwrap_or_else(|err| {
+                eprintln!("{err}");
                 std::process::exit(2);
             });
             let report = DescribeServiceReport {
-                service: profile.clone(),
+                profile: resolved.profile.clone(),
+                variant: resolved.variant.variant.clone(),
+                service: resolved.variant.clone(),
                 capabilities_source: "static".to_string(),
-                capabilities: build_static_capabilities(profile),
+                capabilities: build_static_capabilities(resolved.variant),
             };
             emit_envelope("describe_service_report", json_contract::JsonResult::from_ok(true), &report);
             return;
         }
         Some("health-check") => {
             let mut profile_filter: Option<String> = None;
+            let mut variant_arg: Option<&'static str> = None;
             let mut idx = 1;
             while idx < args.len() {
                 match args.get(idx).and_then(|s| s.to_str()) {
@@ -934,6 +1172,31 @@ fn main() {
                             });
                         match value {
                             Ok(v) => profile_filter = Some(v.to_string()),
+                            Err(err) => {
+                                eprintln!("{err}");
+                                print_usage();
+                                std::process::exit(2);
+                            }
+                        }
+                        idx += 2;
+                    }
+                    Some("--variant") => {
+                        let value = args
+                            .get(idx + 1)
+                            .and_then(|s| s.to_str())
+                            .ok_or_else(|| "missing value for --variant".to_string());
+                        match value {
+                            Ok(v) => {
+                                if variant_arg.is_some() {
+                                    eprintln!("--variant specified multiple times");
+                                    print_usage();
+                                    std::process::exit(2);
+                                }
+                                variant_arg = Some(parse_variant(v).unwrap_or_else(|err| {
+                                    eprintln!("{err}");
+                                    std::process::exit(2);
+                                }));
+                            }
                             Err(err) => {
                                 eprintln!("{err}");
                                 print_usage();
@@ -957,11 +1220,51 @@ fn main() {
 
             let app_root = resolve_app_root();
             let (manifest, profiles_path) = load_profiles_manifest(&app_root);
-            let report = match build_health_check_report(
-                &manifest,
-                &profiles_path,
-                profile_filter.as_deref(),
-            ) {
+            let mut selected = Vec::new();
+            if let Some(filter) = profile_filter.as_deref() {
+                let (profile_id, selector_variant) =
+                    split_profile_selector(filter).unwrap_or_else(|err| {
+                        eprintln!("{err}");
+                        std::process::exit(2);
+                    });
+                let variant = match (variant_arg, selector_variant) {
+                    (Some(flag_variant), Some(selector_variant)) if flag_variant != selector_variant => {
+                        eprintln!("conflicting variant selection for health-check");
+                        std::process::exit(2);
+                    }
+                    (Some(flag_variant), _) => Some(flag_variant),
+                    (None, selector_variant) => selector_variant,
+                };
+                let resolved =
+                    resolve_profile_variant(&manifest, &profile_id, variant).unwrap_or_else(|err| {
+                        eprintln!("{err}");
+                        std::process::exit(2);
+                    });
+                if resolved.profile.kind != "probe" {
+                    eprintln!(
+                        "health-check only supports probe profiles (profile {} is kind={})",
+                        resolved.profile.profile_id, resolved.profile.kind
+                    );
+                    std::process::exit(2);
+                }
+                selected.push(resolved);
+            } else {
+                let variant = variant_arg.unwrap_or(VARIANT_BASE);
+                for profile in profiles::filter_profiles(&manifest, Some("probe")) {
+                    let selected_variant = profiles::find_variant(profile, variant).unwrap_or_else(|| {
+                        eprintln!(
+                            "profile {} missing variant {}",
+                            profile.profile_id, variant
+                        );
+                        std::process::exit(2);
+                    });
+                    selected.push(profiles::ResolvedProfileVariant {
+                        profile,
+                        variant: selected_variant,
+                    });
+                }
+            }
+            let report = match build_health_check_report(&profiles_path, selected) {
                 Ok(report) => report,
                 Err(err) => {
                     eprintln!("{err}");
@@ -1114,18 +1417,31 @@ fn main() {
             let mut included_profiles = Vec::new();
             let mut skipped_profiles = Vec::new();
             for profile in profiles_sorted {
-                let tier = profile.risk_tier.unwrap_or(2);
+                let base_variant = profiles::find_variant(&profile, VARIANT_BASE).unwrap_or_else(|| {
+                    eprintln!(
+                        "profile {} missing variant {}",
+                        profile.profile_id, VARIANT_BASE
+                    );
+                    std::process::exit(2);
+                });
+                let tier = base_variant.risk_tier.unwrap_or(2);
+                let profile_variant = format!("{}@{}", profile.profile_id, base_variant.variant);
                 let ack_ok = ack_risk
                     .as_ref()
-                    .map(|ack| ack == &profile.profile_id || ack == &profile.bundle_id)
+                    .map(|ack| {
+                        ack == &profile.profile_id
+                            || ack == &profile_variant
+                            || ack == &base_variant.bundle_id
+                    })
                     .unwrap_or(false);
                 if tier >= 2 && !ack_ok {
                     skipped_profiles.push(BundleProfileSkip {
                         profile_id: profile.profile_id.clone(),
-                        bundle_id: profile.bundle_id.clone(),
+                        bundle_id: base_variant.bundle_id.clone(),
+                        variant: base_variant.variant.clone(),
                         reason: "tier2_requires_ack".to_string(),
-                        risk_tier: profile.risk_tier,
-                        risk_reasons: profile.risk_reasons.clone(),
+                        risk_tier: base_variant.risk_tier,
+                        risk_reasons: base_variant.risk_reasons.clone(),
                     });
                     continue;
                 }
@@ -1136,6 +1452,7 @@ fn main() {
                 let report = ProfileReport {
                     profiles_path: profiles_path.display().to_string(),
                     profile: profile.clone(),
+                    variant: base_variant.clone(),
                 };
                 let out_path = profiles_out_dir.join(format!("{}.json", profile.profile_id));
                 if let Err(err) = write_envelope(
@@ -1152,11 +1469,13 @@ fn main() {
 
             let mut health_ok = None;
             if include_health_check {
-                let report = match build_health_check_report(
-                    &profiles_manifest,
-                    &profiles_path,
-                    Some("minimal"),
-                ) {
+                let resolved =
+                    resolve_profile_variant(&profiles_manifest, "minimal", Some(VARIANT_BASE))
+                        .unwrap_or_else(|err| {
+                            eprintln!("{err}");
+                            std::process::exit(2);
+                        });
+                let report = match build_health_check_report(&profiles_path, vec![resolved]) {
                     Ok(report) => report,
                     Err(err) => {
                         eprintln!("{err}");
@@ -1227,6 +1546,7 @@ fn main() {
             let mut group_arg: Option<String> = None;
             let mut out_arg: Option<String> = None;
             let mut ack_risk: Option<String> = None;
+            let mut variant_arg: Option<&'static str> = None;
             let mut idx = 1;
             while idx < args.len() {
                 let arg = match args.get(idx).and_then(|s| s.to_str()) {
@@ -1290,6 +1610,31 @@ fn main() {
                         }
                         idx += 2;
                     }
+                    "--variant" => {
+                        let value = args
+                            .get(idx + 1)
+                            .and_then(|s| s.to_str())
+                            .ok_or_else(|| "missing value for --variant".to_string());
+                        match value {
+                            Ok(v) => {
+                                if variant_arg.is_some() {
+                                    eprintln!("--variant specified multiple times");
+                                    print_usage();
+                                    std::process::exit(2);
+                                }
+                                variant_arg = Some(parse_variant(v).unwrap_or_else(|err| {
+                                    eprintln!("{err}");
+                                    std::process::exit(2);
+                                }));
+                            }
+                            Err(err) => {
+                                eprintln!("{err}");
+                                print_usage();
+                                std::process::exit(2);
+                            }
+                        }
+                        idx += 2;
+                    }
                     other => {
                         eprintln!("unknown argument for run-matrix: {other}");
                         print_usage();
@@ -1315,6 +1660,7 @@ fn main() {
                 eprintln!("{err}");
                 std::process::exit(2);
             }
+            let variant = variant_arg.unwrap_or(VARIANT_BASE);
 
             let probe_id = match args.get(idx).and_then(|s| s.to_str()) {
                 Some(probe) => probe.to_string(),
@@ -1352,7 +1698,7 @@ fn main() {
                         std::process::exit(2);
                     }
                 },
-                None => match default_matrix_output_dir(&group_id) {
+                None => match default_matrix_output_dir(&group_id, variant) {
                     Ok(path) => path,
                     Err(err) => {
                         eprintln!("{err}");
@@ -1375,47 +1721,57 @@ fn main() {
                 group_profiles.iter().map(|s| s.to_string()).collect();
 
             for profile_id in group_profiles {
-                let profile = profiles::find_profile(&profiles_manifest, profile_id).unwrap_or_else(|| {
-                    eprintln!("missing profile in group {group_id}: {profile_id}");
-                    std::process::exit(2);
-                });
-                if profile.kind != "probe" {
+                let resolved =
+                    resolve_profile_variant(&profiles_manifest, profile_id, Some(variant))
+                        .unwrap_or_else(|err| {
+                            eprintln!("{err}");
+                            std::process::exit(2);
+                        });
+                if resolved.profile.kind != "probe" {
                     eprintln!(
                         "run-matrix only supports probe profiles (profile {} is kind={})",
-                        profile.profile_id, profile.kind
+                        resolved.profile.profile_id, resolved.profile.kind
                     );
                     std::process::exit(2);
                 }
 
-                let tier = profile.risk_tier.unwrap_or(2);
+                let tier = resolved.variant.risk_tier.unwrap_or(2);
+                let profile_variant = format!("{}@{}", resolved.profile.profile_id, resolved.variant.variant);
                 let ack_ok = ack_risk
                     .as_ref()
-                    .map(|ack| ack == &profile.profile_id || ack == &profile.bundle_id)
+                    .map(|ack| {
+                        ack == &resolved.profile.profile_id
+                            || ack == &profile_variant
+                            || ack == &resolved.variant.bundle_id
+                    })
                     .unwrap_or(false);
                 if tier >= 2 && !ack_ok {
                     skipped.push(MatrixSkip {
-                        profile_id: profile.profile_id.clone(),
-                        bundle_id: profile.bundle_id.clone(),
+                        profile_id: resolved.profile.profile_id.clone(),
+                        bundle_id: resolved.variant.bundle_id.clone(),
+                        variant: resolved.variant.variant.clone(),
                         reason: "tier2_requires_ack".to_string(),
-                        risk_tier: profile.risk_tier,
-                        risk_reasons: profile.risk_reasons.clone(),
+                        risk_tier: resolved.variant.risk_tier,
+                        risk_reasons: resolved.variant.risk_reasons.clone(),
                     });
                     continue;
                 }
 
                 let start = std::time::Instant::now();
-                let result = run_xpc_probe(&profile.bundle_id, &probe_id, &probe_arg_refs);
+                let result =
+                    run_xpc_probe(&resolved.variant.bundle_id, &probe_id, &probe_arg_refs);
                 let elapsed = start.elapsed();
 
                 let (stdout, exit_code, stderr) = match result {
                     Ok(v) => v,
                     Err(err) => {
                         runs.push(MatrixRun {
-                            profile_id: profile.profile_id.clone(),
-                            bundle_id: profile.bundle_id.clone(),
-                            label: profile.label.clone(),
-                            risk_tier: profile.risk_tier,
-                            risk_reasons: profile.risk_reasons.clone(),
+                            profile_id: resolved.profile.profile_id.clone(),
+                            bundle_id: resolved.variant.bundle_id.clone(),
+                            label: resolved.profile.label.clone(),
+                            variant: resolved.variant.variant.clone(),
+                            risk_tier: resolved.variant.risk_tier,
+                            risk_reasons: resolved.variant.risk_reasons.clone(),
                             exit_code: 127,
                             duration_ms: elapsed.as_millis(),
                             rc: None,
@@ -1460,11 +1816,12 @@ fn main() {
                 }
 
                 runs.push(MatrixRun {
-                    profile_id: profile.profile_id.clone(),
-                    bundle_id: profile.bundle_id.clone(),
-                    label: profile.label.clone(),
-                    risk_tier: profile.risk_tier,
-                    risk_reasons: profile.risk_reasons.clone(),
+                    profile_id: resolved.profile.profile_id.clone(),
+                    bundle_id: resolved.variant.bundle_id.clone(),
+                    label: resolved.profile.label.clone(),
+                    variant: resolved.variant.variant.clone(),
+                    risk_tier: resolved.variant.risk_tier,
+                    risk_reasons: resolved.variant.risk_reasons.clone(),
                     exit_code,
                     duration_ms: elapsed.as_millis(),
                     rc,
@@ -1486,6 +1843,7 @@ fn main() {
                 probe_argv: probe_args.clone(),
                 generated_at_unix_ms: generated,
                 output_dir: out_dir.display().to_string(),
+                variant: variant.to_string(),
                 profiles: group_profiles_vec.clone(),
                 runs: runs.clone(),
                 skipped: skipped.clone(),
@@ -1503,15 +1861,16 @@ fn main() {
             }
 
             let mut lines = Vec::new();
-            lines.push("profile_id\tbundle_id\texit_code\trc\tnormalized_outcome\tduration_ms\tnote".to_string());
+            lines.push("profile_id\tvariant\tbundle_id\texit_code\trc\tnormalized_outcome\tduration_ms\tnote".to_string());
             for run in &runs {
                 let note = run
                     .parse_error
                     .clone()
                     .unwrap_or_else(|| "".to_string());
                 lines.push(format!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                     run.profile_id,
+                    run.variant,
                     run.bundle_id,
                     run.exit_code,
                     run.rc.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string()),
@@ -1522,8 +1881,8 @@ fn main() {
             }
             for skip in &skipped {
                 lines.push(format!(
-                    "{}\t{}\t-\t-\t-\t-\tskipped: {}",
-                    skip.profile_id, skip.bundle_id, skip.reason
+                    "{}\t{}\t{}\t-\t-\t-\t-\tskipped: {}",
+                    skip.profile_id, skip.variant, skip.bundle_id, skip.reason
                 ));
             }
 
@@ -1624,6 +1983,7 @@ fn main() {
                 "run" => {
                     let mut profile_arg: Option<String> = None;
                     let mut service_arg: Option<String> = None;
+                    let mut variant_arg: Option<&'static str> = None;
                     let mut ack_risk: Option<String> = None;
                     let mut plan_id: Option<String> = None;
                     let mut row_id: Option<String> = None;
@@ -1678,6 +2038,29 @@ fn main() {
                                             std::process::exit(2);
                                         }
                                         service_arg = Some(v.to_string());
+                                    }
+                                    Err(err) => {
+                                        eprintln!("{err}");
+                                        print_usage();
+                                        std::process::exit(2);
+                                    }
+                                }
+                                idx += 2;
+                            }
+                            "--variant" => {
+                                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                                let value = value.ok_or_else(|| "missing value for --variant".to_string());
+                                match value {
+                                    Ok(v) => {
+                                        if variant_arg.is_some() {
+                                            eprintln!("--variant specified multiple times");
+                                            print_usage();
+                                            std::process::exit(2);
+                                        }
+                                        variant_arg = Some(parse_variant(v).unwrap_or_else(|err| {
+                                            eprintln!("{err}");
+                                            std::process::exit(2);
+                                        }));
                                     }
                                     Err(err) => {
                                         eprintln!("{err}");
@@ -1760,52 +2143,65 @@ fn main() {
                         print_usage();
                         std::process::exit(2);
                     }
+                    if variant_arg.is_some() && service_arg.is_some() {
+                        eprintln!("--variant cannot be combined with --service");
+                        print_usage();
+                        std::process::exit(2);
+                    }
 
-                    let target_profile = profile_arg
-                        .as_ref()
-                        .and_then(|id| profiles::find_profile(&profiles_manifest, id));
-
-                    let service_id = if let Some(profile) = target_profile {
-                        if profile.kind != "probe" {
-                            eprintln!(
-                                "profile is not a probe service: {} (kind={})",
-                                profile.profile_id, profile.kind
-                            );
-                            std::process::exit(2);
-                        }
-                        profile.bundle_id.clone()
+                    let resolved = if let Some(profile_value) = profile_arg.as_ref() {
+                        let (profile_id, selector_variant) =
+                            split_profile_selector(profile_value).unwrap_or_else(|err| {
+                                eprintln!("{err}");
+                                std::process::exit(2);
+                            });
+                        let variant = match (variant_arg, selector_variant) {
+                            (Some(flag_variant), Some(selector_variant))
+                                if flag_variant != selector_variant =>
+                            {
+                                eprintln!("conflicting variant selection for xpc run");
+                                std::process::exit(2);
+                            }
+                            (Some(flag_variant), _) => Some(flag_variant),
+                            (None, selector_variant) => selector_variant,
+                        };
+                        resolve_profile_variant(&profiles_manifest, &profile_id, variant)
+                            .unwrap_or_else(|err| {
+                                eprintln!("{err}");
+                                std::process::exit(2);
+                            })
                     } else if let Some(service_id) = service_arg.as_ref() {
-                        service_id.clone()
+                        resolve_profile_variant(&profiles_manifest, service_id, None).unwrap_or_else(|err| {
+                            eprintln!("{err}");
+                            std::process::exit(2);
+                        })
                     } else {
                         eprintln!("missing --profile or --service");
                         print_usage();
                         std::process::exit(2);
                     };
 
-                    let profile = target_profile.or_else(|| {
-                        let profile = resolve_profile_by_bundle_id(&profiles_manifest, &service_id);
-                        if let Some(profile) = profile {
-                            if profile.kind != "probe" {
-                                eprintln!(
-                                    "service is not a probe profile: {} (kind={})",
-                                    profile.profile_id, profile.kind
-                                );
-                                std::process::exit(2);
-                            }
-                        }
-                        profile
-                    });
+                    if resolved.profile.kind != "probe" {
+                        eprintln!(
+                            "service is not a probe profile: {} (kind={})",
+                            resolved.profile.profile_id, resolved.profile.kind
+                        );
+                        std::process::exit(2);
+                    }
 
-                    let (gate, reasons, label) = risk_gate_for_profile(profile);
+                    let service_id = resolved.variant.bundle_id.clone();
+                    let (gate, reasons, label) =
+                        risk_gate_for_variant(Some(resolved.profile), Some(resolved.variant));
                     let require_ack = matches!(gate, RiskGate::RequireAck);
                     let warn_only = matches!(gate, RiskGate::Warn);
 
                     if warn_only {
-                        let profile_id = profile.map(|p| p.profile_id.clone());
-                        let name = label
+                        let profile_id = Some(resolved.profile.profile_id.clone());
+                        let name_base = label
                             .clone()
                             .or_else(|| profile_id.clone())
                             .unwrap_or_else(|| service_id.clone());
+                        let name = format!("{}@{}", name_base, resolved.variant.variant);
                         if reasons.is_empty() {
                             eprintln!("warning: profile {name} is tier 1 (some concern)");
                         } else {
@@ -1817,7 +2213,10 @@ fn main() {
                     }
 
                     if require_ack {
-                        let profile_id = profile.map(|p| p.profile_id.clone());
+                        let profile_id = Some(resolved.profile.profile_id.clone());
+                        let profile_variant = profile_id
+                            .as_ref()
+                            .map(|id| format!("{id}@{}", resolved.variant.variant));
                         let ack_ok = ack_risk
                             .as_ref()
                             .map(|ack| {
@@ -1826,13 +2225,18 @@ fn main() {
                                         .as_ref()
                                         .map(|id| ack == id)
                                         .unwrap_or(false)
+                                    || profile_variant
+                                        .as_ref()
+                                        .map(|id| ack == id)
+                                        .unwrap_or(false)
                             })
                             .unwrap_or(false);
                         if !ack_ok {
-                            let name = label
+                            let name_base = label
                                 .or_else(|| profile_id.clone())
                                 .unwrap_or_else(|| service_id.clone());
-                            let ack_hint = profile_id.unwrap_or_else(|| service_id.clone());
+                            let name = format!("{}@{}", name_base, resolved.variant.variant);
+                            let ack_hint = profile_variant.unwrap_or_else(|| service_id.clone());
                             let msg = if reasons.is_empty() {
                                 format!("profile {name} is tier 2 (high concern); re-run with --ack-risk {ack_hint}")
                             } else {
@@ -1879,6 +2283,7 @@ fn main() {
                 "session" => {
                     let mut profile_arg: Option<String> = None;
                     let mut service_arg: Option<String> = None;
+                    let mut variant_arg: Option<&'static str> = None;
                     let mut ack_risk: Option<String> = None;
                     let mut plan_id: Option<String> = None;
                     let mut correlation_id: Option<String> = None;
@@ -1923,6 +2328,29 @@ fn main() {
                                 let value = value.ok_or_else(|| "missing value for --service".to_string());
                                 match value {
                                     Ok(v) => service_arg = Some(v.to_string()),
+                                    Err(err) => {
+                                        eprintln!("{err}");
+                                        print_usage();
+                                        std::process::exit(2);
+                                    }
+                                }
+                                idx += 2;
+                            }
+                            "--variant" => {
+                                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                                let value = value.ok_or_else(|| "missing value for --variant".to_string());
+                                match value {
+                                    Ok(v) => {
+                                        if variant_arg.is_some() {
+                                            eprintln!("--variant specified multiple times");
+                                            print_usage();
+                                            std::process::exit(2);
+                                        }
+                                        variant_arg = Some(parse_variant(v).unwrap_or_else(|err| {
+                                            eprintln!("{err}");
+                                            std::process::exit(2);
+                                        }));
+                                    }
                                     Err(err) => {
                                         eprintln!("{err}");
                                         print_usage();
@@ -2044,52 +2472,65 @@ fn main() {
                         print_usage();
                         std::process::exit(2);
                     }
+                    if variant_arg.is_some() && service_arg.is_some() {
+                        eprintln!("--variant cannot be combined with --service");
+                        print_usage();
+                        std::process::exit(2);
+                    }
 
-                    let target_profile = profile_arg
-                        .as_ref()
-                        .and_then(|id| profiles::find_profile(&profiles_manifest, id));
-
-                    let service_id = if let Some(profile) = target_profile {
-                        if profile.kind != "probe" {
-                            eprintln!(
-                                "profile is not a probe service: {} (kind={})",
-                                profile.profile_id, profile.kind
-                            );
-                            std::process::exit(2);
-                        }
-                        profile.bundle_id.clone()
+                    let resolved = if let Some(profile_value) = profile_arg.as_ref() {
+                        let (profile_id, selector_variant) =
+                            split_profile_selector(profile_value).unwrap_or_else(|err| {
+                                eprintln!("{err}");
+                                std::process::exit(2);
+                            });
+                        let variant = match (variant_arg, selector_variant) {
+                            (Some(flag_variant), Some(selector_variant))
+                                if flag_variant != selector_variant =>
+                            {
+                                eprintln!("conflicting variant selection for xpc session");
+                                std::process::exit(2);
+                            }
+                            (Some(flag_variant), _) => Some(flag_variant),
+                            (None, selector_variant) => selector_variant,
+                        };
+                        resolve_profile_variant(&profiles_manifest, &profile_id, variant)
+                            .unwrap_or_else(|err| {
+                                eprintln!("{err}");
+                                std::process::exit(2);
+                            })
                     } else if let Some(service_id) = service_arg.as_ref() {
-                        service_id.clone()
+                        resolve_profile_variant(&profiles_manifest, service_id, None).unwrap_or_else(|err| {
+                            eprintln!("{err}");
+                            std::process::exit(2);
+                        })
                     } else {
                         eprintln!("missing --profile or --service");
                         print_usage();
                         std::process::exit(2);
                     };
 
-                    let profile = target_profile.or_else(|| {
-                        let profile = resolve_profile_by_bundle_id(&profiles_manifest, &service_id);
-                        if let Some(profile) = profile {
-                            if profile.kind != "probe" {
-                                eprintln!(
-                                    "service is not a probe profile: {} (kind={})",
-                                    profile.profile_id, profile.kind
-                                );
-                                std::process::exit(2);
-                            }
-                        }
-                        profile
-                    });
+                    if resolved.profile.kind != "probe" {
+                        eprintln!(
+                            "service is not a probe profile: {} (kind={})",
+                            resolved.profile.profile_id, resolved.profile.kind
+                        );
+                        std::process::exit(2);
+                    }
 
-                    let (gate, reasons, label) = risk_gate_for_profile(profile);
+                    let service_id = resolved.variant.bundle_id.clone();
+                    let (gate, reasons, label) =
+                        risk_gate_for_variant(Some(resolved.profile), Some(resolved.variant));
                     let require_ack = matches!(gate, RiskGate::RequireAck);
                     let warn_only = matches!(gate, RiskGate::Warn);
 
                     if warn_only {
-                        let profile_id = profile.map(|p| p.profile_id.clone());
-                        let name = label
+                        let profile_id = Some(resolved.profile.profile_id.clone());
+                        let name_base = label
                             .clone()
                             .or_else(|| profile_id.clone())
                             .unwrap_or_else(|| service_id.clone());
+                        let name = format!("{}@{}", name_base, resolved.variant.variant);
                         if reasons.is_empty() {
                             eprintln!("warning: profile {name} is tier 1 (some concern)");
                         } else {
@@ -2101,7 +2542,10 @@ fn main() {
                     }
 
                     if require_ack {
-                        let profile_id = profile.map(|p| p.profile_id.clone());
+                        let profile_id = Some(resolved.profile.profile_id.clone());
+                        let profile_variant = profile_id
+                            .as_ref()
+                            .map(|id| format!("{id}@{}", resolved.variant.variant));
                         let ack_ok = ack_risk
                             .as_ref()
                             .map(|ack| {
@@ -2110,13 +2554,18 @@ fn main() {
                                         .as_ref()
                                         .map(|id| ack == id)
                                         .unwrap_or(false)
+                                    || profile_variant
+                                        .as_ref()
+                                        .map(|id| ack == id)
+                                        .unwrap_or(false)
                             })
                             .unwrap_or(false);
                         if !ack_ok {
-                            let name = label
+                            let name_base = label
                                 .or_else(|| profile_id.clone())
                                 .unwrap_or_else(|| service_id.clone());
-                            let ack_hint = profile_id.unwrap_or_else(|| service_id.clone());
+                            let name = format!("{}@{}", name_base, resolved.variant.variant);
+                            let ack_hint = profile_variant.unwrap_or_else(|| service_id.clone());
                             let msg = if reasons.is_empty() {
                                 format!("profile {name} is tier 2 (high concern); re-run with --ack-risk {ack_hint}")
                             } else {
