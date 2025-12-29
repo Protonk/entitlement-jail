@@ -1,40 +1,40 @@
 # EntitlementJail
 
-EntitlementJail is a macOS research/teaching repo that’s intentionally biased toward producing **witness records** (structured outcome descriptions) without quietly upgrading those outcomes into stronger claims about *why* they happened. Missing files, signing validity, quarantine/Gatekeeper, launchd/XPC behavior, filesystem permissions, and Seatbelt/App Sandbox can all produce similar-looking symptoms. This repo tries to keep those layers explicit and keep the output contract stable enough for downstream tooling.
+EntitlementJail is a macOS research/teaching repo where the experiment variable is **entitlements**: you run the same in-process probes inside a zoo of **separately signed, launchd-managed XPC services**, each with its own entitlement profile, and collect stable JSON “witness records” of what happened.
 
-## Commitments
+Most of what gets maintained here is the “lab surface”:
 
-- **Entitlements as a real experimental variable**: the “thing you run” isn’t one binary; it’s an app bundle that embeds many separately signed executables. The core research targets are launchd-managed XPC services, each signed with a distinct entitlement profile.
-- **Outcomes first; attribution second**: probes emit outcomes (rc/errno/paths/timing) as JSON envelopes. If you want deny evidence, use an explicit outside-the-sandbox witness (`sandbox-log-observer`) rather than baking attribution into every probe.
-- **Deterministic attachment**: `xpc session` exposes a deliberate, lifecycle-aware service session surface (PID, readiness events, and a wait barrier) so debuggers/tracers can attach without racing startup.
-- **Reverse-engineer-friendly code**: the Swift/Rust code is written to be read directly (and to be easy to instrument), not to hide control flow behind clever abstractions.
+- the probe implementations and their safety boundaries,
+- the set of entitlement profiles (one per embedded `.xpc` target),
+- the stable JSON output contract (for downstream tooling), and
+- the evidence + tests that keep the bundle and its claims honest.
 
-## The Product Shape
+## Core commitments
 
-Distribution artifacts are only: `EntitlementJail.app` (the bundle) + `EntitlementJail.md` (the user guide)
+- **Entitlements are the variable**: the unit of variation is a whole separately signed service (not “exec a path” or “inherit whatever state happens to be present”).
+- **Outcomes first; attribution second**: outputs are witness records (rc/errno/paths/timing) without quietly upgrading them into stronger claims about *why* they happened.
+- **Deterministic sessions for attach/debug**: `xpc session` exposes explicit lifecycle events (PID/readiness/wait barriers) so tracing and debugging can coordinate without racing service startup.
+- **Evidence is a first-class artifact**: entitlement profiles are derived from *signed* service entitlements during the build and embedded into the `.app` for inspection/verification.
 
-Inside the bundle:
-- `Contents/MacOS/entitlement-jail` — the host-side launcher (Rust; plain-signed; not sandboxed).
-- `Contents/XPCServices/*.xpc` — the process zoo (Swift; sandboxed; entitlements vary per-service).
-- `Contents/Resources/Evidence/*` — signed “static evidence” for inspection (entitlements, hashes, profiles, trace symbols).
+## What ships
 
-The user guide, [`EntitlementJail.md`](EntitlementJail.md), is an intentionally narrow window into the intent and scope of the application. End users see use, CLI, and important bundle information and nothing more.
+This repo builds a single distributable specimen:
+
+- `EntitlementJail.app` — the bundle you run and inspect
+  - `Contents/MacOS/entitlement-jail` (Rust launcher; host-side)
+  - `Contents/XPCServices/*.xpc` (Swift services; sandboxed; entitlements vary per service)
+  - `Contents/Resources/Evidence/*` (generated manifests: entitlements, hashes, profiles, symbols)
+- `EntitlementJail.md` — the user guide shipped alongside the app
 
 ## The Core Model
 >Profiles → Sessions → Probes → Witnesses
 
-Most work in EntitlementJail has the same shape:
-
-1. Pick a **profile** (an embedded XPC service signed with a specific entitlement set).
-2. Open a **session** (`entitlement-jail xpc session`) if you need deterministic attach/liveness, or use `entitlement-jail xpc run` for a one-shot run.
-3. Run one or more **probes** (by `probe_id`) inside the service.
-4. Read the resulting **witness record** (JSON). If you need deny evidence, collect it separately with `sandbox-log-observer`.
-
-The “unit of variation” is a whole separately-signed, launchd-managed service — not a transient child process that inherits a grab bag of state. If you want a 3-witness comparison (baseline vs `sandbox-exec` vs XPC), the tri-run harness lives under `experiments/` and produces a mismatch atlas.
+The preferred execution surface is in-process probes dispatched by `probe_id` (not arbitrary path execution). If you want a three-way comparison (baseline vs `sandbox-exec` vs XPC), the tri-run harness under `experiments/` produces a mismatch atlas.
 
 ## Where To Learn
 
 If you're...
+- using the app / workflows: [`EntitlementJail.md`](EntitlementJail.md)
 - orienting yourself in the repo: [`AGENTS.md`](AGENTS.md)
 - contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 - signing/distributing: [`SIGNING.md`](SIGNING.md)
@@ -43,4 +43,3 @@ If you're...
   - CLI behavior/output contracts: [`runner/README.md`](runner/README.md)
   - XPC services, probes, or session semantics: [`xpc/README.md`](xpc/README.md)
   - the tri-run experiment harness: [`experiments/README.md`](experiments/README.md)
-
