@@ -15,7 +15,7 @@ fn dlopen_tests_enabled() -> bool {
     env::var("EJ_DLOPEN_TESTS").ok().as_deref() == Some("1")
 }
 
-const RUST_SCHEMA_VERSION: u64 = 3;
+const RUST_SCHEMA_VERSION: u64 = 4;
 const PROBE_SCHEMA_VERSION: u64 = 2;
 
 fn repo_root() -> PathBuf {
@@ -517,7 +517,7 @@ fn cli_integration_smoke() {
         Some(true)
     );
 
-    let gate_out = run_ej(
+    let injectable_out = run_ej(
         &bin,
         &[
             "xpc",
@@ -530,28 +530,9 @@ fn cli_integration_smoke() {
         ],
     );
     assert!(
-        !gate_out.status.success(),
-        "expected tier2 profile to require --ack-risk"
-    );
-
-    let allow_out = run_ej(
-        &bin,
-        &[
-            "xpc",
-            "run",
-            "--profile",
-            "minimal",
-            "--variant",
-            "injectable",
-            "--ack-risk",
-            "minimal@injectable",
-            "probe_catalog",
-        ],
-    );
-    assert!(
-        allow_out.status.success(),
-        "tier2 profile did not run with --ack-risk: {}",
-        String::from_utf8_lossy(&allow_out.stderr)
+        injectable_out.status.success(),
+        "injectable profile did not run: {}",
+        String::from_utf8_lossy(&injectable_out.stderr)
     );
 
     let matrix_out = run_ej(
@@ -639,8 +620,6 @@ fn cli_integration_smoke() {
                     "minimal",
                     "--variant",
                     "injectable",
-                    "--ack-risk",
-                    "minimal@injectable",
                 ],
             );
             let inspector_out = run_cmd(
@@ -740,8 +719,6 @@ fn cli_integration_smoke() {
                         "minimal",
                         "--variant",
                         "injectable",
-                        "--ack-risk",
-                        "minimal@injectable",
                         "dlopen_external",
                         "--path",
                         dylib.to_str().unwrap_or(""),
@@ -792,8 +769,6 @@ fn cli_integration_smoke() {
                     "minimal",
                     "--variant",
                     "injectable",
-                    "--ack-risk",
-                    "minimal@injectable",
                     "jit_map_jit",
                 ],
             );
@@ -812,8 +787,6 @@ fn cli_integration_smoke() {
                     "minimal",
                     "--variant",
                     "injectable",
-                    "--ack-risk",
-                    "minimal@injectable",
                     "jit_rwx_legacy",
                 ],
             );

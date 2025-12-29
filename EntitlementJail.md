@@ -22,9 +22,9 @@ This guide assumes you have only `EntitlementJail.app` and this file (`Entitleme
 
 - Sanity check: `health-check`
 - Discovery: `list-profiles`, `list-services`, `show-profile`, `describe-service`
-- Run one probe (one-shot): `xpc run --profile <id> <probe-id> [probe-args...]`
-- Deterministic debugger attach + multiple probes: `xpc session --profile minimal --variant injectable ...`
-- Compare across profiles: `run-matrix --group <...> [--variant injectable] <probe-id> [probe-args...]`
+- Run one probe (one-shot): `xpc run --profile <id[@variant]> <probe-id> [probe-args...]`
+- Deterministic debugger attach + multiple probes: `xpc session --profile minimal@injectable ...`
+- Compare across profiles: `run-matrix --group <...> [--variant <base|injectable>] <probe-id> [probe-args...]`
 - Sandbox extension flow: `sandbox_extension` (issue/consume/release)
 - Evidence bundle: `bundle-evidence` (plus `verify-evidence`, `inspect-macho`)
 - Quarantine/Gatekeeper deltas (no execution): `quarantine-lab`
@@ -105,7 +105,7 @@ $EJ list-services
 
 `list-profiles` shows base profile ids; `list-services` shows both base and injectable service variants.
 
-Inspect a profile (entitlements, risk tier, tags):
+Inspect a profile (entitlements, risk signals, tags):
 
 ```sh
 $EJ show-profile minimal
@@ -118,13 +118,13 @@ Inspect a service “statically” (what the profile says it should have):
 $EJ describe-service minimal@injectable
 ```
 
-**Risk tiers**
+**Risk signals**
 
-- Tier 0: runs silently
-- Tier 1: runs with a warning
-- Tier 2: requires explicit acknowledgement: `--ack-risk <profile-id|profile@variant|bundle-id>`
+Some profiles carry higher-concern entitlements. The CLI emits warnings and proceeds (choosing `injectable` is treated as explicit intent).
 
-This is about guardrails, not morality: Tier 2 profiles intentionally carry entitlements that widen instrumentation/injection surface.
+This is about guardrails, not morality: some profiles intentionally carry entitlements that widen instrumentation/injection surface.
+
+Profile ids can include `@variant` (for example `minimal@injectable`).
 
 **Profiles you’ll likely see**
 
@@ -135,13 +135,13 @@ Use `list-profiles` as the source of truth. Some common base ids include: `minim
 Each base profile has two variants:
 
 - `base` (default): the canonical entitlements for that service.
-- `injectable`: an auto-generated twin that adds the fixed instrumentation overlay (`get-task-allow`, `disable-library-validation`, `allow-dyld-environment-variables`, `allow-unsigned-executable-memory`). This is Tier 2.
+- `injectable`: an auto-generated twin that adds the fixed instrumentation overlay (`get-task-allow`, `disable-library-validation`, `allow-dyld-environment-variables`, `allow-unsigned-executable-memory`). This is high concern.
 
 Select a variant with `--variant injectable` or `profile@injectable`.
 
 For sandbox extension issuance, use:
 
-- `temporary_exception`: App Sandbox + `com.apple.security.temporary-exception.sbpl` for `file-issue-extension` (Tier 2).
+- `temporary_exception`: App Sandbox + `com.apple.security.temporary-exception.sbpl` for `file-issue-extension` (high concern).
 
 There are also Quarantine Lab profiles (kind `quarantine`) such as `quarantine_default`, `quarantine_net_client`, `quarantine_downloads_rw`, `quarantine_user_selected_executable`, and `quarantine_bookmarks_app_scope`.
 
@@ -153,15 +153,14 @@ Usage:
 
 ```sh
 $EJ xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>)
-            [--ack-risk <id|profile@variant|bundle-id>]
             [--plan-id <id>] [--row-id <id>] [--correlation-id <id>]
             <probe-id> [probe-args...]
 ```
 
 Notes:
 
-- Prefer `--profile <id>` and omit the explicit bundle id.
-- Tier 2 variants require `--ack-risk` (you can pass the profile id, `profile@variant`, or the full bundle id).
+- Prefer `--profile <id[@variant]>` and omit the explicit bundle id.
+- High-concern variants emit a warning but do not require an extra flag.
 - `xpc run` is intentionally one-shot. For deterministic attach and multi-probe workflows, use `xpc session`.
 
 Common probes:
@@ -171,9 +170,11 @@ $EJ xpc run --profile minimal probe_catalog
 $EJ xpc run --profile minimal capabilities_snapshot
 $EJ xpc run --profile minimal fs_op --op stat --path-class tmp
 $EJ xpc run --profile net_client net_op --op tcp_connect --host 127.0.0.1 --port 9
-$EJ xpc run --profile minimal --variant injectable --ack-risk minimal@injectable sandbox_check --operation file-read-data --path /etc/hosts
-$EJ xpc run --profile temporary_exception --ack-risk temporary_exception sandbox_extension --op issue_file --class com.apple.app-sandbox.read --path /etc/hosts --allow-unsafe-path
+$EJ xpc run --profile minimal --variant injectable sandbox_check --operation file-read-data --path /etc/hosts
+$EJ xpc run --profile temporary_exception sandbox_extension --op issue_file --class com.apple.app-sandbox.read --path /etc/hosts --allow-unsafe-path
 ```
+
+Use `probe_catalog` as the source of truth for per-probe usage; the current build also exposes `fs_op_wait`, `bookmark_make`, `bookmark_op`, `bookmark_roundtrip`, `userdefaults_op`, `fs_coordinated_op`, and `network_tcp_connect`.
 
 ### Sandbox extension flow (issue -> consume -> release)
 
@@ -182,7 +183,7 @@ $EJ xpc run --profile temporary_exception --ack-risk temporary_exception sandbox
 Example: issue a read extension for a harness file, consume it in `minimal`, then re-run the read:
 
 ```sh
-$EJ xpc run --profile temporary_exception --ack-risk temporary_exception sandbox_extension \
+$EJ xpc run --profile temporary_exception sandbox_extension \
   --op issue_file --class com.apple.app-sandbox.read \
   --path-class tmp --target specimen_file --name ej_extension.txt --create > /tmp/ej_issue_token.json
 FILE_PATH=$(plutil -extract data.details.file_path raw -o - /tmp/ej_issue_token.json)
@@ -198,12 +199,13 @@ Notes:
 
 - If you want to issue extensions for a non-harness path, pass `--allow-unsafe-path` to `sandbox_extension --op issue_file`.
 - Tokens are returned in `data.details.token` and also in `data.stdout`.
-- If consume/release fails with invalid-token style errors, try `--token-format prefix`.
+- If consume/release fails with invalid-token style errors, try `--token-format prefix` (default: `full`).
 - For read/write testing, issue `com.apple.app-sandbox.read-write` and use a write op (for example `fs_op --op open_write`) after consuming the token.
 - For a clear “denied → allowed” witness, use a world-readable file that App Sandbox blocks by default (for example `/private/var/db/launchd.db/com.apple.launchd/overrides.plist`). On Sonoma, `/etc/hosts` is often already readable, so it won’t show a before/after change.
 - If you need to keep a harness file across rename/truncate during `update_file_by_fileid` experiments, add `fs_op --no-cleanup` so the harness path isn’t removed.
 - To issue directly to a target process, use `sandbox_extension --op issue_file_to_pid --pid <pid|self>`; the service pid is included as `data.details.service_pid` on every probe response.
 - Consume/release auto-try wrapper symbols when available; use `--call-symbol`/`--call-variant` to pin a specific ABI path for debugging.
+- Use `--introspect` to emit symbol presence and image paths in `data.details` for extension calls.
 - On Sonoma 14.4.1, `release`/`release_file` did not revoke access inside the same process; access cleared after the process exited. Treat release as best-effort cleanup and verify on your target OS.
 - Advanced: `issue_extension`/`issue_fs_extension`/`issue_fs_rw_extension` are wrapper issue calls. `update_file` (path + flags) and `update_file_by_fileid` (token + file id + flags; some hosts expect a fileid pointer, try `--call-variant fileid_ptr_token`, or a selector via `--call-variant payload_ptr_selector --selector <u64>`) are experimental maintenance calls that may not affect access in-process. On Sonoma 14.4.1, kernel disassembly suggests `update_file_by_fileid` expects an internal id (low 32 bits of an 8-byte payload) and requires field2 = 0, so success may require a handle not exposed via the public token string.
 
@@ -215,7 +217,6 @@ Usage:
 
 ```sh
 $EJ xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>)
-                [--ack-risk <id|profile@variant|bundle-id>]
                 [--plan-id <id>] [--correlation-id <id>]
                 [--wait <fifo:auto|fifo:/abs|exists:/abs>]
                 [--wait-timeout-ms <n>] [--wait-interval-ms <n>]
@@ -256,14 +257,14 @@ Some probes return permission-shaped failures. If you want deny evidence, run th
 
 The observer requires a PID and process name. You can get them from:
 
-- a `probe_response` (`data.details.pid` + `data.details.process_name`), or
+- a `probe_response` (`data.details.service_pid` + `data.details.process_name`, or `data.details.pid` on older outputs), or
 - an `xpc_session_event` (`data.pid` + `data.service_name`).
 
 One-shot pairing example:
 
 ```sh
 $EJ xpc run --profile minimal fs_op --op stat --path-class tmp > /tmp/ej_probe.json
-PID=$(plutil -extract data.details.pid raw -o - /tmp/ej_probe.json)
+PID=$(plutil -extract data.details.service_pid raw -o - /tmp/ej_probe.json)
 NAME=$(plutil -extract data.details.process_name raw -o - /tmp/ej_probe.json)
 EntitlementJail.app/Contents/MacOS/sandbox-log-observer --pid "$PID" --process-name "$NAME" --last 10s
 ```
@@ -273,6 +274,7 @@ Observer usage (summary):
 - Windowed (`log show`, default): `--last 5s` or explicit `--start`/`--end`
 - Live (`log stream`): `--duration <seconds>` or `--follow`
 - Output: `--format json` (default) or `--format jsonl` (events + final report); optional copy via `--output <path>`
+- Optional override: `--predicate <predicate>` to customize the log filter
 
 ### Compare a probe across a group (`run-matrix`)
 
@@ -284,17 +286,17 @@ Observer usage (summary):
 Usage:
 
 ```sh
-$EJ run-matrix --group <baseline|probe> [--variant <base|injectable>] [--out <dir>] [--ack-risk <id|profile@variant|bundle-id>] <probe-id> [probe-args...]
+$EJ run-matrix --group <baseline|probe> [--variant <base|injectable>] [--out <dir>] <probe-id> [probe-args...]
 ```
 
 Examples:
 
 ```sh
 $EJ run-matrix --group baseline capabilities_snapshot
-$EJ run-matrix --group probe --variant injectable --ack-risk minimal@injectable capabilities_snapshot
+$EJ run-matrix --group probe --variant injectable capabilities_snapshot
 ```
 
-Tier 2 variants are skipped unless you pass `--ack-risk`.
+High-concern variants are included without extra flags.
 
 Groups (current build; use `list-profiles` as the source of truth):
 
@@ -371,7 +373,7 @@ All commands that emit JSON use the same top-level envelope:
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "kind": "probe_response",
   "generated_at_unix_ms": 1700000000000,
   "result": {
@@ -383,7 +385,7 @@ All commands that emit JSON use the same top-level envelope:
 }
 ```
 
-Note: Rust-emitted CLI reports use `schema_version: 3`. XPC probe/quarantine responses emitted by the embedded Swift clients still use `schema_version: 2`.
+Note: Rust-emitted CLI reports use `schema_version: 4`. XPC probe/quarantine responses emitted by the embedded Swift clients still use `schema_version: 2`.
 
 Rules:
 
@@ -396,14 +398,14 @@ Rules:
 What to read first:
 
 - Outcome: `result.ok`, `result.normalized_outcome`, plus `result.errno`/`result.error` if not ok.
-- Service identity: `data.service_bundle_id`, `data.service_name` (for probe responses), and `data.pid` (for session events).
+- Service identity: `data.service_bundle_id`, `data.service_name`, `data.service_version`, `data.service_build` (probe responses), `data.details.service_pid`/`data.details.process_name`, and `data.pid` (session events).
 - “What path did it use?”: `data.details.file_path` (common for filesystem probes like `fs_op`/`fs_xattr`).
 
 Quick extraction without `jq` (macOS ships `plutil`):
 
 ```sh
 plutil -extract result.normalized_outcome raw -o - report.json
-plutil -extract data.details.pid raw -o - report.json
+plutil -extract data.details.service_pid raw -o - report.json
 plutil -extract data.details.process_name raw -o - report.json
 ```
 

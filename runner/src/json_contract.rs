@@ -3,7 +3,7 @@ use serde_json::{Map, Value};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 #[derive(Serialize, Clone)]
 pub struct JsonResult {

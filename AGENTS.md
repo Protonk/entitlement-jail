@@ -19,7 +19,7 @@ Pick the thing that’s failing:
 - **Build/sign/packaging failure** → `build.sh`, then `SIGNING.md`, then `tests/run.sh --suite preflight`
 - **XPC service won’t launch / replies malformed** → `xpc/services/*/main.swift`, `xpc/ProbeAPI.swift`, `xpc/InProcessProbeCore.swift`
 - **JSON output changed / tests flaky** → `runner/src/json_contract.rs` (envelope + key ordering), `runner/tests/cli_integration.rs`, `tests/suites/smoke/*.sh`
-- **Profiles/risk tiers look wrong** → `tests/build-evidence.py` (generates `profiles.json` and risk tiers)
+- **Profiles/risk signals look wrong** → `tests/build-evidence.py` (generates `profiles.json` and risk metadata)
 
 ## Repo layout (mental model)
 
@@ -117,9 +117,9 @@ If those don’t line up, the build fails or (worse) XPC lookup fails at runtime
 
 ### Risk gating is derived; keep it honest
 
-- Risk tiers/warnings are not hand-maintained—they’re derived from entitlements in `tests/build-evidence.py`.
-- The CLI enforces `--ack-risk` for tier-2 profiles (high concern) (`runner/src/main.rs`).
-- If you introduce new “high concern” entitlements, update the risk classifier so profiles land in the correct tier.
+- Risk warnings are not hand-maintained—they’re derived from entitlements in `tests/build-evidence.py`.
+- The CLI emits risk warnings (no acknowledgement flag) (`runner/src/main.rs`).
+- If you introduce new “high concern” entitlements, update the risk classifier so profiles land in the correct risk level.
 
 ### Probes must not reintroduce path-exec or dangerous defaults
 

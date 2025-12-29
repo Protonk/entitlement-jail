@@ -39,7 +39,7 @@ SESSION_STDERR="${OUT_DIR}/session.stderr"
 step "open_session" "open session (attach wait)"
 exec 3<> "${CONTROL_FIFO}"
 
-"${EJ}" xpc session --profile minimal --variant injectable --ack-risk minimal@injectable --wait fifo:auto --wait-timeout-ms 10000 0<&3 >"${SESSION_JSONL}" 2>"${SESSION_STDERR}" &
+"${EJ}" xpc session --profile minimal --variant injectable --wait fifo:auto --wait-timeout-ms 10000 0<&3 >"${SESSION_JSONL}" 2>"${SESSION_STDERR}" &
 SESSION_PID="$!"
 
 python3 - "${SESSION_JSONL}" <<'PY'

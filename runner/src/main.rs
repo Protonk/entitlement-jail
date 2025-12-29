@@ -17,8 +17,8 @@ fn print_usage() {
 usage:
   entitlement-jail run-system <absolute-platform-binary> [args...]
   entitlement-jail run-embedded <tool-name> [args...]
-  entitlement-jail xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--ack-risk <id|bundle-id>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] <probe-id> [probe-args...]
-  entitlement-jail xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--ack-risk <id|bundle-id>] [--plan-id <id>] [--correlation-id <id>] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
+  entitlement-jail xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] <probe-id> [probe-args...]
+  entitlement-jail xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--correlation-id <id>] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
   entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
   entitlement-jail verify-evidence
   entitlement-jail inspect-macho <service-id|main|path>
@@ -27,8 +27,8 @@ usage:
   entitlement-jail show-profile <id[@variant]> [--variant <base|injectable>]
   entitlement-jail describe-service <id[@variant]> [--variant <base|injectable>]
   entitlement-jail health-check [--profile <id[@variant]>] [--variant <base|injectable>]
-  entitlement-jail bundle-evidence [--out <dir>] [--include-health-check] [--ack-risk <id|bundle-id>]
-  entitlement-jail run-matrix --group <name> [--variant <base|injectable>] [--out <dir>] [--ack-risk <id|bundle-id>] <probe-id> [probe-args...]
+  entitlement-jail bundle-evidence [--out <dir>] [--include-health-check]
+  entitlement-jail run-matrix --group <name> [--variant <base|injectable>] [--out <dir>] <probe-id> [probe-args...]
 
 notes:
   - run-system only allows platform-style paths (/bin, /usr/bin, /sbin, /usr/sbin, /usr/libexec, /System/Library)
@@ -212,7 +212,6 @@ struct BundleMeta {
     output_dir: String,
     args: Vec<String>,
     include_health_check: bool,
-    ack_risk: Vec<String>,
     verify_ok: bool,
     health_ok: Option<bool>,
     profiles_included: Vec<String>,
@@ -223,7 +222,6 @@ struct BundleMeta {
 enum RiskGate {
     Allow,
     Warn,
-    RequireAck,
 }
 
 const VARIANT_BASE: &str = "base";
@@ -296,18 +294,17 @@ fn risk_gate_for_variant(
 ) -> (RiskGate, Vec<String>, Option<String>) {
     match variant {
         None => (
-            RiskGate::RequireAck,
+            RiskGate::Warn,
             vec!["unknown_profile".to_string()],
             None,
         ),
         Some(variant) => {
-            let tier = variant.risk_tier.unwrap_or(2);
+            let risk_level = variant.risk_tier.unwrap_or(2);
             let reasons = variant.risk_reasons.clone().unwrap_or_else(Vec::new);
             let label = profile.and_then(|entry| entry.label.clone());
-            match tier {
+            match risk_level {
                 0 => (RiskGate::Allow, reasons, label),
-                1 => (RiskGate::Warn, reasons, label),
-                _ => (RiskGate::RequireAck, reasons, label),
+                _ => (RiskGate::Warn, reasons, label),
             }
         }
     }
@@ -1282,7 +1279,6 @@ fn main() {
         Some("bundle-evidence") => {
             let mut out_arg: Option<String> = None;
             let mut include_health_check = false;
-            let mut ack_risk: Option<String> = None;
             let mut idx = 1;
             while idx < args.len() {
                 match args.get(idx).and_then(|s| s.to_str()) {
@@ -1308,21 +1304,6 @@ fn main() {
                     Some("--include-health-check") => {
                         include_health_check = true;
                         idx += 1;
-                    }
-                    Some("--ack-risk") => {
-                        let value = args
-                            .get(idx + 1)
-                            .and_then(|s| s.to_str())
-                            .ok_or_else(|| "missing value for --ack-risk".to_string());
-                        match value {
-                            Ok(v) => ack_risk = Some(v.to_string()),
-                            Err(err) => {
-                                eprintln!("{err}");
-                                print_usage();
-                                std::process::exit(2);
-                            }
-                        }
-                        idx += 2;
                     }
                     Some(other) => {
                         eprintln!("unknown argument for bundle-evidence: {other}");
@@ -1415,7 +1396,7 @@ fn main() {
             }
 
             let mut included_profiles = Vec::new();
-            let mut skipped_profiles = Vec::new();
+            let skipped_profiles = Vec::new();
             for profile in profiles_sorted {
                 let base_variant = profiles::find_variant(&profile, VARIANT_BASE).unwrap_or_else(|| {
                     eprintln!(
@@ -1424,27 +1405,6 @@ fn main() {
                     );
                     std::process::exit(2);
                 });
-                let tier = base_variant.risk_tier.unwrap_or(2);
-                let profile_variant = format!("{}@{}", profile.profile_id, base_variant.variant);
-                let ack_ok = ack_risk
-                    .as_ref()
-                    .map(|ack| {
-                        ack == &profile.profile_id
-                            || ack == &profile_variant
-                            || ack == &base_variant.bundle_id
-                    })
-                    .unwrap_or(false);
-                if tier >= 2 && !ack_ok {
-                    skipped_profiles.push(BundleProfileSkip {
-                        profile_id: profile.profile_id.clone(),
-                        bundle_id: base_variant.bundle_id.clone(),
-                        variant: base_variant.variant.clone(),
-                        reason: "tier2_requires_ack".to_string(),
-                        risk_tier: base_variant.risk_tier,
-                        risk_reasons: base_variant.risk_reasons.clone(),
-                    });
-                    continue;
-                }
                 if let Err(err) = ensure_single_component("profile id", &profile.profile_id) {
                     eprintln!("{err}");
                     std::process::exit(2);
@@ -1500,7 +1460,6 @@ fn main() {
                 .unwrap_or_default()
                 .as_millis();
             let args_list: Vec<String> = env::args().collect();
-            let ack_list = ack_risk.clone().map(|v| vec![v]).unwrap_or_default();
             let meta = BundleMeta {
                 generated_at_unix_ms: now,
                 app_root: app_root.display().to_string(),
@@ -1508,7 +1467,6 @@ fn main() {
                 output_dir: out_dir.display().to_string(),
                 args: args_list,
                 include_health_check,
-                ack_risk: ack_list,
                 verify_ok: verify_report.ok,
                 health_ok,
                 profiles_included: included_profiles,
@@ -1545,7 +1503,6 @@ fn main() {
         Some("run-matrix") => {
             let mut group_arg: Option<String> = None;
             let mut out_arg: Option<String> = None;
-            let mut ack_risk: Option<String> = None;
             let mut variant_arg: Option<&'static str> = None;
             let mut idx = 1;
             while idx < args.len() {
@@ -1587,21 +1544,6 @@ fn main() {
                             .ok_or_else(|| "missing value for --out".to_string());
                         match value {
                             Ok(v) => out_arg = Some(v.to_string()),
-                            Err(err) => {
-                                eprintln!("{err}");
-                                print_usage();
-                                std::process::exit(2);
-                            }
-                        }
-                        idx += 2;
-                    }
-                    "--ack-risk" => {
-                        let value = args
-                            .get(idx + 1)
-                            .and_then(|s| s.to_str())
-                            .ok_or_else(|| "missing value for --ack-risk".to_string());
-                        match value {
-                            Ok(v) => ack_risk = Some(v.to_string()),
                             Err(err) => {
                                 eprintln!("{err}");
                                 print_usage();
@@ -1716,7 +1658,7 @@ fn main() {
             let (profiles_manifest, _) = load_profiles_manifest(&app_root);
 
             let mut runs = Vec::new();
-            let mut skipped = Vec::new();
+            let skipped = Vec::new();
             let group_profiles_vec: Vec<String> =
                 group_profiles.iter().map(|s| s.to_string()).collect();
 
@@ -1733,28 +1675,6 @@ fn main() {
                         resolved.profile.profile_id, resolved.profile.kind
                     );
                     std::process::exit(2);
-                }
-
-                let tier = resolved.variant.risk_tier.unwrap_or(2);
-                let profile_variant = format!("{}@{}", resolved.profile.profile_id, resolved.variant.variant);
-                let ack_ok = ack_risk
-                    .as_ref()
-                    .map(|ack| {
-                        ack == &resolved.profile.profile_id
-                            || ack == &profile_variant
-                            || ack == &resolved.variant.bundle_id
-                    })
-                    .unwrap_or(false);
-                if tier >= 2 && !ack_ok {
-                    skipped.push(MatrixSkip {
-                        profile_id: resolved.profile.profile_id.clone(),
-                        bundle_id: resolved.variant.bundle_id.clone(),
-                        variant: resolved.variant.variant.clone(),
-                        reason: "tier2_requires_ack".to_string(),
-                        risk_tier: resolved.variant.risk_tier,
-                        risk_reasons: resolved.variant.risk_reasons.clone(),
-                    });
-                    continue;
                 }
 
                 let start = std::time::Instant::now();
@@ -1984,7 +1904,6 @@ fn main() {
                     let mut profile_arg: Option<String> = None;
                     let mut service_arg: Option<String> = None;
                     let mut variant_arg: Option<&'static str> = None;
-                    let mut ack_risk: Option<String> = None;
                     let mut plan_id: Option<String> = None;
                     let mut row_id: Option<String> = None;
                     let mut correlation_id: Option<String> = None;
@@ -2061,26 +1980,6 @@ fn main() {
                                             eprintln!("{err}");
                                             std::process::exit(2);
                                         }));
-                                    }
-                                    Err(err) => {
-                                        eprintln!("{err}");
-                                        print_usage();
-                                        std::process::exit(2);
-                                    }
-                                }
-                                idx += 2;
-                            }
-                            "--ack-risk" => {
-                                let value = args.get(idx + 1).and_then(|s| s.to_str());
-                                let value = value.ok_or_else(|| "missing value for --ack-risk".to_string());
-                                match value {
-                                    Ok(v) => {
-                                        if ack_risk.is_some() {
-                                            eprintln!("--ack-risk specified multiple times");
-                                            print_usage();
-                                            std::process::exit(2);
-                                        }
-                                        ack_risk = Some(v.to_string());
                                     }
                                     Err(err) => {
                                         eprintln!("{err}");
@@ -2192,7 +2091,6 @@ fn main() {
                     let service_id = resolved.variant.bundle_id.clone();
                     let (gate, reasons, label) =
                         risk_gate_for_variant(Some(resolved.profile), Some(resolved.variant));
-                    let require_ack = matches!(gate, RiskGate::RequireAck);
                     let warn_only = matches!(gate, RiskGate::Warn);
 
                     if warn_only {
@@ -2202,51 +2100,19 @@ fn main() {
                             .or_else(|| profile_id.clone())
                             .unwrap_or_else(|| service_id.clone());
                         let name = format!("{}@{}", name_base, resolved.variant.variant);
+                        let risk_level = resolved.variant.risk_tier.unwrap_or(2);
+                        let risk_label = if risk_level >= 2 {
+                            "high concern"
+                        } else {
+                            "some concern"
+                        };
                         if reasons.is_empty() {
-                            eprintln!("warning: profile {name} is tier 1 (some concern)");
+                            eprintln!("warning: profile {name} is {risk_label}");
                         } else {
                             eprintln!(
-                                "warning: profile {name} is tier 1 (reasons: {})",
+                                "warning: profile {name} is {risk_label} (reasons: {})",
                                 reasons.join(", ")
                             );
-                        }
-                    }
-
-                    if require_ack {
-                        let profile_id = Some(resolved.profile.profile_id.clone());
-                        let profile_variant = profile_id
-                            .as_ref()
-                            .map(|id| format!("{id}@{}", resolved.variant.variant));
-                        let ack_ok = ack_risk
-                            .as_ref()
-                            .map(|ack| {
-                                ack == &service_id
-                                    || profile_id
-                                        .as_ref()
-                                        .map(|id| ack == id)
-                                        .unwrap_or(false)
-                                    || profile_variant
-                                        .as_ref()
-                                        .map(|id| ack == id)
-                                        .unwrap_or(false)
-                            })
-                            .unwrap_or(false);
-                        if !ack_ok {
-                            let name_base = label
-                                .or_else(|| profile_id.clone())
-                                .unwrap_or_else(|| service_id.clone());
-                            let name = format!("{}@{}", name_base, resolved.variant.variant);
-                            let ack_hint = profile_variant.unwrap_or_else(|| service_id.clone());
-                            let msg = if reasons.is_empty() {
-                                format!("profile {name} is tier 2 (high concern); re-run with --ack-risk {ack_hint}")
-                            } else {
-                                format!(
-                                    "profile {name} is tier 2 (reasons: {}); re-run with --ack-risk {ack_hint}",
-                                    reasons.join(", ")
-                                )
-                            };
-                            eprintln!("{msg}");
-                            std::process::exit(2);
                         }
                     }
 
@@ -2284,7 +2150,6 @@ fn main() {
                     let mut profile_arg: Option<String> = None;
                     let mut service_arg: Option<String> = None;
                     let mut variant_arg: Option<&'static str> = None;
-                    let mut ack_risk: Option<String> = None;
                     let mut plan_id: Option<String> = None;
                     let mut correlation_id: Option<String> = None;
                     let mut wait_spec: Option<String> = None;
@@ -2351,19 +2216,6 @@ fn main() {
                                             std::process::exit(2);
                                         }));
                                     }
-                                    Err(err) => {
-                                        eprintln!("{err}");
-                                        print_usage();
-                                        std::process::exit(2);
-                                    }
-                                }
-                                idx += 2;
-                            }
-                            "--ack-risk" => {
-                                let value = args.get(idx + 1).and_then(|s| s.to_str());
-                                let value = value.ok_or_else(|| "missing value for --ack-risk".to_string());
-                                match value {
-                                    Ok(v) => ack_risk = Some(v.to_string()),
                                     Err(err) => {
                                         eprintln!("{err}");
                                         print_usage();
@@ -2521,7 +2373,6 @@ fn main() {
                     let service_id = resolved.variant.bundle_id.clone();
                     let (gate, reasons, label) =
                         risk_gate_for_variant(Some(resolved.profile), Some(resolved.variant));
-                    let require_ack = matches!(gate, RiskGate::RequireAck);
                     let warn_only = matches!(gate, RiskGate::Warn);
 
                     if warn_only {
@@ -2531,51 +2382,19 @@ fn main() {
                             .or_else(|| profile_id.clone())
                             .unwrap_or_else(|| service_id.clone());
                         let name = format!("{}@{}", name_base, resolved.variant.variant);
+                        let risk_level = resolved.variant.risk_tier.unwrap_or(2);
+                        let risk_label = if risk_level >= 2 {
+                            "high concern"
+                        } else {
+                            "some concern"
+                        };
                         if reasons.is_empty() {
-                            eprintln!("warning: profile {name} is tier 1 (some concern)");
+                            eprintln!("warning: profile {name} is {risk_label}");
                         } else {
                             eprintln!(
-                                "warning: profile {name} is tier 1 (reasons: {})",
+                                "warning: profile {name} is {risk_label} (reasons: {})",
                                 reasons.join(", ")
                             );
-                        }
-                    }
-
-                    if require_ack {
-                        let profile_id = Some(resolved.profile.profile_id.clone());
-                        let profile_variant = profile_id
-                            .as_ref()
-                            .map(|id| format!("{id}@{}", resolved.variant.variant));
-                        let ack_ok = ack_risk
-                            .as_ref()
-                            .map(|ack| {
-                                ack == &service_id
-                                    || profile_id
-                                        .as_ref()
-                                        .map(|id| ack == id)
-                                        .unwrap_or(false)
-                                    || profile_variant
-                                        .as_ref()
-                                        .map(|id| ack == id)
-                                        .unwrap_or(false)
-                            })
-                            .unwrap_or(false);
-                        if !ack_ok {
-                            let name_base = label
-                                .or_else(|| profile_id.clone())
-                                .unwrap_or_else(|| service_id.clone());
-                            let name = format!("{}@{}", name_base, resolved.variant.variant);
-                            let ack_hint = profile_variant.unwrap_or_else(|| service_id.clone());
-                            let msg = if reasons.is_empty() {
-                                format!("profile {name} is tier 2 (high concern); re-run with --ack-risk {ack_hint}")
-                            } else {
-                                format!(
-                                    "profile {name} is tier 2 (reasons: {}); re-run with --ack-risk {ack_hint}",
-                                    reasons.join(", ")
-                                )
-                            };
-                            eprintln!("{msg}");
-                            std::process::exit(2);
                         }
                     }
 

@@ -140,4 +140,4 @@ If the new service is intended to be a stable research target, also update:
 - `xpc/README.md` (list the service and what’s different about it)
 - `EntitlementJail.md` (if users are expected to run it by profile)
 
-If your entitlement adds a “high concern” capability that should require explicit acknowledgement, update the risk classifier in `tests/build-evidence.py` so the profile lands in the right tier.
+If your entitlement adds a “high concern” capability, update the risk classifier in `tests/build-evidence.py` so the profile carries the correct risk signal.

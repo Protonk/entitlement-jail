@@ -72,7 +72,7 @@ The Rust launcher does not speak NSXPC directly.
 The launcher primarily acts as:
 
 - an argument router (profile id / bundle id selection),
-- a risk gate (`--ack-risk` enforcement), and
+- a risk reporter (warnings derived from `profiles.json`), and
 - a wrapper that preserves stdout/stderr and exits like the child process.
 
 ### JSON output envelopes are stable and sorted
@@ -81,14 +81,15 @@ All JSON emitters in this repo (Rust and Swift) share a uniform top-level envelo
 
 If you add fields or change shapes, treat it as a contract change: update docs and any downstream tools/tests that consume the outputs.
 
-### Risk tiers are derived (and enforced)
+### Risk signals are derived (and warned)
 
-Risk tiers/warnings are not hand-curated in the Rust code.
+Risk signals/warnings are not hand-curated in the Rust code.
 
 - The build generates `Evidence/profiles.json` by extracting **signed** entitlements via `codesign` (`tests/build-evidence.py`).
-- The launcher uses per-variant `risk_tier`/`risk_reasons` from that manifest to warn/require acknowledgement.
+- The launcher uses per-variant risk metadata from that manifest to emit warnings.
+- There is no acknowledgement flag; selecting the injectable variant is treated as explicit intent.
 
-If you add a “high concern” entitlement, update the risk classifier so the tier stays honest.
+If you add a “high concern” entitlement, update the risk classifier so the risk signal stays honest.
 
 ## Finding and invoking the CLI
 
@@ -101,8 +102,8 @@ For CLI development, it’s useful to keep the raw subcommand surface area in vi
 ```sh
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-system <absolute-platform-binary> [args...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-embedded <tool-name> [args...]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--ack-risk <id|profile@variant|bundle-id>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] <probe-id> [probe-args...]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--ack-risk <id|profile@variant|bundle-id>] [--plan-id <id>] [--correlation-id <id>] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] <probe-id> [probe-args...]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--correlation-id <id>] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail verify-evidence
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail inspect-macho <service-id|main|path>
@@ -111,8 +112,8 @@ For CLI development, it’s useful to keep the raw subcommand surface area in vi
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail show-profile <id[@variant]> [--variant <base|injectable>]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail describe-service <id[@variant]> [--variant <base|injectable>]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail health-check [--profile <id[@variant]>] [--variant <base|injectable>]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail bundle-evidence [--out <dir>] [--include-health-check] [--ack-risk <id|bundle-id>]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail run-matrix --group <name> [--variant <base|injectable>] [--out <dir>] [--ack-risk <id|profile@variant|bundle-id>] <probe-id> [probe-args...]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail bundle-evidence [--out <dir>] [--include-health-check]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail run-matrix --group <name> [--variant <base|injectable>] [--out <dir>] <probe-id> [probe-args...]
 ```
 
 ## JSON output contract (envelope + kinds)
@@ -121,7 +122,7 @@ All JSON emitters in this repo (CLI outputs, XPC client outputs, and helper tool
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "kind": "probe_response",
   "generated_at_unix_ms": 1700000000000,
   "result": {
@@ -144,7 +145,7 @@ Rules:
 - `result.rc` is used by probes/quarantine; `result.exit_code` is used by CLI/tools. Unused fields are `null`.
 - All command-specific fields live under `data` (no extra top-level keys).
 
-Note: Rust-emitted envelopes currently use `schema_version: 3`. XPC probe/quarantine responses emitted by the embedded Swift clients still use `schema_version: 2`.
+Note: Rust-emitted envelopes currently use `schema_version: 4`. XPC probe/quarantine responses emitted by the embedded Swift clients still use `schema_version: 2`.
 
 Envelope `kind` values used by the launcher and helpers:
 
@@ -216,7 +217,7 @@ Treat `run-embedded` as an inheritance demo surface only; use XPC services for e
 Wiring (who does what):
 
 - The Rust launcher delegates to the embedded Swift helper `xpc-probe-client` (under `Contents/MacOS`), which speaks NSXPC.
-- The launcher performs risk gating (`--ack-risk`) based on `Evidence/profiles.json` before it executes the helper.
+- The launcher emits risk warnings based on `Evidence/profiles.json` before it executes the helper.
 - `xpc-probe-client` opens a session, runs one probe, prints a `probe_response` envelope, and closes the session.
 
 Service selection:
@@ -280,7 +281,7 @@ Default output path (overwritten each run):
 
 Notes:
 
-- Tier 2 variants in the group are skipped unless you pass `--ack-risk <id|profile@variant|bundle-id>`.
+- High-concern variants are included without extra flags.
 - If you run a sandboxed-launcher build, default output paths resolve under the container home; choose `--out` accordingly.
 
 ## `quarantine-lab`: write/open artifacts and report quarantine metadata (no execution)
