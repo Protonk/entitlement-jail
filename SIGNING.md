@@ -1,103 +1,193 @@
-# Signing (research use)
+# Signing and notarization
 
-This document is the canonical reference for identities, entitlements, signing order, packaging/notarization (optional), and troubleshooting for this repo.
+This repo distributes `EntitlementJail.zip`, a ZIP containing a **stapled** `EntitlementJail.app` (notarization ticket embedded in the app).
 
-## Entitlements + targets
+We notarize an archive upload, staple the `.app`, then re-zip the stapled `.app` for distribution.
 
-- Main app entitlements live in `EntitlementJail.entitlements`. In the default build, the launcher is intentionally **not** sandboxed (it does not set `com.apple.security.app-sandbox`) so it can run `/usr/bin/log` for deny-evidence capture. The sandbox boundary (and the entitlement variable) lives in the embedded XPC services.
-- `EntitlementJail.inherit.entitlements` is retained for optional sandboxed-launcher builds and inheritance experiments. Apple’s rule is: sandboxed apps can only execute embedded helper tools that are signed with **exactly** `com.apple.security.app-sandbox` + `com.apple.security.inherit` (and no other entitlements) (see [Apple Developer: Enabling App Sandbox](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html)).
-- XPC services are separate signed targets with their own entitlement plists under `xpc/services/<ServiceName>/Entitlements.plist` (treat the service entitlements as the experimental variable).
-- Every Mach-O executable inside a sandboxed app bundle (helpers, XPC services, etc.) needs explicit signing/sandboxing attention; don’t assume the outer app signature “covers” nested executables (see [Apple Developer QA1773: Common app sandboxing issues](https://developer.apple.com/library/archive/qa/qa1773/_index.html)).
-- The XPC client helper tools (`xpc-probe-client`, `xpc-quarantine-client`) are embedded under `EntitlementJail.app/Contents/MacOS/` to preserve app bundle context for XPC lookup; in the default build they are signed plainly (unsandboxed host-side).
-- Optional debugger-side tooling (for example `runner/target/release/ej-inspector`) should be signed separately with `Inspector.entitlements` (`com.apple.security.cs.debugger`) and must **not** be embedded in the app bundle.
-- Observer tools (`runner/target/release/quarantine-observer`, `runner/target/release/sandbox-log-observer`) are signed without entitlements if you distribute them. `sandbox-log-observer` is also embedded at `EntitlementJail.app/Contents/MacOS/sandbox-log-observer`.
+`build.sh` is the canonical implementation of how EntitlementJail is assembled, signed, and packaged. This document is the “why + debug guide”: what the build is doing, what matters for correctness, and how to diagnose signing/notarization failures without reinventing the script.
 
-Team ID expectation:
+For usage/behavior contracts, see:
 
-- Sign the app, embedded helpers, and embedded XPC services with the **same Team ID** (i.e. the same signing identity). Mixing Team IDs breaks assumptions around “belongs to this app” behavior (including inheritance).
+- User guide: [EntitlementJail.md](EntitlementJail.md)
+- CLI contract: [runner/README.md](runner/README.md)
 
-## Preferred path: Makefile
+## Fast path
+>build.sh prints the exact commands needed after building.
 
-`make build` wraps `build-macos.sh`, which assembles `EntitlementJail.app`, signs nested code first, then signs the outer `.app`, produces `EntitlementJail.zip`, and builds/signs the standalone observer tools.
-
-- `IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' make build`
-
-## Manual signing (no `--deep` for signing)
-
-Use this when you want to re-sign an existing `EntitlementJail.app` or debug signing issues. This sequence is “inside-out” (nested code first, outer app last) and avoids shell pitfalls (no line continuations; identity always quoted).
+Build, sign, and package:
 
 ```sh
-APP="EntitlementJail.app"
-ID='Developer ID Application: YOUR NAME (TEAMID)'
-
-APP_ENT="EntitlementJail.entitlements"
-INHERIT_ENT="EntitlementJail.inherit.entitlements"
-
-codesign -f --options runtime --timestamp -s "$ID" "$APP/Contents/MacOS/xpc-probe-client"
-codesign -f --options runtime --timestamp -s "$ID" "$APP/Contents/MacOS/xpc-quarantine-client"
-codesign -f --options runtime --timestamp -s "$ID" "$APP/Contents/MacOS/sandbox-log-observer"
-
-codesign -f --options runtime --timestamp --entitlements "xpc/services/QuarantineLab_default/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/QuarantineLab_default.xpc"
-codesign -f --options runtime --timestamp --entitlements "xpc/services/QuarantineLab_net_client/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/QuarantineLab_net_client.xpc"
-codesign -f --options runtime --timestamp --entitlements "xpc/services/QuarantineLab_downloads_rw/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/QuarantineLab_downloads_rw.xpc"
-codesign -f --options runtime --timestamp --entitlements "xpc/services/QuarantineLab_user_selected_executable/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/QuarantineLab_user_selected_executable.xpc"
-codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_minimal/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_minimal.xpc"
-codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_net_client/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_net_client.xpc"
-codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_downloads_rw/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_downloads_rw.xpc"
-codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_user_selected_executable/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_user_selected_executable.xpc"
-codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_get-task-allow/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_get-task-allow.xpc"
-codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_fully_injectable/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_fully_injectable.xpc"
-codesign -f --options runtime --timestamp --entitlements "xpc/services/ProbeService_fully_injectable_extensions/Entitlements.plist" -s "$ID" "$APP/Contents/XPCServices/ProbeService_fully_injectable_extensions.xpc"
-
-codesign -f --options runtime --timestamp --entitlements "$APP_ENT" -s "$ID" "$APP"
-
-codesign --verify --deep --strict --verbose=4 "$APP"
-
-# Optional: sign the inspector CLI (debugger-side only)
-codesign -f --options runtime --timestamp --entitlements "Inspector.entitlements" -s "$ID" "runner/target/release/ej-inspector"
-
-# Optional: sign observer CLIs (standalone; no entitlements)
-codesign -f --options runtime --timestamp -s "$ID" "runner/target/release/quarantine-observer"
-codesign -f --options runtime --timestamp -s "$ID" "runner/target/release/sandbox-log-observer"
+IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' make build
 ```
 
-Notes:
-
-- Do not add `com.apple.security.inherit` to the main app; only inheritance helpers should carry it (see [Apple Developer: Enabling App Sandbox](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html)).
-- Avoid `codesign --deep` for signing: sign known nested executables explicitly, then sign the outer app. (Using `--deep` for verification is fine.)
-
-## Packaging (`ditto`)
-
-If you create a `.zip` for notarization/distribution, use `ditto`. The archive itself is not signed; the signed content is the `.app` inside (see [Apple Developer Forums: Packaging Mac Software for Distrib…](https://developer.apple.com/forums/thread/701581)).
+Notarize the produced zip:
 
 ```sh
-APP="EntitlementJail.app"
-ditto -c -k --sequesterRsrc --keepParent "$APP" EntitlementJail.zip
+xcrun notarytool submit EntitlementJail.zip --keychain-profile "dev-profile" --wait
 ```
 
-## Optional: notarize a ZIP
+Do not rebuild, modify, or re-sign anything between submit and staple.
 
-This is optional for research use. If you choose to notarize:
-
-1. Zip the `.app` with `ditto` (see [Apple Developer Forums: Packaging Mac Software for Distrib…](https://developer.apple.com/forums/thread/701581)).
-2. Submit and wait:
+Staple + validate the app:
 
 ```sh
-xcrun notarytool submit EntitlementJail.zip --keychain-profile 'AC_PROFILE' --wait
+xcrun stapler staple EntitlementJail.app
+xcrun stapler validate -v EntitlementJail.app
+spctl -a -vv --type execute EntitlementJail.app
 ```
 
-3. Staple and validate. Stapling attaches a notarization ticket to the **app bundle**, not to the ZIP (see [Apple Help: Upload a macOS app to be notarized](https://help.apple.com/xcode/mac/current/en.lproj/dev88332a81e.html)).
+Create the **distribution zip** from the stapled app (stapling changes bundle contents, so zip after stapling):
 
 ```sh
-APP="EntitlementJail.app"
-xcrun stapler staple "$APP"
-xcrun stapler validate "$APP"
+rm -f EntitlementJail.zip
+ditto -c -k --sequesterRsrc --keepParent EntitlementJail.app EntitlementJail.zip
 ```
 
-If you distribute a ZIP, staple the `.app` first and then re-zip it (stapling changes the bundle contents) (see [Apple Help: Upload a macOS app to be notarized](https://help.apple.com/xcode/mac/current/en.lproj/dev88332a81e.html)).
+If you don’t already have a Notary keychain profile, create one once (choose a profile name; the examples use `dev-profile`):
+
+```sh
+xcrun notarytool store-credentials "dev-profile" \
+  --apple-id "you@example.com" \
+  --team-id "TEAMID" \
+  --password "app-specific-password"
+```
+
+## What build.sh does
+
+Use this section to orient yourself and treat [build.sh](build.sh) as the authoritative reference.
+
+1. **Validates `IDENTITY`**
+   - Checks that the requested Developer ID Application identity exists in your keychain (`security find-identity -p codesigning`).
+2. **Builds Rust binaries** from `runner/`
+   - Launcher + helper tools (`runner`, `quarantine-observer`, `sandbox-log-observer`, `ej-inspector`).
+3. **Assembles `EntitlementJail.app` layout**
+   - Installs the launcher at `Contents/MacOS/entitlement-jail`.
+   - Embeds `sandbox-log-observer` at `Contents/MacOS/sandbox-log-observer`.
+   - Optionally embeds additional helper payloads under `Contents/Helpers/` (see `EMBED_FENCERUNNER_PATH`, `EMBED_PROBES_DIR` in the script).
+4. **Builds Swift client helpers and XPC services** (when `BUILD_XPC=1`)
+   - Builds `xpc-probe-client` and `xpc-quarantine-client` into `Contents/MacOS/`.
+   - Enumerates `xpc/services/*` and builds each directory into `Contents/XPCServices/<ServiceName>.xpc`.
+5. **Signs nested code (inside-out)**
+   - Plain-signs embedded tools under `Contents/Helpers/` (Mach‑O only).
+   - Plain-signs host-side tools under `Contents/MacOS/` (`xpc-probe-client`, `xpc-quarantine-client`, `sandbox-log-observer`).
+   - Signs each XPC service bundle with its own `xpc/services/<ServiceName>/Entitlements.plist`.
+6. **Generates Evidence**
+   - Runs `tests/build-evidence.py` to produce the Evidence manifests inside the bundle.
+7. **Signs the outer `.app`**
+   - Signs `EntitlementJail.app` with hardened runtime and `EntitlementJail.entitlements` (empty by default).
+8. **Verifies the resulting signature**
+   - Uses strict verification (including `--deep`) as a sanity check.
+9. **Creates `EntitlementJail.zip`**
+   - Packages the app with `ditto -c -k --sequesterRsrc --keepParent`.
+10. **Signs non-embedded helper tools**
+   - Signs `runner/target/release/quarantine-observer` and `runner/target/release/sandbox-log-observer` (standalone).
+   - Signs `runner/target/release/ej-inspector` with `Inspector.entitlements` (`com.apple.security.cs.debugger`). This tool is debugger-side and must not be embedded in the `.app`.
+
+If any of these steps need to change, change `build.sh` first and then update the surrounding docs/tests.
+
+## Important concepts
+
+### Entitlements are the experimental variable
+
+The host-side launcher (`EntitlementJail.app/Contents/MacOS/entitlement-jail`) is intentionally **not sandboxed** in the default build. It is signed with hardened runtime but no sandbox entitlement.
+- `EntitlementJail.entitlements` exists for explicitness and is empty by default.
+The sandbox boundary lives in the embedded XPC services:
+- Each `EntitlementJail.app/Contents/XPCServices/<ServiceName>.xpc` is signed with the entitlements in `xpc/services/<ServiceName>/Entitlements.plist`.
+- Changing entitlements means adding/changing a service under `xpc/services/` (not “run arbitrary code by path”).
+
+### Inside-out signing
+
+Notarization expects that *every* executable inside the bundle is correctly signed. The order matters:
+
+1. Sign nested executables first (embedded helper tools, embedded Swift clients, each XPC service).
+2. Generate Evidence (which inspects the now-signed binaries).
+3. Sign the outer `EntitlementJail.app` last.
+
+This is why `build.sh` signs nested code explicitly and only uses `--deep` during verification.
+
+### Hardened runtime and timestamp
+
+The canonical signing invocations in `build.sh` include:
+
+- `--options runtime` (hardened runtime)
+- `--timestamp` (secure timestamp)
+
+If notarization fails with “missing secure timestamp” or runtime-related complaints, treat it as “some nested thing wasn’t signed the way the script expects”.
+
+### One Team ID
+
+All embedded code (launcher, embedded clients, XPC services, embedded tools) should be signed with the **same** Developer ID Application identity (same Team ID).
+
+Mixing Team IDs frequently breaks assumptions about “belongs to this app”, and can produce confusing runtime behavior even when `codesign` looks superficially OK.
+
+### Evidence is part of the signed specimen
+
+During the build, `tests/build-evidence.py` writes:
+
+- `EntitlementJail.app/Contents/Resources/Evidence/manifest.json`
+- `EntitlementJail.app/Contents/Resources/Evidence/profiles.json`
+- `EntitlementJail.app/Contents/Resources/Evidence/symbols.json`
+
+Key property: `profiles.json` is derived from **actual signed entitlements** extracted via `codesign -d --entitlements` from the embedded binaries.
+
+Implications:
+
+- If you change any embedded executable, any XPC service entitlements, or re-sign parts of the bundle, Evidence can become stale.
+- Because Evidence lives *inside* the bundle, it is also covered by the outer app signature. Editing Evidence after signing invalidates the app signature.
+- Practical rule: if you need to “fix signing”, rebuild with `make build` so signatures and Evidence stay coherent.
+
+## Inspection commands
+
+Useful when diagnosing failures.
+
+Verify the app signature (strict, includes nested code):
+
+```sh
+codesign --verify --deep --strict --verbose=4 EntitlementJail.app
+```
+
+Show signing identity and Team ID:
+
+```sh
+codesign -dv --verbose=4 EntitlementJail.app 2>&1 | grep -E "Authority=|TeamIdentifier="
+```
+
+Show entitlements for a specific binary:
+
+```sh
+codesign -d --entitlements - -- EntitlementJail.app/Contents/MacOS/entitlement-jail
+codesign -d --entitlements - -- EntitlementJail.app/Contents/MacOS/xpc-probe-client
+codesign -d --entitlements - -- EntitlementJail.app/Contents/XPCServices/ProbeService_minimal.xpc/Contents/MacOS/ProbeService_minimal
+```
+
+Gatekeeper assessment:
+
+```sh
+spctl -a -vv --type execute EntitlementJail.app
+```
+
+Notarization logs (use the id printed by `notarytool submit`):
+
+```sh
+xcrun notarytool log <submission-id> --keychain-profile "dev-profile"
+```
 
 ## Troubleshooting
 
-- `Invalid: not signed with a valid Developer ID certificate` → you likely signed with an Apple Development identity or ad hoc (`-s -`); re-sign with a `Developer ID Application: ...` identity.
-- `missing secure timestamp` → add `--timestamp` to every signing invocation.
-- `codesign` segfault / unstable behavior → retry from a clean shell; if name-based identity resolution is flaky, sign with the cert’s SHA-1 hash from `security find-identity -v -p codesigning` (use that hex string as the `-s` argument).
+- `ERROR: codesigning identity not found in your keychain`
+  - `IDENTITY` doesn’t match exactly what `security find-identity -v -p codesigning` prints, or your keychain is locked.
+- Notary: `Invalid: not signed with a valid Developer ID certificate`
+  - Something was signed with Apple Development / ad hoc instead of a Developer ID Application identity.
+- Notary: `missing secure timestamp`
+  - A nested executable was signed without `--timestamp` (or wasn’t re-signed after being rebuilt/copied).
+- `codesign --verify ...` reports `a sealed resource is missing or invalid` / `resource envelope is obsolete`
+  - The bundle was modified after signing (including adding/removing files, or stapling and then validating an older zip).
+  - Rebuild, or ensure the order is: sign → notarize → staple → zip (distribution zip).
+- `xcrun stapler staple ...` fails (especially `Error 65`)
+  - You’re stapling an app whose cdhash doesn’t match what you submitted; re-run `make build`, submit, then staple without rebuilding in between.
+- XPC services won’t launch / `NSXPCConnection` fails to connect
+  - Often indicates a signing/entitlements mismatch in the `.xpc` bundle or its executable.
+  - Confirm the service executable exists at `.../<ServiceName>.xpc/Contents/MacOS/<ServiceName>` and inspect its entitlements with `codesign -d --entitlements -`.
+- `verify-evidence` failures after “fixing signing”
+  - Evidence is derived from signed entitlements/hashes during the build. If you re-sign or modify the bundle without regenerating Evidence, it can go stale.
+  - The supported fix is to rebuild with `make build` so Evidence and signatures agree.

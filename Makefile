@@ -1,7 +1,7 @@
 .PHONY: build build-experiments clean test
 
 build:
-	./build-macos.sh
+	./build.sh
 
 build-experiments:
 	./experiments/build-experiments.sh

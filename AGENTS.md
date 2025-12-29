@@ -16,7 +16,7 @@ Pick the thing you’re changing:
 
 Pick the thing that’s failing:
 
-- **Build/sign/packaging failure** → `build-macos.sh`, then `SIGNING.md`, then `tests/run.sh --suite preflight`
+- **Build/sign/packaging failure** → `build.sh`, then `SIGNING.md`, then `tests/run.sh --suite preflight`
 - **XPC service won’t launch / replies malformed** → `xpc/services/*/main.swift`, `xpc/ProbeAPI.swift`, `xpc/InProcessProbeCore.swift`
 - **JSON output changed / tests flaky** → `runner/src/json_contract.rs` (envelope + key ordering), `runner/tests/cli_integration.rs`, `tests/suites/smoke/*.sh`
 - **Profiles/risk tiers look wrong** → `tests/build-evidence.py` (generates `profiles.json` and risk tiers)
@@ -31,7 +31,7 @@ This repo is intentionally multi-language:
   - Owns: XPC wire types (`ProbeAPI.swift`) and the in-process probe implementation (`InProcessProbeCore.swift`).
 - `experiments/` (Swift + scripts): tri-run harness + policy profiles (`sandbox-exec`) + baseline substrate.
 - `tests/` (bash + python): smoke tests, preflight signing checks, evidence BOM generator.
-- `build-macos.sh` (bash): builds everything into `EntitlementJail.app`, generates evidence, codesigns, and zips.
+- `build.sh` (bash): builds everything into `EntitlementJail.app`, generates evidence, codesigns, and zips.
 
 The app bundle is a *layout contract*:
 
@@ -48,13 +48,13 @@ If you change names/paths here, expect downstream breakage (tests, docs, evidenc
 
 Preferred build entrypoints:
 
-- `make build` → runs `./build-macos.sh`
+- `make build` → runs `./build.sh`
 - `make test` → runs `tests/run.sh --all` (preflight, Rust unit/integration, smoke scripts; these will execute the CLI)
 
 Key build facts worth knowing before you touch anything:
 
-- `build-macos.sh` requires `IDENTITY` to be set to a **Developer ID Application** identity present in your keychain (it validates via `security find-identity -p codesigning`).
-- `build-macos.sh` compiles:
+- `build.sh` requires `IDENTITY` to be set to a **Developer ID Application** identity present in your keychain (it validates via `security find-identity -p codesigning`).
+- `build.sh` compiles:
   - Rust binaries from `runner/Cargo.toml` (`runner`, `quarantine-observer`, `sandbox-log-observer`, `ej-inspector`)
   - Swift client(s) + every service under `xpc/services/*` (enumerated dynamically)
 - Build knobs (mostly for debugging):
@@ -68,7 +68,7 @@ Key build facts worth knowing before you touch anything:
   - Sign nested tools/services first, then sign the outer `.app` last (avoid using `codesign --deep` for signing).
   - All embedded code should share the same Team ID (mixing identities breaks assumptions).
 - Swift module cache must be writable:
-  - `build-macos.sh` defaults `SWIFT_MODULE_CACHE=.tmp/swift-module-cache` because sandboxed harnesses often block `~/.cache`.
+- `build.sh` defaults `SWIFT_MODULE_CACHE=.tmp/swift-module-cache` because sandboxed harnesses often block `~/.cache`.
 
 ## Invariants (treat these as contracts)
 
@@ -104,7 +104,7 @@ Key build facts worth knowing before you touch anything:
 
 ### Service naming is build-script-sensitive
 
-`build-macos.sh` assumes:
+`build.sh` assumes:
 
 - Each directory under `xpc/services/<ServiceName>/` is one service.
 - The service bundle is named `<ServiceName>.xpc`.

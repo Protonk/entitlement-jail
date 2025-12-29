@@ -29,7 +29,7 @@ For usage/behavior contracts, see:
 
 ## How it builds into `EntitlementJail.app`
 
-`xpc/` is built and embedded by [build-macos.sh](../build-macos.sh) when `BUILD_XPC=1` (default).
+`xpc/` is built and embedded by [build.sh](../build.sh) when `BUILD_XPC=1` (default).
 
 The build script finds `swiftc` via `xcrun` (Xcode Command Line Tools are required).
 
@@ -46,7 +46,7 @@ The build script produces:
 
 The client helpers must live under `Contents/MacOS` so `Bundle.main` resolves to `EntitlementJail.app` (XPC lookup and path resolution depend on having the correct bundle context).
 
-### What `build-macos.sh` assumes about services
+### What `build.sh` assumes about services
 
 Service discovery/embedding is directory-driven:
 
@@ -79,7 +79,7 @@ All signing procedure lives in [SIGNING.md](../SIGNING.md).
 
 ### Useful build knobs while iterating
 
-`build-macos.sh` respects:
+`build.sh` respects:
 
 - `EJ_INSPECTION=1` (default): builds Swift with `-Onone -g` and Rust with frame pointers + debuginfo (easier to inspect).
 - `SWIFT_MODULE_CACHE` (default `./.tmp/swift-module-cache`): should be writable even in sandboxed harnesses.

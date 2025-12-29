@@ -48,15 +48,15 @@ Canonical signing/packaging procedures live in `SIGNING.md`. This section is the
 
 ### Quick build
 
-`build-macos.sh` requires `IDENTITY` to be set to a **Developer ID Application** identity in your keychain.
+`build.sh` requires `IDENTITY` to be set to a **Developer ID Application** identity in your keychain.
 
 ```sh
 IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' make build
 ```
 
-### How `build-macos.sh` is structured (high-level tour)
+### How `build.sh` is structured (high-level tour)
 
-Think of `build-macos.sh` as a pipeline:
+Think of `build.sh` as a pipeline:
 
 1. **Validate signing identity**
    - Fails early if `IDENTITY` is missing or not present in `security find-identity -p codesigning`.
@@ -76,7 +76,7 @@ Think of `build-macos.sh` as a pipeline:
 7. **Package the zip**
    - Uses `ditto` to create `EntitlementJail.zip` (the zip isn’t signed; the `.app` inside is).
 
-### If you’re changing `build-macos.sh`, keep these in mind
+### If you’re changing `build.sh`, keep these in mind
 
 These are the “sharp edges” contributors commonly hit:
 

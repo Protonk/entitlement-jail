@@ -2,9 +2,9 @@
 set -euo pipefail
 
 # Usage:
-#   ./build-macos.sh
-#   IDENTITY='Developer ID Application: ...' ./build-macos.sh
-#   EJ_INSPECTION=0 IDENTITY='Developer ID Application: ...' ./build-macos.sh
+#   ./build.sh
+#   IDENTITY='Developer ID Application: ...' ./build.sh
+#   EJ_INSPECTION=0 IDENTITY='Developer ID Application: ...' ./build.sh
 #
 # Produces:
 #   EntitlementJail.app
@@ -65,7 +65,7 @@ if [[ -z "${IDENTITY}" ]]; then
 ERROR: IDENTITY is not set.
 
 Set it to your Developer ID Application identity string, for example:
-  IDENTITY='Developer ID Application: Adam Hyland (42D369QV8E)' ./build-macos.sh
+  IDENTITY='Developer ID Application: Adam Hyland (42D369QV8E)' ./build.sh
 
 You can find valid identities via:
   security find-identity -v -p codesigning
@@ -347,7 +347,7 @@ sign_macho_entitlements "${EJ_INSPECTOR_BIN}" "${INSPECTOR_ENTITLEMENTS_PLIST}"
 
 echo "==> Creating zip (for notarization): ${ZIP_NAME}"
 rm -f "${ZIP_NAME}"
-/usr/bin/ditto -c -k --keepParent "${APP_BUNDLE}" "${ZIP_NAME}"
+/usr/bin/ditto -c -k --sequesterRsrc --keepParent "${APP_BUNDLE}" "${ZIP_NAME}"
 
 echo
 echo "DONE:"
@@ -361,5 +361,6 @@ echo "Next (notarize with your saved profile):"
 cat <<EOF
   xcrun notarytool submit "${ZIP_NAME}" --keychain-profile "dev-profile" --wait
   xcrun stapler staple "${APP_BUNDLE}"
-  spctl -a -vv "${APP_BUNDLE}"
+  xcrun stapler validate -v "${APP_BUNDLE}"
+  spctl -a -vv --type execute "${APP_BUNDLE}"
 EOF

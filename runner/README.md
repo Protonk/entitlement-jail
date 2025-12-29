@@ -36,7 +36,7 @@ This crate also builds standalone helper CLIs:
 
 ## How it builds into `EntitlementJail.app`
 
-The build is centralized in `build-macos.sh` (invoked by `make build`).
+The build is centralized in `build.sh` (invoked by `make build`).
 
 Key wiring:
 
@@ -45,7 +45,7 @@ Key wiring:
 - The build script also embeds `runner/target/release/sandbox-log-observer` as `EntitlementJail.app/Contents/MacOS/sandbox-log-observer`.
 - Evidence manifests are generated during the build by `tests/build-evidence.py` and embedded under `EntitlementJail.app/Contents/Resources/Evidence/`.
 
-If you change bundle paths, add embedded executables, or change how services are enumerated/signed, expect to touch both `build-macos.sh` and `tests/build-evidence.py`, plus the docs that describe the resulting bundle layout.
+If you change bundle paths, add embedded executables, or change how services are enumerated/signed, expect to touch both `build.sh` and `tests/build-evidence.py`, plus the docs that describe the resulting bundle layout.
 
 ## Design invariants (don’t casually break these)
 
