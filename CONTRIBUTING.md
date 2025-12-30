@@ -19,9 +19,9 @@ If a change affects behavior, outputs, or safety boundaries, it needs matching w
 
 Robots read code comments even if humans may not; if comments are present, keep them accurate — they materially help understanding.
 
-### Tests are awkward here — still try
+### Tests are awkward here — try anyway
 
-This is a macOS app-bundle + signing + XPC repo. Some tests are inherently “unwieldy” (they depend on signing state, launchd/XPC behavior, unified logging, filesystem layout, etc.). That’s understood — but it’s still valuable to add *some* coverage when you can.
+This is a macOS app-bundle + signing + XPC repo. Some tests are inherently “unwieldy” (they depend on signing state, launchd/XPC behavior, unified logging, filesystem layout, etc.). That’s understood — but it’s valuable to add *some* coverage when you can.
 
 Preferred options, in roughly increasing integration cost:
 
@@ -30,6 +30,35 @@ Preferred options, in roughly increasing integration cost:
 - **Smoke scripts** in `tests/suites/smoke/` for end-to-end “does the bundle basically work”.
 
 If you can’t write a durable automated test, add a small smokeable workflow to docs (a command that produces a witness JSON) so reviewers have a consistent way to verify your change.
+
+### `inherit_child` is a frozen contract surface
+
+`inherit_child` is not a one-off probe; it is an inspection substrate with frozen contracts and regression protection.
+
+If you change `inherit_child`, treat these as compatibility requirements:
+
+- **Two-bus separation is mandatory**: event bus is bytes/JSONL; rights bus is `SCM_RIGHTS`. Do not pass FDs over the event bus.
+- **Protocol + witness schema are contracts**: `xpc/ProbeAPI.swift` (`InheritChildProtocol`, `InheritChildWitness`) is authoritative. If you break framing, bump the protocol version and update both parent + child together.
+- **Scenario names are part of the probe contract**: they are enumerated by a single catalog (`xpc/InProcessProbeCore.swift`) and are exercised by smoke + golden fixtures. Don’t silently rename/drop scenarios.
+- **Self-diagnosing failures matter**: protocol violations, bus I/O errors, and expected abort canaries must remain distinct normalized outcomes (don’t collapse them into “deny-shaped” failures).
+- **Golden fixtures must be updated intentionally**: if you change witness schema or deterministic fields like `outcome_summary`, update `tests/fixtures/inherit_child/` via the fixture harness (`EJ_UPDATE_FIXTURES=1`) and keep the scrub/compare tools accurate.
+
+### Probes are multi-phase transcripts (not single return codes)
+
+When a probe’s semantics depend on “before vs after”, the probe must be a multi-phase transcript:
+
+- Success criteria are access deltas (“access delta observed”); return codes alone are insufficient (`rc==0` is not evidence).
+- Action + outcome are first-class per phase: record what was attempted and what happened (rc/errno and post-action checks).
+- For candidate sweeps (for example `update_file_by_fileid`), per-candidate post-call checks are required (avoid “errno hunting”).
+- Rename/move experiments must gate on uncheatable premises (inode-preserving, same device, destination non-existent) and return distinct normalized outcomes when the premise fails.
+- Durable sessions are required for extension liveness claims; otherwise probes degenerate to fresh-start semantics.
+- Guardrail identity fields must remain present even when the child never emits events (bundle id, team id, entitlements, contract_ok).
+
+For transport-heavy probes (especially `inherit_child`), contributor requirements also include:
+
+- Raw `write(2)` emission (avoid fragile `FileHandle` paths), actual FD propagation (no hardcoded fd numbers), and an ultra-early sentinel.
+- Two-channel separation (event bus vs rights bus), protocol version/namespace/cap-id validation, and strict cap-id handling (protocol violations are distinct from sandbox denies).
+- Smoke tests + scrubbed golden fixtures should assert both shape and meaning (ordering invariants, access deltas, early-stop outcomes), including premise-failed fixtures as well as happy fixtures.
 
 ### Write Swift like you want it trivially reverse-engineered
 
@@ -44,39 +73,7 @@ EntitlementJail’s Swift is intentionally “inspection-friendly”. Optimize f
 
 The build produces a single distributable artifact: `EntitlementJail.app` (plus `EntitlementJail.zip` for notarization/distribution flows).
 
-Canonical signing/packaging procedures live in `SIGNING.md`. This section is the “tour” version: how the build is structured and what you’ll need to know when changing it.
-
-### Quick build
-
-`build.sh` requires `IDENTITY` to be set to a **Developer ID Application** identity in your keychain.
-
-```sh
-IDENTITY='Developer ID Application: YOUR NAME (TEAMID)' make build
-```
-
-### How `build.sh` is structured (high-level tour)
-
-Think of `build.sh` as a pipeline:
-
-1. **Validate signing identity**
-   - Fails early if `IDENTITY` is missing or not present in `security find-identity -p codesigning`.
-2. **Build Rust tools**
-   - Builds the launcher and supporting tools from `runner/Cargo.toml`.
-3. **Assemble the app bundle layout**
-   - Creates `EntitlementJail.app/Contents/...` and installs the launcher at `Contents/MacOS/entitlement-jail`.
-4. **Build Swift clients + XPC services**
-   - Compiles embedded XPC client helpers (`xpc-probe-client`, `xpc-quarantine-client`).
-   - Enumerates `xpc/services/*` and compiles each directory into `Contents/XPCServices/<ServiceName>.xpc`.
-   - Synthesizes a sibling `__injectable` twin bundle for each base service using `xpc/entitlements_overlays/injectable.plist`.
-5. **Codesign nested code (inside-out)**
-   - Signs embedded helpers/tools/services first, then signs the outer `.app` last.
-   - Each XPC service is signed with the entitlements in its own `xpc/services/<ServiceName>/Entitlements.plist`.
-   - Each injectable twin is signed with merged entitlements (base + fixed injectable overlay).
-6. **Generate “Evidence” manifests**
-   - Runs `tests/build-evidence.py` to write `Contents/Resources/Evidence/{manifest.json,profiles.json,symbols.json}`.
-   - `profiles.json` is derived from *actual signed entitlements* (extracted via `codesign -d --entitlements`), not from repo metadata.
-7. **Package the zip**
-   - Uses `ditto` to create `EntitlementJail.zip` (the zip isn’t signed; the `.app` inside is).
+Canonical signing/packaging procedures live in `SIGNING.md`. This section is the “tour” version: how the build is structured and what you’ll need to know when changing it. For XPC build layout details, also see `xpc/README.md`.
 
 ### If you’re changing `build.sh`, keep these in mind
 
@@ -92,6 +89,7 @@ These are the “sharp edges” contributors commonly hit:
   - placed in the bundle where the runtime expects it,
   - signed appropriately,
   - included in Evidence generation/verification expectations (often “rebuild and re-run evidence generation” is enough; sometimes you also need to teach the evidence generator about new helper names).
+- If you touch `inherit_child`, keep the per-service helper embedding/signing steps aligned with `xpc/InProcessProbeCore.swift` path resolution and the inheritance entitlements guardrails in `tests/build-evidence.py`.
 - `SWIFT_MODULE_CACHE` is intentionally set to a repo-local writable directory; don’t move it back to a path that sandboxed harnesses commonly block.
 
 ## Toy example: adding a new XPC service

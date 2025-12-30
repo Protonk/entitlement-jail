@@ -41,4 +41,10 @@ mkdir -p "${HARNESS_OUT_DIR}"
 SMOKE_ATLAS="$("${ROOT_DIR}/experiments/bin/ej-harness" run --plan "${ROOT_DIR}/experiments/plans/tri-run-smoke.json" --out-dir "${HARNESS_OUT_DIR}")"
 test_step "tri_run_atlas" "tri-run atlas: ${SMOKE_ATLAS}"
 
+step "tri_run_sandbox_extension_semantics" "run tri-run sandbox-extension semantics plan"
+SEMANTICS_OUT_DIR="${HARNESS_OUT_DIR}/sandbox-extension-semantics"
+mkdir -p "${SEMANTICS_OUT_DIR}"
+SEMANTICS_ATLAS="$("${ROOT_DIR}/experiments/bin/ej-harness" run --plan "${ROOT_DIR}/experiments/plans/tri-run-sandbox-extension-semantics.json" --nodes "${ROOT_DIR}/experiments/nodes/entitlement-lattice-sandbox-extension-semantics.json" --out-dir "${SEMANTICS_OUT_DIR}")"
+test_step "tri_run_sandbox_extension_semantics_atlas" "tri-run sandbox-extension semantics atlas: ${SEMANTICS_ATLAS}"
+
 test_pass "smoke artifacts written" "{\"out_dir\":\"${OUT_DIR}\"}"

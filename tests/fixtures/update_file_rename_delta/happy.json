@@ -1,0 +1,54 @@
+{
+  "access": {
+    "after_rename_new": "deny",
+    "after_rename_old": "not_found",
+    "after_update_file_new": "allow",
+    "post_consume_new": "not_found",
+    "post_consume_old": "allow",
+    "pre_consume_new": "not_found",
+    "pre_consume_old": "deny"
+  },
+  "consume_handle_present": true,
+  "delta_new_open_transition": "not_found->not_found->deny->deny->deny->deny->deny->deny->allow",
+  "delta_old_open_transition": "deny->allow->not_found",
+  "dest_preexisted": false,
+  "normalized_outcome": "expected",
+  "rename_was_inode_preserving": true,
+  "update_by_fileid_candidates": [
+    {
+      "attempt_index": 0,
+      "changed_access": false,
+      "name": "st_ino",
+      "norm_errno_class": "EINVAL",
+      "post_new_open": "deny"
+    },
+    {
+      "attempt_index": 1,
+      "changed_access": false,
+      "name": "st_dev",
+      "norm_errno_class": "ok",
+      "post_new_open": "deny"
+    },
+    {
+      "attempt_index": 2,
+      "changed_access": false,
+      "name": "consume_handle_low32",
+      "norm_errno_class": "EINVAL",
+      "post_new_open": "deny"
+    },
+    {
+      "attempt_index": 3,
+      "changed_access": false,
+      "name": "consume_handle_high32",
+      "norm_errno_class": "EINVAL",
+      "post_new_open": "deny"
+    },
+    {
+      "attempt_index": 4,
+      "changed_access": false,
+      "name": "consume_handle_xor32",
+      "norm_errno_class": "EINVAL",
+      "post_new_open": "deny"
+    }
+  ]
+}

@@ -115,6 +115,26 @@ Those commands rely on a built and signed `EntitlementJail.app` with the expecte
 
 `sandbox-exec` is deprecated. In this repo it’s treated as a **policy-defined runtime witness** for teaching/research only, not as a faithful model of App Sandbox.
 
+## Semantics harnesses (treat these as contracts)
+
+Some probes are intentionally “semantics harnesses”: their outputs encode how to interpret tricky OS behavior, and the repo defends them with smoke + fixtures.
+
+- `sandbox_extension --op update_file_rename_delta`:
+  - Records the deny→allow transition (`open_read` `EPERM` before consume; issue+consume allow in the same process context).
+  - Records that the grant is path-scoped (inode-preserving rename does not transfer access to the new path).
+  - Shows that `update_file(path)` can retarget access; `update_file_by_fileid` may return `rc==0` with no access delta (rc is not evidence).
+  - Defines success as “access delta observed” and records `*_changed_access` plus post-call access checks per candidate.
+  - Enforces uncheatable gating (destination non-existent, inode-preserving/same-device rename) and stops with distinct normalized outcomes when the premise fails.
+  - Persists full stat snapshots and wait/poll observations (`--wait-for-external-rename`) so host choreography is reproducible.
+  - Frozen demonstration: `tests/fixtures/update_file_rename_delta/` (scrubbed fixtures compared by `tests/suites/smoke/update_file_rename_delta_fixtures.sh`).
+
+- `inherit_child`:
+  - Uses durable sessions and strict phase ordering so “before/after” semantics are tested in the same process context.
+  - Splits transports (event bus vs rights bus) so SCM_RIGHTS FD passing cannot corrupt structured JSONL events.
+  - Uses an ultra-early sentinel and actual socketpair FDs (no hardcoded fd numbers); protocol version/namespace/cap-id validation makes mismatches explicit (`child_protocol_violation`/`protocol_error`).
+  - Records stop mechanics (start-suspended + stop markers) and callsite ids/backtraces to localize denies; a run with no child-emitted events is interpreted as early child failure, not a sandbox deny.
+  - Frozen demonstration: `tests/fixtures/inherit_child/` (scrubbed fixtures compared by `tests/suites/smoke/inherit_child_fixtures.sh`).
+
 ## Inputs (plans + nodes)
 
 ### Plan (`experiments/plans/*.json`)
@@ -150,6 +170,16 @@ A plan is a list of probe rows. Minimal schema (matches `ProbePlan`/`ProbeRow` i
 Ephemeral port substitution:
 
 - If any `inputs.argv` contains `--port 0`, the harness starts a harness-owned localhost TCP server and substitutes the chosen port into all witnesses for that row.
+
+Host-coordinated actions (optional):
+
+- Probe rows may include `host_actions` to perform host-side file operations *during* a witness run (useful when the witness is sandboxed and cannot perform the action itself).
+- The harness supports:
+  - `kind=rename` with `{from,to,delay_ms}`.
+- When `host_actions` are present, the harness allocates a per-run directory under `/tmp/entitlement-jail-harness/ej-harness/...` and provides one template variable:
+  - `{{EJ_HARNESS_RUN_DIR}}` (substituted into both `inputs.argv` and `host_actions` fields).
+- Host action paths are refused unless they live under `/tmp/entitlement-jail-harness` (or `/private/tmp/entitlement-jail-harness`).
+- The harness writes a best-effort transcript to `host-actions.txt` under each run directory; set `EJ_HARNESS_KEEP_ACTION_ARTIFACTS=1` to keep the temporary harness directory after the run.
 
 ### Nodes / lattice (`experiments/nodes/*.json`)
 

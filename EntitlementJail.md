@@ -38,6 +38,8 @@ Set a convenience variable:
 EJ="$PWD/EntitlementJail.app/Contents/MacOS/entitlement-jail"
 ```
 
+All invocations are subcommands (for example `$EJ xpc run ...`). To run a platform binary, use `run-system /bin/ls ...`; to run an embedded helper, use `run-embedded <tool-name> ...`.
+
 Discover what’s inside:
 
 ```sh
@@ -143,7 +145,7 @@ For sandbox extension issuance, use:
 
 - `temporary_exception`: App Sandbox + `com.apple.security.temporary-exception.sbpl` for `file-issue-extension` (high concern).
 
-There are also Quarantine Lab profiles (kind `quarantine`) such as `quarantine_default`, `quarantine_net_client`, `quarantine_downloads_rw`, `quarantine_user_selected_executable`, and `quarantine_bookmarks_app_scope`.
+There are also Quarantine Lab profiles (kind `quarantine`) such as `quarantine_default`, `quarantine_downloads_rw`, and `quarantine_user_selected_executable`.
 
 ### Run probes in a service (`xpc run`)
 
@@ -172,9 +174,10 @@ $EJ xpc run --profile minimal fs_op --op stat --path-class tmp
 $EJ xpc run --profile net_client net_op --op tcp_connect --host 127.0.0.1 --port 9
 $EJ xpc run --profile minimal --variant injectable sandbox_check --operation file-read-data --path /etc/hosts
 $EJ xpc run --profile temporary_exception sandbox_extension --op issue_file --class com.apple.app-sandbox.read --path /etc/hosts --allow-unsafe-path
+$EJ xpc run --profile temporary_exception inherit_child --scenario dynamic_extension --path /private/var/db/launchd.db/com.apple.launchd/overrides.plist --allow-unsafe-path
 ```
 
-Use `probe_catalog` as the source of truth for per-probe usage; the current build also exposes `fs_op_wait`, `bookmark_make`, `bookmark_op`, `bookmark_roundtrip`, `userdefaults_op`, `fs_coordinated_op`, and `network_tcp_connect`.
+Use `probe_catalog` as the source of truth for per-probe usage; it also lists `fs_op_wait`, `bookmark_make`, `bookmark_op`, `bookmark_roundtrip`, `userdefaults_op`, `fs_coordinated_op`, and `network_tcp_connect`.
 
 ### Sandbox extension flow (issue -> consume -> release)
 
@@ -209,6 +212,125 @@ Notes:
 - On Sonoma 14.4.1, `release`/`release_file` did not revoke access inside the same process; access cleared after the process exited. Treat release as best-effort cleanup and verify on your target OS.
 - Advanced: `issue_extension`/`issue_fs_extension`/`issue_fs_rw_extension` are wrapper issue calls. `update_file` (path + flags) and `update_file_by_fileid` (token + file id + flags; some hosts expect a fileid pointer, try `--call-variant fileid_ptr_token`, or a selector via `--call-variant payload_ptr_selector --selector <u64>`) are experimental maintenance calls that may not affect access in-process. On Sonoma 14.4.1, kernel disassembly suggests `update_file_by_fileid` expects an internal id (low 32 bits of an 8-byte payload) and requires field2 = 0, so success may require a handle not exposed via the public token string.
 
+#### Rename retarget semantics harness (`update_file_rename_delta`)
+
+`update_file_rename_delta` is the canonical “rename can silently change meaning” harness: it defines success as an **access delta observed**, not “`rc==0`”.
+
+Facts it records/enforces (read these literally when interpreting the witness):
+
+- Before consume, `open_read` can fail with `EPERM` for a denied Desktop read; issue + consume flips `open_read` to success in the same process context.
+- The grant is path-scoped: an inode-preserving rename does not transfer the grant to the new path (`open_read` produces `EPERM`).
+- `sandbox_extension_update_file(path)` can retarget access across renames in the same durable session; `sandbox_extension_update_file_by_fileid` can return `rc==0` without restoring access (return codes are not evidence).
+- The witness records post-call access checks and `*_changed_access` (per-candidate) so success is an observable policy transition.
+- The probe gates on uncheatable premises (destination non-existent, inode-preserving rename on the same device) and stops early with distinct normalized outcomes when the premise fails.
+- When `--wait-for-external-rename` is used, wait/poll observations are recorded in the witness so host choreography is reproducible.
+
+Example (host-side rename choreography):
+
+```sh
+old_path="/tmp/entitlement-jail-harness/ej_old.txt"
+new_path="/tmp/entitlement-jail-harness/ej_new.txt"
+printf 'ej rename-retarget demo\n' >"${old_path}"
+
+$EJ xpc run --profile temporary_exception sandbox_extension \
+  --op update_file_rename_delta --class com.apple.app-sandbox.read \
+  --path "${old_path}" --new-path "${new_path}" --wait-for-external-rename > /tmp/ej_update_file_rename_delta.json &
+pid=$!
+sleep 1
+mv "${old_path}" "${new_path}"
+wait "${pid}"
+```
+
+Reading the output:
+
+- Phase transcript: `data.details.delta_old_open_transition` / `data.details.delta_new_open_transition` plus per-phase `access_*_open_outcome`.
+- Candidate sweep evidence: `access_after_update_by_fileid_<candidate>_new_open_outcome` and `update_by_fileid_<candidate>_changed_access` (not the raw `rc`).
+
+### Paired-process capability ferry (`inherit_child`)
+
+`inherit_child` is the “capability ferry” harness: a cooperative parent/child probe that turns sandbox inheritance into a repeatable **acquire vs use** experiment.
+
+Execution model (matrix-shaped):
+
+1. parent **acquires** a capability (and ferries it to the child when relevant),
+2. child attempts to **acquire** the same capability independently,
+3. child attempts to **use** the ferried capability.
+
+Transport model (frozen contract surface):
+
+- **Event bus**: child→parent JSONL `events[]` plus a single sentinel line; parent→child byte payloads (bookmark bytes).
+- **Rights bus**: dedicated `SCM_RIGHTS` FD passing for file/dir/socket capabilities (no FDs are ever passed over the event bus).
+
+The response includes a structured witness under `data.witness`. It is present even when the child never emits any structured events.
+
+**Scenarios** (use `probe_catalog` as the source of truth; names are stable):
+
+| `--scenario` | What it exercises |
+|---|---|
+| `dynamic_extension` | parent-only sandbox extension + `file_fd` ferry |
+| `matrix_basic` | `file_fd` + `dir_fd` + `socket_fd` ferries |
+| `bookmark_ferry` | security-scoped bookmark bytes over the event bus (resolve + startAccessing + access attempt) |
+| `lineage_basic` | child spawns a grandchild and re-ferries the event bus (lineage metadata) |
+| `inherit_bad_entitlements` | expected abort canary (wrong child entitlements) |
+
+Examples:
+
+```sh
+# A: Parent acquires via sandbox extension; child compares acquire vs use.
+$EJ xpc run --profile temporary_exception inherit_child \
+  --scenario dynamic_extension \
+  --path /private/var/db/launchd.db/com.apple.launchd/overrides.plist \
+  --allow-unsafe-path
+
+# B: File/dir/socket FD ferries (no tokens).
+$EJ xpc run --profile minimal inherit_child \
+  --scenario matrix_basic \
+  --path-class tmp --target specimen_file --name ej_child.txt --create
+
+# B2: Same run, but attach sandbox log excerpt to the same JSON artifact.
+$EJ xpc run --capture-sandbox-logs --profile minimal inherit_child \
+  --scenario matrix_basic \
+  --path-class tmp --target specimen_file --name ej_child.txt --create
+
+# B3: Deliberate protocol failure injection (expected: child_protocol_violation).
+$EJ xpc run --profile minimal inherit_child \
+  --scenario matrix_basic \
+  --path-class tmp --target specimen_file --name ej_child.txt --create \
+  --protocol-bad-cap-id
+
+# C: Bookmark ferry (success path) + a deliberate move to exercise resolution behavior.
+$EJ xpc run --profile bookmarks_app_scope inherit_child \
+  --scenario bookmark_ferry \
+  --path-class tmp --target specimen_file --name ej_child.txt --create \
+  --bookmark-move
+
+# D: Bookmark ferry (invalid payload) — a deterministic “expected failure” diagnostic.
+$EJ xpc run --profile bookmarks_app_scope inherit_child \
+  --scenario bookmark_ferry \
+  --path-class tmp --target specimen_file --name ej_child_bad.txt --create \
+  --bookmark-invalid
+
+# E: Inheritance contract canary — the OS is expected to abort the child.
+$EJ xpc run --profile minimal inherit_child --scenario inherit_bad_entitlements
+```
+
+Attach/inspection knobs:
+
+- `--stop-on-entry`: child stops ultra-early for deterministic attach.
+- `--stop-on-deny`: on `EPERM`/`EACCES`, emit op + `callsite_id` + best-effort backtrace, then stop.
+- `--stop-auto-resume`: parent sends `SIGCONT` after a stop (useful for scripting/tests without a debugger).
+
+Host-side sandbox log capture (single artifact):
+
+- Add `--capture-sandbox-logs` to `xpc run` to attach a lookback sandbox log excerpt under `data.host_sandbox_log_capture`.
+- For `inherit_child`, the excerpt is also summarized into the witness fields `sandbox_log_capture_status` and `sandbox_log_capture` so a run is self-contained.
+
+How to interpret failures:
+
+- `result.normalized_outcome=child_protocol_violation` / `child_*_bus_io_error` → harness/protocol bug (not sandbox behavior).
+- `result.normalized_outcome=child_abort_expected` → expected canary abort (entitlements contract failure).
+- Per-capability rc/errno lives in `data.witness.capability_results[]`; the deterministic scan view is `data.witness.outcome_summary`.
+
 ### Deterministic debugger attach (`xpc session`)
 
 `xpc session` is a session-based XPC control plane intended for tooling like lldb/dtrace/Frida. It provides explicit lifecycle events and keeps the service alive across multiple probes so you can attach once and then iterate.
@@ -238,6 +360,7 @@ Lifecycle events you’ll commonly see:
 - `session_ready` — session opened; includes `data.pid` and an opaque `data.session_token`
 - `wait_ready` — wait barrier configured; includes `data.wait_path`
 - `trigger_received` — wait barrier satisfied; safe point to start probes
+- `child_spawned` / `child_stopped` / `child_exited` — emitted by `inherit_child` with `data.child_pid` + `data.run_id`
 - `probe_starting` / `probe_done` — per-probe execution bracketing
 - `session_closed` — explicit close
 
@@ -254,6 +377,8 @@ Attach workflow (high level):
 ### Deny evidence (`sandbox-log-observer`)
 
 Some probes return permission-shaped failures. If you want deny evidence, run the embedded observer tool outside the sandbox boundary and treat its output as an *evidence attachment*.
+
+For `inherit_child`, prefer `xpc run --capture-sandbox-logs` so the log excerpt is attached to the same JSON output artifact (see the `inherit_child` section).
 
 The observer requires a PID and process name. You can get them from:
 
@@ -272,7 +397,7 @@ EntitlementJail.app/Contents/MacOS/sandbox-log-observer --pid "$PID" --process-n
 Observer usage (summary):
 
 - Windowed (`log show`, default): `--last 5s` or explicit `--start`/`--end`
-- Live (`log stream`): `--duration <seconds>` or `--follow`
+- Live (`log stream`): `--duration <seconds>` or `--follow` (optionally `--until-pid-exit`)
 - Output: `--format json` (default) or `--format jsonl` (events + final report); optional copy via `--output <path>`
 - Optional override: `--predicate <predicate>` to customize the log filter
 
@@ -298,7 +423,7 @@ $EJ run-matrix --group probe --variant injectable capabilities_snapshot
 
 High-concern variants are included without extra flags.
 
-Groups (current build; use `list-profiles` as the source of truth):
+Groups (use `list-profiles` as the source of truth):
 
 - `baseline`: `minimal`
 - `probe`: `minimal`, `net_client`, `downloads_rw`, `user_selected_executable`, `bookmarks_app_scope`, `temporary_exception`
@@ -385,7 +510,8 @@ All commands that emit JSON use the same top-level envelope:
 }
 ```
 
-Note: Rust-emitted CLI reports use `schema_version: 4`. XPC probe/quarantine responses emitted by the embedded Swift clients still use `schema_version: 2`.
+Note: Rust-emitted CLI reports use `schema_version: 4`. XPC probe/quarantine responses emitted by the embedded Swift clients use `schema_version: 2`.
+Some per-probe witness payloads also carry their own `schema_version` fields (for example `inherit_child` witness `schema_version: 3`).
 
 Rules:
 

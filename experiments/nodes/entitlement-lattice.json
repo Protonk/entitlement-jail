@@ -10,7 +10,7 @@
       "node_id": "E1_net_client",
       "policy_profile": "experiments/policy/P1_net_client.sb",
       "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_net_client",
-      "xpc_quarantine_service_bundle_id": "com.yourteam.entitlement-jail.QuarantineLab_net_client"
+      "xpc_quarantine_service_bundle_id": "com.yourteam.entitlement-jail.QuarantineLab_default"
     },
     {
       "node_id": "E2_downloads_rw",
@@ -28,7 +28,7 @@
       "node_id": "E4_bookmarks_app_scope",
       "policy_profile": "experiments/policy/P4_bookmarks_app_scope.sb",
       "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_bookmarks_app_scope",
-      "xpc_quarantine_service_bundle_id": "com.yourteam.entitlement-jail.QuarantineLab_bookmarks_app_scope"
+      "xpc_quarantine_service_bundle_id": "com.yourteam.entitlement-jail.QuarantineLab_default"
     }
   ]
 }

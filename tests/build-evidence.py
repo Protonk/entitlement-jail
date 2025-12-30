@@ -262,6 +262,64 @@ def read_plist(path: Path) -> Dict[str, Any]:
 def rel_path(app_root: Path, target: Path) -> str:
     return str(target.relative_to(app_root))
 
+def validate_inherit_child_entitlements(entries: list[dict[str, Any]]) -> list[str]:
+    failures: list[str] = []
+    allowed_keys = {
+        "com.apple.security.app-sandbox",
+        "com.apple.security.inherit",
+    }
+    bad_key = "com.apple.security.files.user-selected.read-only"
+
+    for entry in entries:
+        kind = entry.get("kind")
+        entry_id = entry.get("id") or ""
+        is_child = kind in ("xpc-child", "xpc-child-bad") or entry_id in (
+            "ej-inherit-child",
+            "ej-inherit-child-bad",
+        )
+        if not is_child:
+            continue
+
+        if entry.get("entitlements_error"):
+            failures.append(
+                f"{entry_id}: entitlements_error={entry.get('entitlements_error')} (Evidence is derived from signed entitlements in built artifacts)"
+            )
+            continue
+
+        entitlements = entry.get("entitlements") or {}
+        if not isinstance(entitlements, dict):
+            failures.append(
+                f"{entry_id}: entitlements missing or invalid (Evidence is derived from signed entitlements in built artifacts)"
+            )
+            continue
+
+        sandbox_keys = {key for key in entitlements.keys() if key.startswith("com.apple.security.")}
+        is_bad = kind == "xpc-child-bad" or entry_id.endswith("inherit_child_bad") or entry_id.endswith("child-bad")
+        expected_keys = set(allowed_keys)
+        if is_bad:
+            expected_keys.add(bad_key)
+
+        if sandbox_keys != expected_keys:
+            failures.append(
+                f"{entry_id}: sandbox entitlements mismatch (Evidence is derived from signed entitlements in built artifacts; expected {sorted(expected_keys)}, got {sorted(sandbox_keys)})"
+            )
+            continue
+
+        if entitlements.get("com.apple.security.app-sandbox") is not True:
+            failures.append(
+                f"{entry_id}: missing com.apple.security.app-sandbox=true (Evidence is derived from signed entitlements in built artifacts)"
+            )
+        if entitlements.get("com.apple.security.inherit") is not True:
+            failures.append(
+                f"{entry_id}: missing com.apple.security.inherit=true (Evidence is derived from signed entitlements in built artifacts)"
+            )
+        if is_bad and entitlements.get(bad_key) is not True:
+            failures.append(
+                f"{entry_id}: missing {bad_key}=true (expected abort canary: signing/twinning regression tripwire)"
+            )
+
+    return failures
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build Evidence BOM for EntitlementJail.app")
@@ -290,7 +348,13 @@ def main() -> int:
 
     entries = []
 
-    helper_names = ["xpc-probe-client", "xpc-quarantine-client", "sandbox-log-observer"]
+    helper_names = [
+        "xpc-probe-client",
+        "xpc-quarantine-client",
+        "sandbox-log-observer",
+        "ej-inherit-child",
+        "ej-inherit-child-bad",
+    ]
     for name in helper_names:
         helper_path = contents_dir / "MacOS" / name
         if not helper_path.exists():
@@ -333,6 +397,46 @@ def main() -> int:
             if err:
                 entry["entitlements_error"] = err
             entries.append(entry)
+
+            child_bin = svc_bundle / "Contents" / "MacOS" / "ej-inherit-child"
+            if child_bin.exists():
+                child_entitlements, child_err = entitlements_from_codesign(child_bin)
+                child_entry = {
+                    "id": f"{bundle_id or svc_name}.inherit_child",
+                    "bundle_id": bundle_id,
+                    "kind": "xpc-child",
+                    "service_name": svc_name,
+                    "rel_path": rel_path(app_bundle, child_bin),
+                    "sha256": sha256_file(child_bin),
+                    "lc_uuid": lc_uuid(child_bin) or "",
+                    "entitlements": child_entitlements,
+                }
+                if child_err:
+                    child_entry["entitlements_error"] = child_err
+                entries.append(child_entry)
+
+            child_bad_bin = svc_bundle / "Contents" / "MacOS" / "ej-inherit-child-bad"
+            if child_bad_bin.exists():
+                child_bad_entitlements, child_bad_err = entitlements_from_codesign(child_bad_bin)
+                child_bad_entry = {
+                    "id": f"{bundle_id or svc_name}.inherit_child_bad",
+                    "bundle_id": bundle_id,
+                    "kind": "xpc-child-bad",
+                    "service_name": svc_name,
+                    "rel_path": rel_path(app_bundle, child_bad_bin),
+                    "sha256": sha256_file(child_bad_bin),
+                    "lc_uuid": lc_uuid(child_bad_bin) or "",
+                    "entitlements": child_bad_entitlements,
+                }
+                if child_bad_err:
+                    child_bad_entry["entitlements_error"] = child_bad_err
+                entries.append(child_bad_entry)
+
+    failures = validate_inherit_child_entitlements(entries)
+    if failures:
+        for failure in failures:
+            print(f"ERROR: {failure}", file=sys.stderr)
+        return 2
 
     symbols_entries = []
     for entry in entries:

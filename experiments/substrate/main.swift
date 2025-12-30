@@ -34,6 +34,9 @@ private func printUsage() {
           bookmark_roundtrip    --path <abs> [--op <fs_op-op>] [--relative <rel>] [--no-security-scope] [--read-only] [--allow-missing] [--allow-unsafe-path]
           capabilities_snapshot
           sandbox_check         --operation <sandbox-op> [--path <abs>] [--repeat <n>]
+          inherit_child         [--scenario <dynamic_extension>] (--path <abs> | --path-class <home|tmp|downloads|desktop|documents|app_support|caches>)
+                               [--target <base|harness_dir|run_dir|specimen_file>] [--name <filename>]
+                               [--create] [--allow-unsafe-path] [--stop-on-entry] [--stop-on-deny]
           userdefaults_op       --op <read|write|remove|sync> [--key <k>] [--value <v>] [--suite <suite>]
           fs_xattr              --op <get|list|set|remove> --path <abs> [--name <xattr>] [--value <v>] [--allow-write] [--allow-unsafe-path]
           fs_coordinated_op     --op <read|write> (--path <abs> | --path-class <...>) [--allow-unsafe-path]

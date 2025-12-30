@@ -6,15 +6,18 @@ Most of what gets maintained here is the “lab surface”:
 
 - the probe implementations and their safety boundaries,
 - the set of base entitlement profiles plus auto-generated injectable twins (one twin per service),
+- the `inherit_child` paired-process harness (frozen two-bus protocol + scenario/matrix witness),
 - the stable JSON output contract (for downstream tooling), and
 - the evidence + tests that keep the bundle and its claims honest.
 
 ## Core commitments
 
-- **Entitlements are the variable**: the unit of variation is a whole separately signed service and each base service has a build-generated injectable twin with a fixed overlay.
+- **Entitlements are the variable**: the knob is OS-enforced, separately signed XPC services inside one app; each base service has a build-generated injectable twin with a fixed overlay (variants are first-class).
 - **Outcomes first; attribution second**: outputs are witness records (rc/errno/paths/timing) without quietly upgrading them into stronger claims about *why* they happened.
 - **Deterministic sessions for attach/debug**: `xpc session` exposes explicit lifecycle events (PID/readiness/wait barriers), so tracing and debugging can coordinate without racing service startup.
-- **Evidence is a first-class artifact**: entitlement profiles are derived from *signed* service entitlements during the build and embedded into the `.app` for inspection/verification.
+- **Evidence is a first-class artifact**: entitlement profiles are derived from *signed* entitlements in built artifacts during the build and embedded into the `.app` for inspection/verification.
+- **`inherit_child` is an inspection substrate**: a frozen two-bus protocol (event bus vs rights bus), scenario routing, strict witness invariants, and self-diagnosing failures protected by smoke + golden fixtures.
+- **Success is an access delta**: probes record post-action checks; success is “access delta observed”, not “rc==0” (see `sandbox_extension --op update_file_rename_delta` and `inherit_child`).
 
 ## What ships
 
@@ -23,6 +26,7 @@ This repo builds a single distributable specimen:
 - `EntitlementJail.app` — the bundle you run and inspect
   - `Contents/MacOS/entitlement-jail` (Rust launcher; host-side)
   - `Contents/XPCServices/*.xpc` (Swift services; sandboxed; entitlements vary per service)
+  - `Contents/MacOS/ej-inherit-child` + `Contents/MacOS/ej-inherit-child-bad` (paired-process helpers; also embedded per ProbeService bundle)
   - `Contents/Resources/Evidence/*` (generated manifests: entitlements, hashes, profiles, symbols)
 - `EntitlementJail.md` — the user guide shipped alongside the app
 

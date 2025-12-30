@@ -1,0 +1,52 @@
+{
+  "capability_namespace": "inherit_child.cap.v1",
+  "capability_results": [],
+  "child_entitlements_keys": [
+    "com.apple.security.app-sandbox",
+    "com.apple.security.files.user-selected.read-only",
+    "com.apple.security.inherit"
+  ],
+  "child_event_fd_present": true,
+  "child_exit_kind": "signal",
+  "child_rights_fd_present": true,
+  "events": [
+    {
+      "actor": "parent",
+      "backtrace": false,
+      "backtrace_error": false,
+      "callsite": false,
+      "deny": false,
+      "lineage_depth": null,
+      "op": false,
+      "phase": "parent_start"
+    },
+    {
+      "actor": "parent",
+      "backtrace": false,
+      "backtrace_error": false,
+      "callsite": false,
+      "deny": false,
+      "lineage_depth": null,
+      "op": false,
+      "phase": "child_spawned"
+    },
+    {
+      "actor": "parent",
+      "backtrace": false,
+      "backtrace_error": false,
+      "callsite": false,
+      "deny": false,
+      "lineage_depth": null,
+      "op": false,
+      "phase": "child_exited"
+    }
+  ],
+  "inherit_contract_ok": false,
+  "normalized_outcome": "child_abort_expected",
+  "outcome_summary": "expected abort due to inheritance entitlement contamination (status=133)",
+  "protocol_error": null,
+  "protocol_version": 1,
+  "sandbox_log_capture_status": "not_requested",
+  "scenario": "inherit_bad_entitlements",
+  "schema_version": 3
+}

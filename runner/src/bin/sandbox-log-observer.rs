@@ -14,6 +14,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const OBSERVER_SCHEMA_VERSION: u32 = 1;
 const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
+const ESRCH: i32 = 3;
+
+unsafe extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OutputFormat {
@@ -35,7 +40,7 @@ fn print_usage() {
     eprintln!(
         "\
 usage:
-  sandbox-log-observer --pid <pid> --process-name <name> [--start <time> --end <time> | --last <duration> | --duration <seconds> | --follow] [--predicate <predicate>] [--format <json|jsonl>] [--output <path>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>]
+  sandbox-log-observer --pid <pid> --process-name <name> [--start <time> --end <time> | --last <duration> | --duration <seconds> | --follow] [--until-pid-exit] [--predicate <predicate>] [--format <json|jsonl>] [--output <path>] [--plan-id <id>] [--row-id <id>] [--correlation-id <id>]
 
 notes:
   - runs `log show` (default) or `log stream` (with --duration/--follow) with a sandbox-deny predicate (observer-only)
@@ -53,6 +58,19 @@ fn now_unix_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn is_pid_alive(pid: i32) -> bool {
+    unsafe {
+        if kill(pid, 0) == 0 {
+            return true;
+        }
+        match io::Error::last_os_error().raw_os_error() {
+            Some(ESRCH) => false,
+            Some(_) => true,
+            None => false,
+        }
+    }
 }
 
 fn sandbox_predicate(process_name: &str, pid: i32) -> String {
@@ -125,6 +143,7 @@ struct LogObserverData {
     observer_schema_version: u32,
     mode: String,
     duration_ms: Option<u64>,
+    stop_on_pid_exit: bool,
     plan_id: Option<String>,
     row_id: Option<String>,
     correlation_id: Option<String>,
@@ -179,6 +198,7 @@ fn main() {
     let mut output_path: Option<PathBuf> = None;
     let mut follow = false;
     let mut duration: Option<Duration> = None;
+    let mut until_pid_exit = false;
 
     let mut idx = 0usize;
     while idx < args.len() {
@@ -282,6 +302,10 @@ fn main() {
                 follow = true;
                 idx += 1;
             }
+            "--until-pid-exit" => {
+                until_pid_exit = true;
+                idx += 1;
+            }
             "--format" => {
                 let value = args.get(idx + 1).and_then(|s| s.to_str());
                 match value.and_then(OutputFormat::parse) {
@@ -367,6 +391,12 @@ fn main() {
 
     let stream_mode = follow || duration.is_some();
 
+    if until_pid_exit && !stream_mode {
+        eprintln!("--until-pid-exit requires --follow or --duration");
+        print_usage();
+        std::process::exit(2);
+    }
+
     if stream_mode && (start.is_some() || end.is_some() || last.is_some()) {
         eprintln!("--start/--end/--last cannot be combined with --duration/--follow");
         print_usage();
@@ -445,6 +475,7 @@ fn main() {
                     observer_schema_version: OBSERVER_SCHEMA_VERSION,
                     mode,
                     duration_ms,
+                    stop_on_pid_exit: until_pid_exit,
                     plan_id: plan_id.clone(),
                     row_id: row_id.clone(),
                     correlation_id: correlation_id.clone(),
@@ -507,6 +538,19 @@ fn main() {
             let child_for_signal = Arc::clone(&child);
             let _ = ctrlc::set_handler(move || {
                 if let Ok(mut child) = child_for_signal.lock() {
+                    let _ = child.kill();
+                }
+            });
+        }
+
+        if until_pid_exit {
+            let child_for_pid = Arc::clone(&child);
+            let pid_to_watch = pid;
+            thread::spawn(move || {
+                while is_pid_alive(pid_to_watch) {
+                    thread::sleep(Duration::from_millis(200));
+                }
+                if let Ok(mut child) = child_for_pid.lock() {
                     let _ = child.kill();
                 }
             });
@@ -618,6 +662,7 @@ fn main() {
                     observer_schema_version: OBSERVER_SCHEMA_VERSION,
                     mode,
                     duration_ms,
+                    stop_on_pid_exit: until_pid_exit,
                     plan_id: plan_id.clone(),
                     row_id: row_id.clone(),
                     correlation_id: correlation_id.clone(),
@@ -690,6 +735,7 @@ fn main() {
         observer_schema_version: OBSERVER_SCHEMA_VERSION,
         mode,
         duration_ms,
+        stop_on_pid_exit: until_pid_exit,
         plan_id,
         row_id,
         correlation_id,

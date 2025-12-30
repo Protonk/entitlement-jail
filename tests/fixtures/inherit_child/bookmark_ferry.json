@@ -1,0 +1,165 @@
+{
+  "capability_namespace": "inherit_child.cap.v1",
+  "capability_results": [
+    {
+      "bookmark": {
+        "access_rc": "ok",
+        "is_stale": false,
+        "resolve_error_code_present": false,
+        "resolve_error_domain_present": false,
+        "resolve_error_present": false,
+        "resolve_rc": "ok",
+        "start_accessing": true
+      },
+      "cap_id": "bookmark",
+      "cap_type": "bookmark",
+      "child_acquire": {
+        "rc_class": "ok"
+      },
+      "child_use": {
+        "rc_class": "ok"
+      },
+      "notes": "op=bookmark_access",
+      "parent_acquire": {
+        "rc_class": "ok"
+      }
+    }
+  ],
+  "child_entitlements_keys": [
+    "com.apple.security.app-sandbox",
+    "com.apple.security.inherit"
+  ],
+  "child_event_fd_present": true,
+  "child_exit_kind": "exit",
+  "child_rights_fd_present": true,
+  "events": [
+    {
+      "actor": "parent",
+      "backtrace": false,
+      "backtrace_error": false,
+      "callsite": false,
+      "deny": false,
+      "lineage_depth": null,
+      "op": false,
+      "phase": "parent_start"
+    },
+    {
+      "actor": "parent",
+      "backtrace": false,
+      "backtrace_error": false,
+      "callsite": false,
+      "deny": false,
+      "lineage_depth": null,
+      "op": false,
+      "phase": "parent_acquire_attempt"
+    },
+    {
+      "actor": "parent",
+      "backtrace": false,
+      "backtrace_error": false,
+      "callsite": false,
+      "deny": false,
+      "lineage_depth": null,
+      "op": false,
+      "phase": "child_spawned"
+    },
+    {
+      "actor": "parent",
+      "backtrace": false,
+      "backtrace_error": false,
+      "callsite": false,
+      "deny": false,
+      "lineage_depth": null,
+      "op": false,
+      "phase": "parent_capability_payload_sent"
+    },
+    {
+      "actor": "child",
+      "backtrace": false,
+      "backtrace_error": false,
+      "callsite": false,
+      "deny": false,
+      "lineage_depth": null,
+      "op": false,
+      "phase": "child_sentinel"
+    },
+    {
+      "actor": "child",
+      "backtrace": false,
+      "backtrace_error": false,
+      "callsite": false,
+      "deny": false,
+      "lineage_depth": 1,
+      "op": false,
+      "phase": "child_start"
+    },
+    {
+      "actor": "child",
+      "backtrace": false,
+      "backtrace_error": false,
+      "callsite": false,
+      "deny": false,
+      "lineage_depth": 1,
+      "op": false,
+      "phase": "child_ready"
+    },
+    {
+      "actor": "child",
+      "backtrace": false,
+      "backtrace_error": false,
+      "callsite": false,
+      "deny": false,
+      "lineage_depth": 1,
+      "op": false,
+      "phase": "child_acquire_attempt"
+    },
+    {
+      "actor": "child",
+      "backtrace": false,
+      "backtrace_error": false,
+      "callsite": false,
+      "deny": false,
+      "lineage_depth": 1,
+      "op": false,
+      "phase": "child_use_attempt"
+    },
+    {
+      "actor": "child",
+      "backtrace": false,
+      "backtrace_error": false,
+      "callsite": false,
+      "deny": false,
+      "lineage_depth": 1,
+      "op": false,
+      "phase": "child_capability_result"
+    },
+    {
+      "actor": "child",
+      "backtrace": false,
+      "backtrace_error": false,
+      "callsite": false,
+      "deny": false,
+      "lineage_depth": 1,
+      "op": false,
+      "phase": "child_done"
+    },
+    {
+      "actor": "parent",
+      "backtrace": false,
+      "backtrace_error": false,
+      "callsite": false,
+      "deny": false,
+      "lineage_depth": null,
+      "op": false,
+      "phase": "child_exited"
+    }
+  ],
+  "inherit_contract_ok": true,
+  "normalized_outcome": "ok",
+  "outcome_summary": "bookmark: acquire=ok use=ok",
+  "protocol_error": null,
+  "protocol_version": 1,
+  "sandbox_log_capture_status": "not_requested",
+  "scenario": "bookmark_ferry",
+  "schema_version": 3
+}

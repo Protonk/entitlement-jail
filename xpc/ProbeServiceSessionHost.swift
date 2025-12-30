@@ -259,6 +259,11 @@ private func resolveWaitConfig(_ spec: WaitSpec) -> Result<WaitConfig, WaitSpecE
 }
 
 final class ProbeServiceSessionHost: NSObject, ProbeServiceProtocol {
+    // Durable sessions are required to test extension liveness across multiple operations; otherwise the probe degenerates to
+    // fresh-start semantics (new process, new state, no continuity).
+    //
+    // This is why the system supports multi-phase transcripts: “before/after” checks (open/consume/update, etc.) are meaningful
+    // only when they occur in the same process context.
     private struct SessionState {
         var token: String
         var planId: String?
@@ -284,6 +289,8 @@ final class ProbeServiceSessionHost: NSObject, ProbeServiceProtocol {
         correlationId: String?,
         sessionToken: String?,
         waitConfig: WaitConfig?,
+        childPid: Int? = nil,
+        runId: String? = nil,
         triggerBytes: Int? = nil,
         probeId: String? = nil,
         probeArgv: [String]? = nil,
@@ -301,6 +308,8 @@ final class ProbeServiceSessionHost: NSObject, ProbeServiceProtocol {
             correlation_id: correlationId,
             session_token: sessionToken,
             pid: pid,
+            child_pid: childPid,
+            run_id: runId,
             service_bundle_id: bundleId,
             service_name: serviceName,
             wait_mode: waitConfig?.mode,
@@ -603,7 +612,19 @@ final class ProbeServiceSessionHost: NSObject, ProbeServiceProtocol {
             probeReq.correlation_id = current.correlationId
         }
 
-        var response = InProcessProbeCore.run(probeReq)
+        let probeEventSink: InProcessProbeCore.ProbeEventSink = { event, childPid, runId, message in
+            self.emitSessionEvent(
+                event: event,
+                planId: current.planId,
+                correlationId: current.correlationId,
+                sessionToken: current.token,
+                waitConfig: current.waitConfig,
+                childPid: childPid,
+                runId: runId,
+                message: message
+            )
+        }
+        var response = InProcessProbeCore.run(probeReq, eventSink: probeEventSink)
         var details = response.details ?? [:]
         details["session_token"] = current.token
         response.details = details

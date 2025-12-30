@@ -1,0 +1,42 @@
+{
+  "plan_id": "tri-run-sandbox-extension-semantics",
+  "probes": [
+    {
+      "row_id": "sandbox_extension_update_file_rename_delta",
+      "probe_id": "sandbox_extension",
+      "inputs": {
+        "kind": "probe",
+        "argv": [
+          "--op",
+          "update_file_rename_delta",
+          "--class",
+          "com.apple.app-sandbox.read",
+          "--path",
+          "{{EJ_HARNESS_RUN_DIR}}/ej_update_old.txt",
+          "--new-path",
+          "{{EJ_HARNESS_RUN_DIR}}/ej_update_new.txt",
+          "--wait-for-external-rename",
+          "--wait-timeout-ms",
+          "5000",
+          "--wait-interval-ms",
+          "25"
+        ]
+      },
+      "expected_side_effects": [
+        "host-coordinated rename under /tmp/entitlement-jail-harness"
+      ],
+      "capture_spec": { "capture_sandbox_log": false },
+      "host_actions": {
+        "actions": [
+          {
+            "kind": "rename",
+            "from": "{{EJ_HARNESS_RUN_DIR}}/ej_update_old.txt",
+            "to": "{{EJ_HARNESS_RUN_DIR}}/ej_update_new.txt",
+            "delay_ms": 500
+          }
+        ]
+      }
+    }
+  ]
+}
+

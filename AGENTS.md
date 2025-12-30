@@ -18,6 +18,7 @@ Pick the thing that’s failing:
 
 - **Build/sign/packaging failure** → `build.sh`, then `SIGNING.md`, then `tests/run.sh --suite preflight`
 - **XPC service won’t launch / replies malformed** → `xpc/services/*/main.swift`, `xpc/ProbeAPI.swift`, `xpc/InProcessProbeCore.swift`
+- **`inherit_child` protocol/witness/fixtures failing** → `xpc/ProbeAPI.swift` (`InheritChildProtocol`, witness types), `xpc/child/main.swift`, `xpc/InProcessProbeCore.swift` (scenario catalog + matrix), `tests/suites/smoke/xpc_app_smoke.sh`, `tests/fixtures/inherit_child/`
 - **JSON output changed / tests flaky** → `runner/src/json_contract.rs` (envelope + key ordering), `runner/tests/cli_integration.rs`, `tests/suites/smoke/*.sh`
 - **Profiles/risk signals look wrong** → `tests/build-evidence.py` (generates `profiles.json` and risk metadata)
 
@@ -38,8 +39,12 @@ The app bundle is a *layout contract*:
 - `EntitlementJail.app/Contents/MacOS/entitlement-jail` (Rust CLI launcher)
 - `EntitlementJail.app/Contents/MacOS/xpc-probe-client` (Swift; NSXPCConnection wrapper)
 - `EntitlementJail.app/Contents/MacOS/xpc-quarantine-client` (Swift; QuarantineLab wrapper)
+- `EntitlementJail.app/Contents/MacOS/ej-inherit-child` (Swift; paired-process child helper)
+- `EntitlementJail.app/Contents/MacOS/ej-inherit-child-bad` (Swift; intentionally mis-entitled abort canary)
 - `EntitlementJail.app/Contents/MacOS/sandbox-log-observer` (Rust observer helper)
 - `EntitlementJail.app/Contents/XPCServices/*.xpc` (Swift services; entitlement variable)
+- `EntitlementJail.app/Contents/XPCServices/ProbeService_*/Contents/MacOS/ej-inherit-child` (helper copy used by `inherit_child`)
+- `EntitlementJail.app/Contents/XPCServices/ProbeService_*/Contents/MacOS/ej-inherit-child-bad` (helper copy used by `inherit_bad_entitlements`)
 - `EntitlementJail.app/Contents/Resources/Evidence/*` (generated manifests: hashes, profiles, symbols)
 
 If you change names/paths here, expect downstream breakage (tests, docs, evidence verification).
@@ -90,6 +95,34 @@ Key build facts worth knowing before you touch anything:
 - Services and clients pass JSON bytes (`Data`) rather than rich XPC objects.
   - If you evolve these types, update both sides together, bump `schema_version` when the JSON contract changes, and delete old protocol paths (no long-lived shims).
 - The Rust launcher does not speak NSXPC directly; `entitlement-jail xpc {run,session}` and `quarantine-lab` shell out to the embedded Swift clients under `Contents/MacOS/`.
+
+### Probe witness semantics are delta-based (not “rc==0”)
+
+- Durable sessions + multi-phase transcripts exist so before/after checks occur in the same process context; otherwise “extension liveness” degenerates to fresh-start semantics.
+- For access-maintenance probes, success is “access delta observed”, not “rc==0”; witnesses record per-phase action + outcome plus post-call access checks (for example `*_changed_access`).
+- Rename/move semantics harnesses gate on uncheatable premises (inode-preserving, same device, destination non-existent) and persist full stat snapshots + wait/poll observations so host choreography is reproducible.
+- Normalized outcomes keep premise failure vs sandbox deny vs harness failure vs expected abort canary distinct.
+- Sandbox log capture records tri-state status (“not requested / requested unavailable / captured”) so absence of logs is interpretable.
+
+### `inherit_child` is a frozen inspection substrate
+
+- `inherit_child` is a two-bus protocol:
+  - **event bus**: JSONL events + sentinel + byte payloads (bookmark ferry)
+  - **rights bus**: `SCM_RIGHTS` FD passing (file/dir/socket ferries)
+  - Never pass FDs over the event bus.
+- The trace uses the actual socketpair FDs (no hardcoded fd numbers); an ultra-early sentinel records the event/right FD identities.
+- A run with no child-emitted events is diagnostic (child died before writing), not a sandbox deny.
+- Raw `write(2)` loops are used (not fragile `FileHandle` paths) so instrumentation failures don’t masquerade as sandbox outcomes.
+- Protocol version/namespace/cap-id validation turns mismatches into explicit `child_protocol_violation`/`protocol_error` outcomes, not undefined behavior.
+- Parent-side lifecycle discipline (writer open until reader finishes) prevents deadlocks/spurious truncation; start-suspended spawn + stop markers make stop-on-entry/deny race-free; callsite ids/backtraces localize denies.
+- Protocol constants and witness schema are a contract surface in `xpc/ProbeAPI.swift` (`InheritChildProtocol`, `InheritChildWitness`).
+  - If you change framing, bump the protocol version and update both parent + child together.
+- Scenario names are part of the public probe contract (smoke + fixtures depend on them).
+  - The catalog lives in `xpc/InProcessProbeCore.swift` (`inheritChildScenarioCatalog`).
+- `inherit_bad_entitlements` is a deliberate regression tripwire:
+  - `ej-inherit-child` must be **app-sandbox + inherit only**.
+  - `ej-inherit-child-bad` intentionally violates the inheritance contract so the OS aborts it.
+  - Build-time guardrails in `tests/build-evidence.py` verify both helpers’ entitlements across app-level and per-service embedded copies (including injectable twins).
 
 ### JSON envelopes are stable and key-sorted
 

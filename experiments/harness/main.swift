@@ -14,6 +14,7 @@ struct ProbeRow: Codable {
     var inputs: ProbeInputs
     var expected_side_effects: [String]
     var capture_spec: CaptureSpec
+    var host_actions: HostActions?
 }
 
 struct ProbeInputs: Codable {
@@ -24,6 +25,17 @@ struct ProbeInputs: Codable {
 
 struct CaptureSpec: Codable {
     var capture_sandbox_log: Bool
+}
+
+struct HostActions: Codable {
+    var actions: [HostAction]
+}
+
+struct HostAction: Codable {
+    var kind: String
+    var from: String?
+    var to: String?
+    var delay_ms: Int?
 }
 
 struct EntitlementLattice: Codable {
@@ -148,6 +160,7 @@ private func printUsage() {
           - Baseline/policy run the substrate (unsandboxed vs `sandbox-exec`).
           - Entitlement runs use `entitlement-jail xpc run` / `quarantine-lab` against XPC targets.
           - Rows are never dropped: missing services become explicit service_refusal results.
+          - Probe rows may include `host_actions` (e.g. a host-side rename) and use `{{EJ_HARNESS_RUN_DIR}}` for per-run paths.
         """,
         stderr
     )
@@ -249,14 +262,17 @@ for probe in plan.probes {
     )
 
     let baselineDir = outDir.appendingPathComponent(safePathComponent(rowId)).appendingPathComponent("baseline", isDirectory: true)
-    let baselineResult = try runAndNormalize(
-        label: "baseline",
-        outDir: outDir,
-        runDir: baselineDir,
-        cmd: baselineCmd,
-        captureSandboxLog: probe.capture_spec.capture_sandbox_log,
-        sandboxLogHint: baselineCmd.logHint
-    )
+	    let baselineResult = try runAndNormalize(
+	        label: "baseline",
+	        outDir: outDir,
+	        runDir: baselineDir,
+	        cmd: baselineCmd,
+	        hostActions: probe.host_actions,
+	        rowId: rowId,
+	        nodeId: nil,
+	        captureSandboxLog: probe.capture_spec.capture_sandbox_log,
+	        sandboxLogHint: baselineCmd.logHint
+	    )
 
     for node in lattice.nodes {
         let policyProfileRef = policyProfileRefs[node.node_id] ?? resolvePath(node.policy_profile).path
@@ -282,26 +298,32 @@ for probe in plan.probes {
         let policyDir = nodeDir.appendingPathComponent("policy", isDirectory: true)
         let entitlementDir = nodeDir.appendingPathComponent("entitlement", isDirectory: true)
 
-        let policyResult = try runAndNormalize(
-            label: "policy",
-            outDir: outDir,
-            runDir: policyDir,
-            cmd: policyCmd,
-            captureSandboxLog: probe.capture_spec.capture_sandbox_log,
-            sandboxLogHint: policyCmd.logHint
-        )
+	        let policyResult = try runAndNormalize(
+	            label: "policy",
+	            outDir: outDir,
+	            runDir: policyDir,
+	            cmd: policyCmd,
+	            hostActions: probe.host_actions,
+	            rowId: rowId,
+	            nodeId: node.node_id,
+	            captureSandboxLog: probe.capture_spec.capture_sandbox_log,
+	            sandboxLogHint: policyCmd.logHint
+	        )
 
         let entitlementResult: ProbeResult
-        if let entitlementCmd {
-            entitlementResult = try runAndNormalize(
-                label: "entitlement",
-                outDir: outDir,
-                runDir: entitlementDir,
-                cmd: entitlementCmd,
-                captureSandboxLog: probe.capture_spec.capture_sandbox_log,
-                sandboxLogHint: entitlementCmd.logHint
-            )
-        } else {
+	        if let entitlementCmd {
+	            entitlementResult = try runAndNormalize(
+	                label: "entitlement",
+	                outDir: outDir,
+	                runDir: entitlementDir,
+	                cmd: entitlementCmd,
+	                hostActions: probe.host_actions,
+	                rowId: rowId,
+	                nodeId: node.node_id,
+	                captureSandboxLog: probe.capture_spec.capture_sandbox_log,
+	                sandboxLogHint: entitlementCmd.logHint
+	            )
+	        } else {
             try FileManager.default.createDirectory(at: entitlementDir, withIntermediateDirectories: true, attributes: nil)
             entitlementResult = syntheticServiceMissingResult(
                 outDir: outDir,
@@ -437,17 +459,65 @@ private func runAndNormalize(
     outDir: URL,
     runDir: URL,
     cmd: CommandSpec,
+    hostActions: HostActions?,
+    rowId: String,
+    nodeId: String?,
     captureSandboxLog: Bool,
     sandboxLogHint: SandboxLogHint?
 ) throws -> ProbeResult {
-    try FileManager.default.createDirectory(at: runDir, withIntermediateDirectories: true, attributes: nil)
+	try FileManager.default.createDirectory(at: runDir, withIntermediateDirectories: true, attributes: nil)
 
-    let stdoutURL = runDir.appendingPathComponent("stdout.txt")
-    let stderrURL = runDir.appendingPathComponent("stderr.txt")
+	let stdoutURL = runDir.appendingPathComponent("stdout.txt")
+	let stderrURL = runDir.appendingPathComponent("stderr.txt")
 
-    let run = runProcess(cmd.argv)
-    try writeData(run.stdout, to: stdoutURL)
-    try writeData(run.stderr, to: stderrURL)
+	var resolvedArgv = cmd.argv
+	var hostActionsLog: String? = nil
+	var hostActionsCleanupDir: URL? = nil
+
+	let needsHarnessDir: Bool = {
+	    if argvContainsTemplate(resolvedArgv, key: "EJ_HARNESS_RUN_DIR") {
+	        return true
+	    }
+	    if let hostActions, hostActionsContainsTemplate(hostActions, key: "EJ_HARNESS_RUN_DIR") {
+	        return true
+	    }
+	    if let hostActions, !hostActions.actions.isEmpty {
+	        return true
+	    }
+	    return false
+	}()
+
+	var vars: [String: String] = [:]
+	if needsHarnessDir {
+	    let harnessDir = try makeHostActionHarnessDir(rowId: rowId, label: label, nodeId: nodeId)
+	    hostActionsCleanupDir = harnessDir
+	    vars["EJ_HARNESS_RUN_DIR"] = harnessDir.path
+	    resolvedArgv = substituteTemplate(argv: resolvedArgv, vars: vars)
+	}
+
+	let run: ProcessRun
+	if let hostActions, !hostActions.actions.isEmpty {
+	    let resolvedActions = try resolveHostActions(hostActions, vars: vars)
+	    let (processRun, log) = runProcessWithHostActions(resolvedArgv, hostActions: resolvedActions)
+	    run = processRun
+	    hostActionsLog = log
+	} else {
+	    run = runProcess(resolvedArgv)
+	}
+
+	if let hostActionsLog {
+	    let url = runDir.appendingPathComponent("host-actions.txt")
+	    try? writeString(hostActionsLog, to: url)
+	}
+
+	if let hostActionsCleanupDir {
+	    let keep = ProcessInfo.processInfo.environment["EJ_HARNESS_KEEP_ACTION_ARTIFACTS"] == "1"
+	    if !keep {
+	        try? FileManager.default.removeItem(at: hostActionsCleanupDir)
+	    }
+	}
+	try writeData(run.stdout, to: stdoutURL)
+	try writeData(run.stderr, to: stderrURL)
 
     var sandboxLogRef: String?
     var denyOp: String?
@@ -872,12 +942,170 @@ private func deltaFields(from a: ProbeResult, to b: ProbeResult) -> [String] {
 
 // MARK: - Process execution
 
+private enum ResolvedHostAction {
+    case rename(from: String, to: String, delayMs: Int)
+}
+
+private func argvContainsTemplate(_ argv: [String], key: String) -> Bool {
+    argv.contains { $0.contains("{{\(key)}}") }
+}
+
+private func hostActionsContainsTemplate(_ hostActions: HostActions, key: String) -> Bool {
+    for action in hostActions.actions {
+        if (action.from ?? "").contains("{{\(key)}}") { return true }
+        if (action.to ?? "").contains("{{\(key)}}") { return true }
+    }
+    return false
+}
+
+private func substituteTemplate(argv: [String], vars: [String: String]) -> [String] {
+    argv.map { substituteTemplate($0, vars: vars) }
+}
+
+private func substituteTemplate(_ s: String, vars: [String: String]) -> String {
+    var out = s
+    for (k, v) in vars {
+        out = out.replacingOccurrences(of: "{{\(k)}}", with: v)
+    }
+    return out
+}
+
+private func isSafeHostActionPath(_ path: String) -> Bool {
+    if path == "/tmp/entitlement-jail-harness" { return true }
+    if path.hasPrefix("/tmp/entitlement-jail-harness/") { return true }
+    if path == "/private/tmp/entitlement-jail-harness" { return true }
+    if path.hasPrefix("/private/tmp/entitlement-jail-harness/") { return true }
+    return false
+}
+
+private func makeHostActionHarnessDir(rowId: String, label: String, nodeId: String?) throws -> URL {
+    let root = URL(fileURLWithPath: "/tmp/entitlement-jail-harness/ej-harness", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: nil)
+
+    let rowComponent = safePathComponent(rowId)
+    let labelComponent = safePathComponent(label)
+    let nodeComponent = nodeId.map(safePathComponent) ?? "no-node"
+    let uuid = UUID().uuidString
+
+    let dir = root
+        .appendingPathComponent(rowComponent, isDirectory: true)
+        .appendingPathComponent(labelComponent, isDirectory: true)
+        .appendingPathComponent(nodeComponent, isDirectory: true)
+        .appendingPathComponent(uuid, isDirectory: true)
+
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: nil)
+    return dir
+}
+
+private func resolveHostActions(_ hostActions: HostActions, vars: [String: String]) throws -> [ResolvedHostAction] {
+    var out: [ResolvedHostAction] = []
+    for (idx, action) in hostActions.actions.enumerated() {
+        switch action.kind {
+        case "rename":
+            guard let fromRaw = action.from, let toRaw = action.to else {
+                throw HarnessError("host_actions.actions[\(idx)] kind=rename requires from/to")
+            }
+            let from = substituteTemplate(fromRaw, vars: vars)
+            let to = substituteTemplate(toRaw, vars: vars)
+            if !from.hasPrefix("/") || !to.hasPrefix("/") {
+                throw HarnessError("host_actions.actions[\(idx)] rename paths must be absolute")
+            }
+            if !isSafeHostActionPath(from) || !isSafeHostActionPath(to) {
+                throw HarnessError("host_actions.actions[\(idx)] rename paths must be under /tmp/entitlement-jail-harness")
+            }
+            let delayMs = max(0, min(300_000, action.delay_ms ?? 1000))
+            out.append(.rename(from: from, to: to, delayMs: delayMs))
+        default:
+            throw HarnessError("unknown host action kind: \(action.kind)")
+        }
+    }
+    return out
+}
+
 struct ProcessRun {
     var rc: Int
     var stdout: Data
     var stderr: Data
     var started: Date
     var ended: Date
+}
+
+private func runProcessWithHostActions(_ argv: [String], hostActions: [ResolvedHostAction]) -> (ProcessRun, String) {
+    var logLines: [String] = []
+
+    for (idx, action) in hostActions.enumerated() {
+        switch action {
+        case .rename(let from, let to, _):
+            let fromDir = URL(fileURLWithPath: from, isDirectory: false).deletingLastPathComponent()
+            let toDir = URL(fileURLWithPath: to, isDirectory: false).deletingLastPathComponent()
+            try? FileManager.default.createDirectory(at: fromDir, withIntermediateDirectories: true, attributes: nil)
+            try? FileManager.default.createDirectory(at: toDir, withIntermediateDirectories: true, attributes: nil)
+            try? FileManager.default.removeItem(atPath: to)
+            try? writeString("ej-harness host action \(idx)\n", to: URL(fileURLWithPath: from))
+            logLines.append("pre_rename[\(idx)]: prepared from=\(from) to=\(to)")
+        }
+    }
+
+    let started = Date()
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: argv[0])
+    process.arguments = Array(argv.dropFirst())
+
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+    process.standardOutput = stdoutPipe
+    process.standardError = stderrPipe
+
+    do {
+        try process.run()
+    } catch {
+        let ended = Date()
+        let log = (logLines + ["spawn_failed: \(error)"]).joined(separator: "\n") + "\n"
+        return (
+            ProcessRun(
+                rc: 127,
+                stdout: Data(),
+                stderr: Data("spawn failed: \(error)\n".utf8),
+                started: started,
+                ended: ended
+            ),
+            log
+        )
+    }
+
+    for (idx, action) in hostActions.enumerated() {
+        switch action {
+        case .rename(let from, let to, let delayMs):
+            if delayMs > 0 {
+                usleep(useconds_t(delayMs * 1000))
+            }
+            do {
+                try FileManager.default.moveItem(atPath: from, toPath: to)
+                logLines.append("rename[\(idx)]: ok from=\(from) to=\(to) delay_ms=\(delayMs)")
+            } catch {
+                logLines.append("rename[\(idx)]: failed from=\(from) to=\(to) delay_ms=\(delayMs) error=\(error)")
+            }
+        }
+    }
+
+    process.waitUntilExit()
+    let ended = Date()
+
+    let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+    let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+
+    let log = logLines.joined(separator: "\n") + "\n"
+    return (
+        ProcessRun(
+            rc: Int(process.terminationStatus),
+            stdout: stdoutData,
+            stderr: stderrData,
+            started: started,
+            ended: ended
+        ),
+        log
+    )
 }
 
 private func runProcess(_ argv: [String]) -> ProcessRun {

@@ -18,6 +18,7 @@ ZIP_NAME="${APP_NAME}.zip"
 RUNNER_MANIFEST="runner/Cargo.toml"
 ENTITLEMENTS_PLIST="EntitlementJail.entitlements"
 INHERIT_ENTITLEMENTS_PLIST="EntitlementJail.inherit.entitlements"
+BAD_INHERIT_ENTITLEMENTS_PLIST="EntitlementJail.inherit.bad.entitlements"
 INSPECTOR_ENTITLEMENTS_PLIST="Inspector.entitlements"
 INFO_PLIST_TEMPLATE="Info.plist"
 
@@ -34,6 +35,7 @@ XPC_SESSION_HOST_FILE="${XPC_ROOT}/ProbeServiceSessionHost.swift"
 XPC_QUARANTINE_SERVICE_HOST_FILE="${XPC_ROOT}/QuarantineLabServiceHost.swift"
 XPC_CLIENT_MAIN="${XPC_ROOT}/client/main.swift"
 XPC_QUARANTINE_CLIENT_MAIN="${XPC_ROOT}/quarantine-client/main.swift"
+XPC_INHERIT_CHILD_MAIN="${XPC_ROOT}/child/main.swift"
 XPC_SERVICES_DIR="${XPC_ROOT}/services"
 XPC_ENTITLEMENTS_OVERLAY_DIR="${XPC_ROOT}/entitlements_overlays"
 INJECTABLE_OVERLAY_PLIST="${XPC_ENTITLEMENTS_OVERLAY_DIR}/injectable.plist"
@@ -241,7 +243,7 @@ if [[ "${BUILD_XPC}" == "1" ]]; then
     exit 2
   fi
   SWIFTC=(/usr/bin/xcrun --sdk macosx swiftc)
-  if [[ ! -f "${XPC_API_FILE}" ]] || [[ ! -f "${XPC_PROBE_CORE_FILE}" ]] || [[ ! -f "${XPC_SESSION_HOST_FILE}" ]] || [[ ! -f "${XPC_QUARANTINE_SERVICE_HOST_FILE}" ]] || [[ ! -f "${XPC_CLIENT_MAIN}" ]]; then
+  if [[ ! -f "${XPC_API_FILE}" ]] || [[ ! -f "${XPC_PROBE_CORE_FILE}" ]] || [[ ! -f "${XPC_SESSION_HOST_FILE}" ]] || [[ ! -f "${XPC_QUARANTINE_SERVICE_HOST_FILE}" ]] || [[ ! -f "${XPC_CLIENT_MAIN}" ]] || [[ ! -f "${XPC_INHERIT_CHILD_MAIN}" ]]; then
     echo "ERROR: BUILD_XPC=1 but XPC sources are missing under ${XPC_ROOT}/" 1>&2
     exit 2
   fi
@@ -260,6 +262,13 @@ if [[ "${BUILD_XPC}" == "1" ]]; then
     "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${APP_BUNDLE}/Contents/MacOS/xpc-quarantine-client" "${XPC_API_FILE}" "${XPC_QUARANTINE_CLIENT_MAIN}"
     chmod +x "${APP_BUNDLE}/Contents/MacOS/xpc-quarantine-client"
   fi
+
+  echo "==> Building inherit-child helper"
+  "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${APP_BUNDLE}/Contents/MacOS/ej-inherit-child" "${XPC_API_FILE}" "${XPC_INHERIT_CHILD_MAIN}"
+  chmod +x "${APP_BUNDLE}/Contents/MacOS/ej-inherit-child"
+  echo "==> Building inherit-child helper (bad entitlements)"
+  "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${APP_BUNDLE}/Contents/MacOS/ej-inherit-child-bad" "${XPC_API_FILE}" "${XPC_INHERIT_CHILD_MAIN}"
+  chmod +x "${APP_BUNDLE}/Contents/MacOS/ej-inherit-child-bad"
 
   if [[ -d "${XPC_SERVICES_DIR}" ]]; then
     echo "==> Building embedded XPC services"
@@ -322,6 +331,10 @@ if [[ ! -f "${INHERIT_ENTITLEMENTS_PLIST}" ]]; then
   echo "ERROR: missing inherit entitlements plist: ${INHERIT_ENTITLEMENTS_PLIST}" 1>&2
   exit 2
 fi
+if [[ ! -f "${BAD_INHERIT_ENTITLEMENTS_PLIST}" ]]; then
+  echo "ERROR: missing bad inherit entitlements plist: ${BAD_INHERIT_ENTITLEMENTS_PLIST}" 1>&2
+  exit 2
+fi
 if [[ ! -f "${INSPECTOR_ENTITLEMENTS_PLIST}" ]]; then
   echo "ERROR: missing inspector entitlements plist: ${INSPECTOR_ENTITLEMENTS_PLIST}" 1>&2
   exit 2
@@ -329,6 +342,7 @@ fi
 
 sign_macho_inherit() {
   local target="$1"
+  local identifier="${2:-}"
   if [[ ! -e "${target}" ]]; then
     return 0
   fi
@@ -338,6 +352,25 @@ sign_macho_inherit() {
       --options runtime \
       --timestamp \
       --entitlements "${INHERIT_ENTITLEMENTS_PLIST}" \
+      ${identifier:+--identifier "${identifier}"} \
+      -s "${IDENTITY}" \
+      "${target}"
+  fi
+}
+
+sign_macho_inherit_bad() {
+  local target="$1"
+  local identifier="${2:-}"
+  if [[ ! -e "${target}" ]]; then
+    return 0
+  fi
+  if /usr/bin/file -b "${target}" | /usr/bin/grep -q "Mach-O"; then
+    codesign \
+      --force \
+      --options runtime \
+      --timestamp \
+      --entitlements "${BAD_INHERIT_ENTITLEMENTS_PLIST}" \
+      ${identifier:+--identifier "${identifier}"} \
       -s "${IDENTITY}" \
       "${target}"
   fi
@@ -386,6 +419,8 @@ echo "==> Codesigning embedded MacOS tools (plain; unsandboxed host-side)"
 sign_macho_plain "${APP_BUNDLE}/Contents/MacOS/xpc-probe-client"
 sign_macho_plain "${APP_BUNDLE}/Contents/MacOS/xpc-quarantine-client"
 sign_macho_plain "${APP_BUNDLE}/Contents/MacOS/sandbox-log-observer"
+sign_macho_inherit "${APP_BUNDLE}/Contents/MacOS/ej-inherit-child"
+sign_macho_inherit_bad "${APP_BUNDLE}/Contents/MacOS/ej-inherit-child-bad"
 
 echo "==> Codesigning embedded XPC services"
 if [[ "${BUILD_XPC}" == "1" ]] && [[ -d "${XPC_SERVICES_DIR}" ]]; then
@@ -410,6 +445,34 @@ if [[ "${BUILD_XPC}" == "1" ]] && [[ -d "${XPC_SERVICES_DIR}" ]]; then
     if [[ ! -d "${twin_bundle}" ]]; then
       echo "ERROR: expected injectable XPC service bundle at ${twin_bundle}" 1>&2
       exit 2
+    fi
+
+    if [[ "${svc_name}" == ProbeService_* ]]; then
+      # Embed the inherit-child helper inside the service bundle so the sandbox can exec it.
+      inherit_child_src="${APP_BUNDLE}/Contents/MacOS/ej-inherit-child"
+      inherit_child_bad_src="${APP_BUNDLE}/Contents/MacOS/ej-inherit-child-bad"
+      if [[ ! -x "${inherit_child_src}" ]]; then
+        echo "ERROR: missing inherit child helper at ${inherit_child_src}" 1>&2
+        exit 2
+      fi
+      if [[ ! -x "${inherit_child_bad_src}" ]]; then
+        echo "ERROR: missing bad inherit child helper at ${inherit_child_bad_src}" 1>&2
+        exit 2
+      fi
+      inherit_child_dst="${svc_bundle}/Contents/MacOS/ej-inherit-child"
+      inherit_child_twin_dst="${twin_bundle}/Contents/MacOS/ej-inherit-child"
+      inherit_child_bad_dst="${svc_bundle}/Contents/MacOS/ej-inherit-child-bad"
+      inherit_child_bad_twin_dst="${twin_bundle}/Contents/MacOS/ej-inherit-child-bad"
+      cp "${inherit_child_src}" "${inherit_child_dst}"
+      cp "${inherit_child_src}" "${inherit_child_twin_dst}"
+      cp "${inherit_child_bad_src}" "${inherit_child_bad_dst}"
+      cp "${inherit_child_bad_src}" "${inherit_child_bad_twin_dst}"
+      svc_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${svc_bundle}/Contents/Info.plist" 2>/dev/null || true)"
+      twin_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${twin_bundle}/Contents/Info.plist" 2>/dev/null || true)"
+      sign_macho_inherit "${inherit_child_dst}" "${svc_bundle_id}"
+      sign_macho_inherit "${inherit_child_twin_dst}" "${twin_bundle_id}"
+      sign_macho_inherit_bad "${inherit_child_bad_dst}" "${svc_bundle_id}"
+      sign_macho_inherit_bad "${inherit_child_bad_twin_dst}" "${twin_bundle_id}"
     fi
 
     codesign \

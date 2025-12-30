@@ -62,7 +62,7 @@ public struct SessionOpenResponse: Codable {
     public var wait_path: String?
 
     public init(
-        schema_version: Int = 2,
+        schema_version: Int = 3,
         rc: Int,
         error: String? = nil,
         session_token: String? = nil,
@@ -132,6 +132,8 @@ public struct XpcSessionEventData: Codable {
     public var correlation_id: String?
     public var session_token: String?
     public var pid: Int?
+    public var child_pid: Int?
+    public var run_id: String?
     public var service_bundle_id: String?
     public var service_name: String?
     public var wait_mode: String?
@@ -147,6 +149,8 @@ public struct XpcSessionEventData: Codable {
         correlation_id: String? = nil,
         session_token: String? = nil,
         pid: Int? = nil,
+        child_pid: Int? = nil,
+        run_id: String? = nil,
         service_bundle_id: String? = nil,
         service_name: String? = nil,
         wait_mode: String? = nil,
@@ -161,6 +165,8 @@ public struct XpcSessionEventData: Codable {
         self.correlation_id = correlation_id
         self.session_token = session_token
         self.pid = pid
+        self.child_pid = child_pid
+        self.run_id = run_id
         self.service_bundle_id = service_bundle_id
         self.service_name = service_name
         self.wait_mode = wait_mode
@@ -231,6 +237,11 @@ public struct RunProbeRequest: Codable {
     }
 }
 
+// RunProbeResponse is a witness record for one probe invocation.
+//
+// - Action + outcome are first-class per phase (rc/errno and post-action observations), not just a final return code.
+// - Success is an observable policy transition (access delta), not “rc==0” (see sandbox_extension update_file_rename_delta).
+// - normalized_outcome distinguishes premise failures, sandbox denies, harness failures, and expected abort canaries.
 public struct RunProbeResponse: Codable {
     public var schema_version: Int
     public var plan_id: String?
@@ -252,6 +263,7 @@ public struct RunProbeResponse: Codable {
     public var errno: Int?
     public var error: String?
     public var details: [String: String]?
+    public var witness: InheritChildWitness?
     public var layer_attribution: LayerAttribution?
 
     public init(
@@ -275,6 +287,7 @@ public struct RunProbeResponse: Codable {
         errno: Int? = nil,
         error: String? = nil,
         details: [String: String]? = nil,
+        witness: InheritChildWitness? = nil,
         layer_attribution: LayerAttribution? = nil
     ) {
         self.schema_version = schema_version
@@ -297,7 +310,344 @@ public struct RunProbeResponse: Codable {
         self.errno = errno
         self.error = error
         self.details = details
+        self.witness = witness
         self.layer_attribution = layer_attribution
+    }
+}
+
+public enum InheritChildProtocol {
+    public static let version = 1
+    public static let capabilityNamespace = "inherit_child.cap.v1"
+    public static let sentinelPrefix = "EJ_CHILD_SENTINEL"
+    public static let eventPayloadPrefix = "EJ_CAP_PAYLOAD"
+    public static let sentinelKeyProtocolVersion = "protocol_version"
+    public static let sentinelKeyCapabilityNamespace = "cap_namespace"
+    public static let eventPayloadKeyProtocolVersion = "proto"
+    public static let eventPayloadKeyCapabilityNamespace = "cap_ns"
+    public static let eventPayloadKeyCapId = "cap_id"
+    public static let eventPayloadKeyCapType = "cap_type"
+    public static let eventPayloadKeyLength = "len"
+    // Event bus framing: JSONL events from child plus a sentinel line:
+    // "EJ_CHILD_SENTINEL ... protocol_version=<v> cap_namespace=<ns>\n".
+    // Parent->child payloads over the event bus are a header line:
+    // "EJ_CAP_PAYLOAD proto=<v> cap_ns=<ns> cap_id=<id> cap_type=<type> len=<n>\n"
+    // followed by <n> raw bytes.
+    // Rights bus header (SCM_RIGHTS payload) is four int32s: cap_id, meta0, meta1, meta2.
+    // meta0 is the protocol version; meta1/meta2 are reserved (0).
+}
+
+public enum InheritChildCapabilityId: Int32, Codable {
+    case fileFd = 1
+    case dirFd = 2
+    case socketFd = 3
+    case bookmark = 4
+}
+
+public struct InheritChildEvent: Codable {
+    public var actor: String
+    public var phase: String
+    public var run_id: String
+    public var pid: Int?
+    public var time_unix_ms: UInt64
+    public var monotonic_ns: UInt64?
+    public var callsite_id: String?
+    public var op: String?
+    public var backtrace: [String]?
+    public var backtrace_error: String?
+    public var lineage: InheritChildLineage?
+    public var details: [String: String]?
+    public var errno: Int?
+    public var rc: Int?
+
+    public init(
+        actor: String,
+        phase: String,
+        run_id: String,
+        pid: Int? = nil,
+        time_unix_ms: UInt64,
+        monotonic_ns: UInt64? = nil,
+        callsite_id: String? = nil,
+        op: String? = nil,
+        backtrace: [String]? = nil,
+        backtrace_error: String? = nil,
+        lineage: InheritChildLineage? = nil,
+        details: [String: String]? = nil,
+        errno: Int? = nil,
+        rc: Int? = nil
+    ) {
+        self.actor = actor
+        self.phase = phase
+        self.run_id = run_id
+        self.pid = pid
+        self.time_unix_ms = time_unix_ms
+        self.monotonic_ns = monotonic_ns
+        self.callsite_id = callsite_id
+        self.op = op
+        self.backtrace = backtrace
+        self.backtrace_error = backtrace_error
+        self.lineage = lineage
+        self.details = details
+        self.errno = errno
+        self.rc = rc
+    }
+}
+
+public struct InheritChildProtocolError: Codable {
+    public var kind: String
+    public var cap_id: String?
+    public var expected: String?
+    public var observed: String?
+    public var details: [String: String]?
+
+    public init(
+        kind: String,
+        cap_id: String? = nil,
+        expected: String? = nil,
+        observed: String? = nil,
+        details: [String: String]? = nil
+    ) {
+        self.kind = kind
+        self.cap_id = cap_id
+        self.expected = expected
+        self.observed = observed
+        self.details = details
+    }
+}
+
+public struct InheritChildLineage: Codable {
+    public var depth: Int
+    public var pid: Int
+    public var ppid: Int
+
+    public init(depth: Int, pid: Int, ppid: Int) {
+        self.depth = depth
+        self.pid = pid
+        self.ppid = ppid
+    }
+}
+
+public struct InheritChildCapabilityOpResult: Codable {
+    public var rc: Int?
+    public var errno: Int?
+
+    public init(rc: Int? = nil, errno: Int? = nil) {
+        self.rc = rc
+        self.errno = errno
+    }
+}
+
+public struct InheritChildBookmarkResult: Codable {
+    public var resolve_rc: Int?
+    public var resolve_error: String?
+    public var resolve_error_domain: String?
+    public var resolve_error_code: Int?
+    public var is_stale: Bool?
+    public var start_accessing: Bool?
+    public var access_rc: Int?
+    public var access_errno: Int?
+
+    public init(
+        resolve_rc: Int? = nil,
+        resolve_error: String? = nil,
+        resolve_error_domain: String? = nil,
+        resolve_error_code: Int? = nil,
+        is_stale: Bool? = nil,
+        start_accessing: Bool? = nil,
+        access_rc: Int? = nil,
+        access_errno: Int? = nil
+    ) {
+        self.resolve_rc = resolve_rc
+        self.resolve_error = resolve_error
+        self.resolve_error_domain = resolve_error_domain
+        self.resolve_error_code = resolve_error_code
+        self.is_stale = is_stale
+        self.start_accessing = start_accessing
+        self.access_rc = access_rc
+        self.access_errno = access_errno
+    }
+}
+
+public struct InheritChildCapabilityResult: Codable {
+    public var cap_id: String
+    public var cap_type: String
+    public var parent_acquire: InheritChildCapabilityOpResult?
+    public var child_acquire: InheritChildCapabilityOpResult?
+    public var child_use: InheritChildCapabilityOpResult?
+    public var bookmark: InheritChildBookmarkResult?
+    public var notes: String?
+
+    public init(
+        cap_id: String,
+        cap_type: String,
+        parent_acquire: InheritChildCapabilityOpResult? = nil,
+        child_acquire: InheritChildCapabilityOpResult? = nil,
+        child_use: InheritChildCapabilityOpResult? = nil,
+        bookmark: InheritChildBookmarkResult? = nil,
+        notes: String? = nil
+    ) {
+        self.cap_id = cap_id
+        self.cap_type = cap_type
+        self.parent_acquire = parent_acquire
+        self.child_acquire = child_acquire
+        self.child_use = child_use
+        self.bookmark = bookmark
+        self.notes = notes
+    }
+}
+
+public enum EntitlementValue: Codable, Equatable {
+    case bool(Bool)
+    case string(String)
+    case int(Int)
+    case double(Double)
+    case array([EntitlementValue])
+    case dict([String: EntitlementValue])
+    case null
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+            return
+        }
+        if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+            return
+        }
+        if let value = try? container.decode(Int.self) {
+            self = .int(value)
+            return
+        }
+        if let value = try? container.decode(Double.self) {
+            self = .double(value)
+            return
+        }
+        if let value = try? container.decode(String.self) {
+            self = .string(value)
+            return
+        }
+        if let value = try? container.decode([EntitlementValue].self) {
+            self = .array(value)
+            return
+        }
+        if let value = try? container.decode([String: EntitlementValue].self) {
+            self = .dict(value)
+            return
+        }
+        throw DecodingError.dataCorruptedError(in: container, debugDescription: "unsupported entitlement value")
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .bool(let value):
+            try container.encode(value)
+        case .string(let value):
+            try container.encode(value)
+        case .int(let value):
+            try container.encode(value)
+        case .double(let value):
+            try container.encode(value)
+        case .array(let value):
+            try container.encode(value)
+        case .dict(let value):
+            try container.encode(value)
+        case .null:
+            try container.encodeNil()
+        }
+    }
+}
+
+// InheritChildWitness is present even when the child never emits structured events.
+//
+// - Guardrail identity fields (bundle id, team id, entitlements, inherit_contract_ok) stay populated so early aborts remain diagnosable.
+// - sandbox_log_capture_status records tri-state semantics: not_requested / requested_unavailable / captured (absence of logs is interpretable).
+// - protocol_error is structured so protocol mismatches become explicit child_protocol_violation/protocol_error outcomes, not undefined behavior.
+public struct InheritChildWitness: Codable {
+    public var schema_version: Int
+    public var protocol_version: Int
+    public var capability_namespace: String
+    public var run_id: String
+    public var scenario: String
+    public var profile: String?
+    public var parent_pid: Int
+    public var child_pid: Int
+    public var child_exit_status: Int
+    public var child_event_fd: Int
+    public var child_rights_fd: Int
+    public var child_path: String
+    public var service_bundle_id: String
+    public var process_name: String
+    public var child_bundle_id: String
+    public var child_team_id: String
+    public var child_entitlements: [String: EntitlementValue]
+    public var inherit_contract_ok: Bool
+    public var capability_results: [InheritChildCapabilityResult]
+    public var stop_on_entry: Bool?
+    public var stop_on_deny: Bool?
+    public var events: [InheritChildEvent]
+    public var system_sandbox_reports: [String]?
+    public var sandbox_log_capture_status: String
+    public var sandbox_log_capture: [String: String]
+    public var protocol_error: InheritChildProtocolError?
+    public var outcome_summary: String?
+
+    public init(
+        schema_version: Int = 3,
+        protocol_version: Int = InheritChildProtocol.version,
+        capability_namespace: String = InheritChildProtocol.capabilityNamespace,
+        run_id: String,
+        scenario: String,
+        profile: String? = nil,
+        parent_pid: Int,
+        child_pid: Int = -1,
+        child_exit_status: Int = -1,
+        child_event_fd: Int = -1,
+        child_rights_fd: Int = -1,
+        child_path: String = "",
+        service_bundle_id: String = "",
+        process_name: String = "",
+        child_bundle_id: String = "",
+        child_team_id: String = "",
+        child_entitlements: [String: EntitlementValue] = [:],
+        inherit_contract_ok: Bool = false,
+        capability_results: [InheritChildCapabilityResult] = [],
+        stop_on_entry: Bool? = nil,
+        stop_on_deny: Bool? = nil,
+        events: [InheritChildEvent],
+        system_sandbox_reports: [String]? = nil,
+        sandbox_log_capture_status: String = "not_requested",
+        sandbox_log_capture: [String: String] = [:],
+        protocol_error: InheritChildProtocolError? = nil,
+        outcome_summary: String? = nil
+    ) {
+        self.schema_version = schema_version
+        self.protocol_version = protocol_version
+        self.capability_namespace = capability_namespace
+        self.run_id = run_id
+        self.scenario = scenario
+        self.profile = profile
+        self.parent_pid = parent_pid
+        self.child_pid = child_pid
+        self.child_exit_status = child_exit_status
+        self.child_event_fd = child_event_fd
+        self.child_rights_fd = child_rights_fd
+        self.child_path = child_path
+        self.service_bundle_id = service_bundle_id
+        self.process_name = process_name
+        self.child_bundle_id = child_bundle_id
+        self.child_team_id = child_team_id
+        self.child_entitlements = child_entitlements
+        self.inherit_contract_ok = inherit_contract_ok
+        self.capability_results = capability_results
+        self.stop_on_entry = stop_on_entry
+        self.stop_on_deny = stop_on_deny
+        self.events = events
+        self.system_sandbox_reports = system_sandbox_reports
+        self.sandbox_log_capture_status = sandbox_log_capture_status
+        self.sandbox_log_capture = sandbox_log_capture
+        self.protocol_error = protocol_error
+        self.outcome_summary = outcome_summary
     }
 }
 

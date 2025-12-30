@@ -1,0 +1,18 @@
+{
+  "access": {
+    "after_rename_new": null,
+    "after_rename_old": null,
+    "after_update_file_new": null,
+    "post_consume_new": null,
+    "post_consume_old": null,
+    "pre_consume_new": "deny",
+    "pre_consume_old": "deny"
+  },
+  "consume_handle_present": false,
+  "delta_new_open_transition": null,
+  "delta_old_open_transition": null,
+  "dest_preexisted": true,
+  "normalized_outcome": "dest_preexisted",
+  "rename_was_inode_preserving": null,
+  "update_by_fileid_candidates": []
+}

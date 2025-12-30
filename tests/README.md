@@ -53,6 +53,54 @@ All suites live under `tests/suites/` and are run by suite runners:
 - `tests/suites/smoke/run.sh`
   - Runs end-to-end smoke scripts under `tests/suites/smoke/*.sh` (XPC run, XPC session, quarantine lab, observer, experiments tri-run).
 
+### Smoke: `inherit_child` is a contract surface (not a one-off)
+
+The smoke suite treats `inherit_child` as an inspection substrate with frozen contracts:
+
+- scenario routing (`--scenario <name>` is a catalog, not bespoke code paths),
+- two transports (event bus vs rights bus),
+- strict witness invariants (fields always present even on failures),
+- self-diagnosing normalized outcomes (protocol violations vs sandbox denials vs expected abort canary),
+- and host-side sandbox log capture integration (`--capture-sandbox-logs` attaches an excerpt to the same JSON artifact).
+
+These expectations are asserted in `tests/suites/smoke/xpc_app_smoke.sh`.
+
+### Smoke: `update_file_rename_delta` asserts meaning (not just shape)
+
+`sandbox_extension --op update_file_rename_delta` is a semantics harness: tests assert that success is an **access delta observed**, not “`rc==0`”.
+
+- The happy path transcript is defended (pre-consume deny → post-consume allow on the old path; inode-preserving rename does not transfer access to the new path; `update_file(new_path)` restores access).
+- Candidate sweeps must include per-candidate post-call access checks and `*_changed_access` signals (avoid “errno hunting”).
+- Premise failures stop early with distinct normalized outcomes before additional side effects (for example `dest_preexisted`, and rename premise failures like cross-device/inode-changed/timeout/ambiguous when exercised).
+
+## Golden fixtures (`inherit_child`)
+
+`inherit_child` witness outputs are protected by scrubbed golden fixtures so schema drift and “silent loss of debuggability” regressions are obvious.
+
+- Fixtures live under `tests/fixtures/inherit_child/`.
+- The smoke test `tests/suites/smoke/inherit_child_fixtures.sh` runs representative scenarios, scrubs volatile fields (PIDs, timestamps, run ids), and compares the result to the fixture JSON.
+- Update fixtures by running the fixture test with `EJ_UPDATE_FIXTURES=1` (only do this when you intend a schema/content change).
+
+Example:
+
+```sh
+EJ_UPDATE_FIXTURES=1 ./tests/suites/smoke/inherit_child_fixtures.sh
+```
+
+Tools:
+
+- `tests/tools/scrub_inherit_child_witness.py` — produces stable scrub output and preserves contract-critical fields (protocol version/namespace, outcome_summary, capability_results shape, etc).
+- `tests/tools/compare_json_fixture.py` — compares scrubbed output to a fixture with a readable diff.
+- `tests/tools/validate_inherit_child_fixtures.py` — validates fixture schema/invariants; run from the unit suite.
+
+## Golden fixtures (`update_file_rename_delta`)
+
+`update_file_rename_delta` is also protected by scrubbed golden fixtures:
+
+- Fixtures live under `tests/fixtures/update_file_rename_delta/` (do not add commentary inside the JSON).
+- The smoke test `tests/suites/smoke/update_file_rename_delta_fixtures.sh` runs representative cases, scrubs volatile fields, and compares to fixtures.
+- The fixtures intentionally encode “easy-to-misread” facts: rename can silently change meaning, and `update_file_by_fileid` may return `rc==0` with no access delta (rc is not evidence).
+
 ## Output contract (`tests/out/`)
 
 Every invocation of `tests/run.sh` overwrites the prior run output so tooling can read stable paths:
@@ -83,7 +131,7 @@ If you want deterministic identifiers for tooling, set:
 
 All scripts should emit events via `tests/lib/testlib.sh`.
 
-Event schema (current):
+Event schema:
 
 - `schema_version: 1`
 - `kind: "test_event"`
@@ -149,3 +197,12 @@ For new shell tests:
 4. End with `test_pass` or `test_fail` (prefer `trap ... ERR` + `test_fail` for failures).
 
 Keep test ids stable. Treat them like API identifiers for dashboards and long-term trend analysis.
+
+## Build-time guardrails (signing/evidence)
+
+The build generates Evidence by inspecting **signed** binaries. `tests/build-evidence.py` is both:
+
+- the Evidence generator (`profiles.json`, `manifest.json`, `symbols.json`), and
+- an invariant checker for “this bundle is a coherent specimen”.
+
+Notable guardrail: the `inherit_child` helper entitlements are verified during the build (good helper must be “app-sandbox + inherit only”; the bad helper must carry the intended contaminating key). This makes signing/twinning regressions fail early, before runtime smoke tests.

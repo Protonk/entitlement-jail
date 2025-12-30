@@ -18,4 +18,7 @@ if [[ ${status} -ne 0 ]]; then
   test_fail "cargo test --bins failed" "{\"log_path\":\"${LOG_PATH}\"}"
 fi
 
+test_step "inherit_child_fixture_schema" "validate inherit_child fixture schema"
+/usr/bin/python3 "${ROOT_DIR}/tests/tools/validate_inherit_child_fixtures.py"
+
 test_pass "unit tests ok" "{\"log_path\":\"${LOG_PATH}\"}"

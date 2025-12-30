@@ -54,7 +54,7 @@ xcrun notarytool store-credentials "dev-profile" \
 
 ## What build.sh does
 
-Use this section to orient yourself and treat [build.sh](build.sh) as the authoritative reference.
+Use this section to orient yourself and treat [build.sh](build.sh) as the authoritative reference. For XPC layout details, see [xpc/README.md](xpc/README.md).
 
 1. **Validates `IDENTITY`**
    - Checks that the requested Developer ID Application identity exists in your keychain (`security find-identity -p codesigning`).
@@ -65,11 +65,15 @@ Use this section to orient yourself and treat [build.sh](build.sh) as the author
    - Embeds `sandbox-log-observer` at `Contents/MacOS/sandbox-log-observer`.
    - Optionally embeds additional helper payloads under `Contents/Helpers/` (see `EMBED_FENCERUNNER_PATH`, `EMBED_PROBES_DIR` in the script).
 4. **Builds Swift client helpers and XPC services** (when `BUILD_XPC=1`)
-   - Builds `xpc-probe-client` and `xpc-quarantine-client` into `Contents/MacOS/`.
+   - Builds `xpc-probe-client`, `xpc-quarantine-client`, `ej-inherit-child`, and `ej-inherit-child-bad` into `Contents/MacOS/`.
    - Enumerates `xpc/services/*` and builds each directory into `Contents/XPCServices/<ServiceName>.xpc`.
+   - Copies `ej-inherit-child` and `ej-inherit-child-bad` into each `ProbeService_*` bundle so sandboxed services can `posix_spawn` them.
 5. **Signs nested code (inside-out)**
    - Plain-signs embedded tools under `Contents/Helpers/` (Mach‑O only).
    - Plain-signs host-side tools under `Contents/MacOS/` (`xpc-probe-client`, `xpc-quarantine-client`, `sandbox-log-observer`).
+   - Signs `ej-inherit-child` (good) with inherit entitlements (`EntitlementJail.inherit.entitlements`).
+   - Signs `ej-inherit-child-bad` (canary) with intentionally contaminated inherit entitlements (`EntitlementJail.inherit.bad.entitlements`).
+   - Re-signs the per-service embedded copies with `--identifier <service bundle id>` so security-scoped bookmark behavior is stable and attributable to the service identity.
    - Signs each XPC service bundle with its own `xpc/services/<ServiceName>/Entitlements.plist`.
    - Generates and signs each `__injectable` twin with the merged base entitlements + `xpc/entitlements_overlays/injectable.plist`.
 6. **Generates Evidence**
@@ -97,13 +101,18 @@ The sandbox boundary lives in the embedded XPC services:
 - Each `EntitlementJail.app/Contents/XPCServices/<ServiceName>__injectable.xpc` is signed with the merged base entitlements + the fixed injectable overlay.
 - Changing entitlements means adding/changing a service under `xpc/services/` (not “run arbitrary code by path”).
 
+The `inherit_child` helpers are not part of the “entitlements as the variable” axis:
+
+- `ej-inherit-child` must be signed with **only** App Sandbox + `inherit` (no other `com.apple.security.*` keys).
+- `ej-inherit-child-bad` intentionally violates the inheritance contract so the OS predictably aborts it (used as a signing/twinning regression canary).
+
 ### Inside-out signing
 
-Notarization expects that *every* executable inside the bundle is correctly signed. The order matters:
+	Notarization expects that *every* executable inside the bundle is correctly signed. The order matters:
 
-1. Sign nested executables first (embedded helper tools, embedded Swift clients, each XPC service).
-2. Generate Evidence (which inspects the now-signed binaries).
-3. Sign the outer `EntitlementJail.app` last.
+	1. Sign nested executables first (embedded helper tools, embedded Swift clients, each XPC service).
+	2. Generate Evidence (which inspects the signed binaries).
+	3. Sign the outer `EntitlementJail.app` last.
 
 This is why `build.sh` signs nested code explicitly and only uses `--deep` during verification.
 
@@ -132,11 +141,19 @@ During the build, `tests/build-evidence.py` writes:
 
 Key property: `profiles.json` is derived from **actual signed entitlements** extracted via `codesign -d --entitlements` from the embedded binaries.
 
+This matters because the experiment knob is OS-enforced: each embedded XPC service is independently signed (base + `__injectable` variants are first-class), so “what the OS enforces” is exactly what Evidence inspects.
+
 Implications:
 
 - If you change any embedded executable, any XPC service entitlements, or re-sign parts of the bundle, Evidence can become stale.
 - Because Evidence lives *inside* the bundle, it is also covered by the outer app signature. Editing Evidence after signing invalidates the app signature.
 - Practical rule: if you need to “fix signing”, rebuild with `make build` so signatures and Evidence stay coherent.
+
+`tests/build-evidence.py` also enforces guardrails for `inherit_child`:
+
+- `ej-inherit-child` must have exactly the two inheritance entitlements (app-sandbox + inherit) in the app-level binary and in every per-service embedded copy (including injectable twins).
+- `ej-inherit-child-bad` must carry the intended contaminating entitlement and is expected to fail the inheritance contract at runtime (abort canary).
+- That canary is an intentional signing/twinning regression tripwire: expected abort outcomes remain distinct in `normalized_outcome`, and guardrail witness fields (bundle id, team id, entitlements, contract_ok) keep early aborts diagnosable.
 
 ## Inspection commands
 
@@ -160,6 +177,8 @@ Show entitlements for a specific binary:
 codesign -d --entitlements - -- EntitlementJail.app/Contents/MacOS/entitlement-jail
 codesign -d --entitlements - -- EntitlementJail.app/Contents/MacOS/xpc-probe-client
 codesign -d --entitlements - -- EntitlementJail.app/Contents/XPCServices/ProbeService_minimal.xpc/Contents/MacOS/ProbeService_minimal
+codesign -d --entitlements - -- EntitlementJail.app/Contents/XPCServices/ProbeService_minimal.xpc/Contents/MacOS/ej-inherit-child
+codesign -d --entitlements - -- EntitlementJail.app/Contents/XPCServices/ProbeService_minimal.xpc/Contents/MacOS/ej-inherit-child-bad
 ```
 
 Gatekeeper assessment:
@@ -190,6 +209,10 @@ xcrun notarytool log <submission-id> --keychain-profile "dev-profile"
 - XPC services won’t launch / `NSXPCConnection` fails to connect
   - Often indicates a signing/entitlements mismatch in the `.xpc` bundle or its executable.
   - Confirm the service executable exists at `.../<ServiceName>.xpc/Contents/MacOS/<ServiceName>` and inspect its entitlements with `codesign -d --entitlements -`.
+- `bookmark_op` / `bookmark_roundtrip` / `inherit_child --scenario bookmark_ferry` fails with `bookmark_resolve_failed` (often mentioning ScopedBookmarksAgent) even though `com.apple.security.files.bookmarks.app-scope` is present
+  - Treat this as a likely **code identity mismatch** (bookmark created under one bundle id, resolved under another) or a helper binary signed with the wrong identifier.
+  - For `inherit_child`, the per-service embedded helper at `.../ProbeService_*.xpc/Contents/MacOS/ej-inherit-child` must be signed with `--identifier <service bundle id>` (build.sh does this); copying/re-signing without `--identifier` is a common way to break bookmark_ferry determinism.
+  - Inspect identifier + Team ID: `codesign -dv --verbose=4 <path> 2>&1 | grep -E 'Identifier=|TeamIdentifier='`.
 - `verify-evidence` failures after “fixing signing”
   - Evidence is derived from signed entitlements/hashes during the build. If you re-sign or modify the bundle without regenerating Evidence, it can go stale.
   - The supported fix is to rebuild with `make build` so Evidence and signatures agree.

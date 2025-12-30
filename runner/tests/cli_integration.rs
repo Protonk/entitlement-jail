@@ -652,7 +652,7 @@ fn cli_integration_smoke() {
                 hold_res.stderr
             );
 
-            // minimal should be refused by task_for_pid (but still allowed as a target).
+            // minimal should be refused by task_for_pid (but allowed as a target).
             let mut hold = spawn_xpc_session_hold(&bin, &["xpc", "session", "--profile", "minimal"]);
             let inspector_out = run_cmd(
                 &inspector_bin,

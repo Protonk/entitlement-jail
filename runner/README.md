@@ -4,7 +4,7 @@ This is developer documentation for the Rust code in `runner/`. It builds the co
 
 - `EntitlementJail.app/Contents/MacOS/entitlement-jail`
 
-This document exists so people working on the CLI can debug breakage without spelunking a user guide. It complements the user-facing docs, but it still treats behavior as a contract: if you change the CLI, update this doc.
+This document exists so people working on the CLI can debug breakage without spelunking a user guide. It complements the user-facing docs and treats behavior as a contract: if you change the CLI, update this doc.
 
 Related docs:
 
@@ -27,6 +27,7 @@ Core files:
 CLI tests:
 
 - `runner/tests/cli_integration.rs` — integration tests against a built `EntitlementJail.app` (or `EJ_BIN_PATH`)
+- `tests/suites/smoke/update_file_rename_delta_fixtures.sh` — regression fixtures for the `sandbox_extension update_file_rename_delta` semantics harness (rename retargeting + per-candidate access-delta checks)
 
 This crate also builds standalone helper CLIs:
 
@@ -43,6 +44,7 @@ Key wiring:
 - `cargo build --manifest-path runner/Cargo.toml --release --bin runner` produces `runner/target/release/runner`.
 - The build script copies that binary to `EntitlementJail.app/Contents/MacOS/entitlement-jail`.
 - The build script also embeds `runner/target/release/sandbox-log-observer` as `EntitlementJail.app/Contents/MacOS/sandbox-log-observer`.
+- The build script builds `ej-inherit-child` and embeds it at `EntitlementJail.app/Contents/MacOS/ej-inherit-child`, then copies it into each `ProbeService_*` bundle (see `xpc/README.md`).
 - Evidence manifests are generated during the build by `tests/build-evidence.py` and embedded under `EntitlementJail.app/Contents/Resources/Evidence/`.
 
 If you change bundle paths, add embedded executables, or change how services are enumerated/signed, expect to touch both `build.sh` and `tests/build-evidence.py`, plus the docs that describe the resulting bundle layout.
@@ -102,7 +104,7 @@ For CLI development, it’s useful to keep the raw subcommand surface area in vi
 ```sh
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-system <absolute-platform-binary> [args...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail run-embedded <tool-name> [args...]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] <probe-id> [probe-args...]
+./EntitlementJail.app/Contents/MacOS/entitlement-jail xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--capture-sandbox-logs] <probe-id> [probe-args...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--correlation-id <id>] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
 ./EntitlementJail.app/Contents/MacOS/entitlement-jail verify-evidence
@@ -145,7 +147,7 @@ Rules:
 - `result.rc` is used by probes/quarantine; `result.exit_code` is used by CLI/tools. Unused fields are `null`.
 - All command-specific fields live under `data` (no extra top-level keys).
 
-Note: Rust-emitted envelopes currently use `schema_version: 4`. XPC probe/quarantine responses emitted by the embedded Swift clients still use `schema_version: 2`.
+Note: Rust-emitted envelopes use `schema_version: 4`. XPC probe/quarantine responses emitted by the embedded Swift clients use `schema_version: 2`.
 
 Envelope `kind` values used by the launcher and helpers:
 
@@ -231,9 +233,19 @@ Exit behavior:
 - Stdout: a single `kind: probe_response` JSON envelope.
 - Process exit code: `result.rc` (clamped to 0–255) so probe failures are script-visible.
 
+Note: the `inherit_child` probe emits a structured witness under `data.witness` (frozen two-bus protocol + strict invariants + scenario/matrix results) and uses `kind: probe_response`.
+Stop mechanics are observable without a debugger: `inherit_child` uses start-suspended spawn plus stop markers, and the witness/event stream makes stop-on-entry/deny behavior testable.
+
+Sandbox log capture:
+
+- `--capture-sandbox-logs` runs the embedded `sandbox-log-observer` in lookback mode after the probe returns.
+- The capture is always attached under `data.host_sandbox_log_capture` (predicate + time bounds + excerpt or error).
+- For `inherit_child`, the launcher also attaches tri-state status to `data.witness` as `sandbox_log_capture_status` (`not_requested|requested_unavailable|captured`) and `sandbox_log_capture` (string map).
+
 ## `xpc session`: durable service sessions (debug/attach)
 
 `xpc session` is a session-based control plane intended for deterministic debugger/tracer attachment (lldb/dtrace/Frida) without racing service startup. It keeps the service alive across multiple probes unless explicitly closed.
+Durable sessions matter for extension liveness claims: “before/after” checks are only meaningful when they occur in the same process context (not a fresh-start service each time).
 
 I/O contract:
 
@@ -246,6 +258,8 @@ I/O contract:
   - `{"command":"close_session"}`
 
 Critical semantic: if a wait is configured (via `--wait ...`), `run_probe` is refused until the service emits `data.event: trigger_received`. This is the stable “attach-before-probe” barrier.
+
+Session events can include `data.child_pid` + `data.run_id` for probes that spawn a child (for example `inherit_child`), along with `data.event: child_spawned|child_stopped|child_exited`.
 
 For the authoritative on-the-wire shapes, see `xpc/ProbeAPI.swift` and `xpc/ProbeServiceSessionHost.swift`.
 
@@ -297,6 +311,8 @@ Key contract:
 `sandbox-log-observer` is intended to be a clean witness that does not inherit the App Sandbox.
 
 The launcher does not automatically run it; callers should treat it as an explicit, separate evidence attachment step.
+
+Stream mode supports `--until-pid-exit` to stop capture when the target process exits.
 
 Build:
 

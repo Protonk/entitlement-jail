@@ -18,6 +18,8 @@ run_test() {
 
 run_test "${ROOT_DIR}/tests/suites/smoke/experiments_tri_run.sh"
 run_test "${ROOT_DIR}/tests/suites/smoke/xpc_app_smoke.sh"
+run_test "${ROOT_DIR}/tests/suites/smoke/inherit_child_fixtures.sh"
+run_test "${ROOT_DIR}/tests/suites/smoke/update_file_rename_delta_fixtures.sh"
 run_test "${ROOT_DIR}/tests/suites/smoke/xpc_session_smoke.sh"
 run_test "${ROOT_DIR}/tests/suites/smoke/quarantine_smoke.sh"
 run_test "${ROOT_DIR}/tests/suites/smoke/observer_smoke.sh"

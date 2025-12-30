@@ -17,7 +17,7 @@ fn print_usage() {
 usage:
   entitlement-jail run-system <absolute-platform-binary> [args...]
   entitlement-jail run-embedded <tool-name> [args...]
-  entitlement-jail xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] <probe-id> [probe-args...]
+  entitlement-jail xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--capture-sandbox-logs] <probe-id> [probe-args...]
   entitlement-jail xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--correlation-id <id>] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
   entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
   entitlement-jail verify-evidence
@@ -591,6 +591,73 @@ fn parse_probe_response(stdout: &str) -> Result<(Option<i64>, Option<String>, Op
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     Ok((rc, normalized_outcome, error))
+}
+
+fn sort_json_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                sort_json_value(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<(String, serde_json::Value)> =
+                map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            let mut sorted = serde_json::Map::new();
+            for (key, mut val) in entries {
+                sort_json_value(&mut val);
+                sorted.insert(key, val);
+            }
+            *map = sorted;
+        }
+        _ => {}
+    }
+}
+
+fn capture_sandbox_logs(child_pid: i64, process_name: &str) -> Result<serde_json::Value, String> {
+    let observer = resolve_contents_macos_tool("sandbox-log-observer")?;
+    let args = vec![
+        "--pid".to_string(),
+        child_pid.to_string(),
+        "--process-name".to_string(),
+        process_name.to_string(),
+        "--last".to_string(),
+        "2m".to_string(),
+        "--format".to_string(),
+        "jsonl".to_string(),
+    ];
+
+    let output = Command::new(&observer)
+        .args(&args)
+        .output()
+        .map_err(|e| format!("spawn failed for {}: {e}", observer.display()))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let exit_code = output.status.code().unwrap_or(1);
+
+    let report_line = stdout
+        .lines()
+        .rev()
+        .find(|line| line.contains("\"sandbox_log_observer_report\""));
+    let report_json = report_line.and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok());
+
+    let mut capture = serde_json::json!({
+        "observer_path": observer.display().to_string(),
+        "observer_args": args,
+        "observer_exit_code": exit_code,
+    });
+    if let Some(report_json) = report_json {
+        capture["observer_report"] = report_json;
+    } else {
+        capture["observer_stdout"] = serde_json::Value::String(stdout);
+    }
+    if !stderr.is_empty() {
+        capture["observer_stderr"] = serde_json::Value::String(stderr);
+    }
+
+    Ok(capture)
 }
 
 fn build_health_check_report<'a>(
@@ -1907,6 +1974,7 @@ fn main() {
                     let mut plan_id: Option<String> = None;
                     let mut row_id: Option<String> = None;
                     let mut correlation_id: Option<String> = None;
+                    let mut capture_sandbox_logs_flag = false;
 
                     let mut idx = 2usize;
                     while idx < args.len() {
@@ -2029,6 +2097,10 @@ fn main() {
                                 }
                                 idx += 2;
                             }
+                            "--capture-sandbox-logs" => {
+                                capture_sandbox_logs_flag = true;
+                                idx += 1;
+                            }
                             other => {
                                 eprintln!("unknown argument for xpc run: {other}");
                                 print_usage();
@@ -2144,7 +2216,106 @@ fn main() {
                     forward_args.push(OsString::from(probe_id));
                     forward_args.extend(probe_args);
 
-                    run_and_wait(cmd_path, forward_args);
+                    if capture_sandbox_logs_flag {
+                        let output = Command::new(&cmd_path)
+                            .args(&forward_args)
+                            .output()
+                            .unwrap_or_else(|err| {
+                                eprintln!("spawn failed for {}: {err}", cmd_path.display());
+                                std::process::exit(127);
+                            });
+                        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                        let status = output.status;
+
+                        let mut value: serde_json::Value = match serde_json::from_str(&stdout) {
+                            Ok(value) => value,
+                            Err(err) => {
+                                eprintln!("failed to parse probe JSON: {err}");
+                                print!("{stdout}");
+                                if !stderr.is_empty() {
+                                    eprint!("{stderr}");
+                                }
+                                exit_like_child(status);
+                            }
+                        };
+
+                        let child_pid = value
+                            .pointer("/data/details/child_pid")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse::<i64>().ok());
+                        let process_name = value
+                            .pointer("/data/details/process_name")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| value.pointer("/data/service_name").and_then(|v| v.as_str()))
+                            .unwrap_or("unknown");
+
+                        let (capture_status, capture) = match child_pid {
+                            Some(pid) => match capture_sandbox_logs(pid, process_name) {
+                                Ok(capture) => ("captured", capture),
+                                Err(err) => ("requested_unavailable", serde_json::json!({ "error": err })),
+                            },
+                            None => (
+                                "requested_unavailable",
+                                serde_json::json!({ "error": "missing child_pid for sandbox log capture" }),
+                            ),
+                        };
+
+                        let capture_value = capture.clone();
+                        let capture_string_map = match capture {
+                            serde_json::Value::Object(map) => {
+                                let mut out = serde_json::Map::new();
+                                for (key, value) in map {
+                                    let rendered = match value {
+                                        serde_json::Value::String(text) => text,
+                                        other => other.to_string(),
+                                    };
+                                    out.insert(key, serde_json::Value::String(rendered));
+                                }
+                                serde_json::Value::Object(out)
+                            }
+                            other => {
+                                let mut out = serde_json::Map::new();
+                                out.insert("raw".to_string(), serde_json::Value::String(other.to_string()));
+                                serde_json::Value::Object(out)
+                            }
+                        };
+
+                        if let serde_json::Value::Object(ref mut data) = value["data"] {
+                            data.insert("host_sandbox_log_capture".to_string(), capture_value);
+
+                            let probe_family = data
+                                .get("details")
+                                .and_then(|v| v.get("probe_family"))
+                                .and_then(|v| v.as_str());
+                            if probe_family == Some("inherit_child") {
+                                if !matches!(data.get("witness"), Some(serde_json::Value::Object(_))) {
+                                    data.insert("witness".to_string(), serde_json::Value::Object(serde_json::Map::new()));
+                                }
+                                if let Some(serde_json::Value::Object(witness)) = data.get_mut("witness") {
+                                    witness.insert(
+                                        "sandbox_log_capture_status".to_string(),
+                                        serde_json::Value::String(capture_status.to_string()),
+                                    );
+                                    witness.insert("sandbox_log_capture".to_string(), capture_string_map);
+                                }
+                            }
+                        }
+
+                        sort_json_value(&mut value);
+                        if let Ok(text) = serde_json::to_string(&value) {
+                            println!("{text}");
+                        } else {
+                            print!("{stdout}");
+                        }
+                        if !stderr.is_empty() {
+                            eprint!("{stderr}");
+                        }
+
+                        exit_like_child(status)
+                    } else {
+                        run_and_wait(cmd_path, forward_args);
+                    }
                 }
                 "session" => {
                     let mut profile_arg: Option<String> = None;
@@ -2451,19 +2622,6 @@ fn main() {
             run_and_wait(cmd_path, args[1..].to_vec());
         }
         _ => {
-            // Legacy mode: `entitlement-jail <cmd> [args...]`
-            let cmd_path = PathBuf::from(&args[0]);
-            if cmd_path.is_absolute() && is_allowed_system_path(&cmd_path) {
-                if let Err(err) = ensure_executable_file(&cmd_path) {
-                    eprintln!("{err}");
-                    std::process::exit(2);
-                }
-                run_and_wait(cmd_path, args[1..].to_vec());
-            }
-
-            eprintln!(
-                "unsupported invocation.\n\nThis tool no longer supports running arbitrary staged binaries by path (App Sandbox blocks process-exec* from writable locations).\nUse:\n  entitlement-jail run-system <platform-binary> [args...]\n  entitlement-jail run-embedded <tool-name> [args...]\n"
-            );
             print_usage();
             std::process::exit(2);
         }

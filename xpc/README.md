@@ -27,7 +27,7 @@ For usage/behavior contracts, see:
 - `services/<ServiceName>/…`
   - One directory per XPC service target: `Info.plist`, `Entitlements.plist`, `main.swift`
 - `entitlements_overlays/injectable.plist`
-  - Canonical entitlement overlay used to generate injectable twins at build time
+  - Canonical entitlement overlay for generating injectable twins at build time
 
 ## How it builds into `EntitlementJail.app`
 
@@ -43,8 +43,12 @@ The build script produces:
 
 - `EntitlementJail.app/Contents/MacOS/xpc-probe-client`
 - `EntitlementJail.app/Contents/MacOS/xpc-quarantine-client`
+- `EntitlementJail.app/Contents/MacOS/ej-inherit-child`
+- `EntitlementJail.app/Contents/MacOS/ej-inherit-child-bad`
 - `EntitlementJail.app/Contents/XPCServices/<ServiceName>.xpc`
   - `…/<ServiceName>.xpc/Contents/MacOS/<ServiceName>` (the service executable)
+  - `…/ProbeService_*/Contents/MacOS/ej-inherit-child` (embedded child helper for `inherit_child`)
+  - `…/ProbeService_*/Contents/MacOS/ej-inherit-child-bad` (embedded bad helper for `inherit_bad_entitlements`)
 
 The client helpers must live under `Contents/MacOS` so `Bundle.main` resolves to `EntitlementJail.app` (XPC lookup and path resolution depend on having the correct bundle context).
 
@@ -68,6 +72,7 @@ If you change naming/layout here, you also need to update the build script, Evid
 Build composition is shared-source based:
 
 - Client helpers are compiled from `ProbeAPI.swift` + their `main.swift`.
+- `ej-inherit-child` is compiled from `ProbeAPI.swift` + `xpc/child/main.swift`.
 - Probe services (`ProbeService_*`) are compiled from:
   - `ProbeAPI.swift`
   - `InProcessProbeCore.swift`
@@ -137,15 +142,19 @@ All `ProbeService_*` targets are intended to share the *same* probe behavior. Th
 
 Each base probe service gets an automatically generated injectable twin at build time (bundle suffix `__injectable`).
 
+Important bookmark constraint (easy to misdiagnose):
+
+- Security-scoped bookmark behavior is not “just an entitlement toggle”; it is also sensitive to code identity.
+- In practice for this repo: treat bookmark tokens as scoped to the creating service identity (bundle id / team id). If you create a bookmark under one profile/service and try to resolve it under another, resolution may fail in ways that look like missing entitlements (often involving ScopedBookmarksAgent).
+- `inherit_child --scenario bookmark_ferry` is designed to avoid this trap by ensuring the spawned child helper shares the service identity (see `build.sh` / `SIGNING.md` notes about signing per-service helper copies with `--identifier <service bundle id>`).
+
 ### 2) Quarantine Lab services (`QuarantineLab_*`)
 
 These targets exist to observe quarantine/Gatekeeper-related metadata deltas without turning them into Seatbelt attribution claims. Like probe services, they should differ only in `Entitlements.plist`.
 
 - `QuarantineLab_default` — App Sandbox only (baseline)
-- `QuarantineLab_net_client` — `com.apple.security.network.client`
 - `QuarantineLab_downloads_rw` — `com.apple.security.files.downloads.read-write`
 - `QuarantineLab_user_selected_executable` — `com.apple.security.files.user-selected.executable`
-- `QuarantineLab_bookmarks_app_scope` — `com.apple.security.files.bookmarks.app-scope`
 
 User-facing `quarantine-lab` workflows are documented in [EntitlementJail.md](../EntitlementJail.md).
 
@@ -157,6 +166,7 @@ These are not XPC services, but they are part of the XPC subsystem and are requi
 
 - `xpc-probe-client` (from `xpc/client/main.swift`): wraps NSXPC calls, prints JSON envelopes to stdout, exits with the probe `rc` in one-shot mode.
 - `xpc-quarantine-client` (from `xpc/quarantine-client/main.swift`): wraps NSXPC calls for Quarantine Lab, prints a JSON envelope, exits with the lab `rc`.
+- `ej-inherit-child` (from `xpc/child/main.swift`): sandbox-inheriting child helper used by the `inherit_child` probe (paired-process harness).
 
 ## Probe execution model (what a ProbeService is allowed to do)
 
@@ -166,6 +176,7 @@ Probe services are *not* a generic “run arbitrary code/path” facility. The c
 - Services should reject empty ids and any id containing path separators.
 - Probes run **in-process** inside the XPC service (no staging into containers, no `exec by path`).
 - Filesystem probes are safe-by-default: potentially destructive direct-path operations are gated to harness paths unless explicitly overridden.
+- Durable sessions (`xpc session`) keep the service alive so multi-phase transcripts remain in the same process context; otherwise “liveness” and maintenance semantics degrade into fresh-start behavior.
 
 The reference dispatch and safety gates live in `InProcessProbeCore.swift`.
 
@@ -178,8 +189,12 @@ The `sandbox_extension` probe’s consume/release path is intentionally defensiv
 - dyld disassembly on this host indicates `sandbox_extension_release_file` and `sandbox_release_fs_extension` take only a token argument (single-arg); path/flags are not used.
 - Wrapper/maintenance sub-ops map directly to SPI symbols: `issue_extension`, `issue_fs_extension`, `issue_fs_rw_extension`, `update_file` (path + flags), and `update_file_by_fileid` (token + file id + flags; some hosts expect a fileid pointer, see `--call-variant fileid_ptr_token`, or a selector value via `--call-variant payload_ptr_selector --selector <u64>`).
 - Kernel disassembly on Sonoma 14.4.1 suggests `update_file_by_fileid` uses only the low 32 bits of an 8-byte payload (field0) as an internal id, treats field1 as a small selector (compared to 2), and requires field2 to be zero. This implies a plain fileid/token string may not be sufficient to make the call succeed without an internal handle.
+- `update_file_rename_delta` is a “semantics harness” op: it defines success as an **access delta** (not `rc==0`) across an inode-preserving rename. It records pre/post `open()` outcomes for `--path`/`--new-path`, enforces `rename_was_inode_preserving`, and runs a stable `update_file_by_fileid` candidate sweep (including consume-handle-derived candidates) with per-candidate `*_attempt_index` and `*_changed_access` fields.
+- It also encodes “rename can silently change meaning”: issue+consume can flip `open_read` from `EPERM` to allow in the same process context, but the grant remains path-scoped (inode-preserving rename does not transfer access to the new path) until `update_file(new_path)` retargets it.
+- `update_file_by_fileid` may return `rc==0` with no access delta, so the probe’s post-call `open_read` checks and `*_changed_access` fields are the evidence (not return codes).
+- When `--wait-for-external-rename` is used, full stat snapshots and wait/poll observations are recorded so the host-side choreography is reproducible.
 - For a clean “denied → allowed” witness, use a world-readable file that App Sandbox blocks by default (for example `/private/var/db/launchd.db/com.apple.launchd/overrides.plist`). On Sonoma, `/etc/hosts` is often already readable and won’t show a before/after change.
-- `issue_file` now exposes `token_fields_count` plus `token_field_8/9/10` (raw token fields) in `details`, and `update_file_by_fileid` includes `file_id_low32` and `file_id_stat_dev` when deriving ids from `--path`.
+- `issue_file` exposes `token_fields_count` plus `token_field_8/9/10` (raw token fields) in `details`, and `update_file_by_fileid` includes `file_id_low32` and `file_id_stat_dev` when deriving ids from `--path`.
 - `fs_op` supports `--no-cleanup` to keep harness artifacts (useful when testing rename/truncate + `update_file_by_fileid` flows).
 
 If you need to pin behavior for ABI investigation, pass `--call-symbol` and `--call-variant` explicitly.
@@ -189,6 +204,99 @@ If you need to pin behavior for ABI investigation, pass `--call-symbol` and `--c
 Some probes call stable, C-callable marker functions such as `ej_probe_fs_op`. These symbols exist in the service Mach‑O and make it easy for external tools to locate probe boundaries.
 
 The probe catalog includes a `trace_symbols` mapping; see [runner/README.md](../runner/README.md) / [EntitlementJail.md](../EntitlementJail.md) for how to request it.
+
+## `inherit_child` (paired-process harness: frozen two-bus protocol)
+
+`inherit_child` is the “capability ferry” harness: a probe that spawns a sandbox-inheriting child process and compares **acquire** vs **use** across a cooperative parent/child lineage.
+
+Key property: it uses **two distinct transport channels**, and that split is a contract surface:
+
+- **Event bus** — ordered JSONL events (human-readable narrative) plus parent→child byte payloads (bookmark bytes).
+- **Rights bus** — a dedicated Unix-domain socket for `SCM_RIGHTS` FD passing (file/dir/socket capabilities). No FDs are ever passed over the event bus.
+
+The single source of truth for protocol constants, framing, and witness schema is `xpc/ProbeAPI.swift`:
+
+- `InheritChildProtocol` (protocol version + framing rules)
+- `InheritChildCapabilityId` (cap id namespace)
+- `InheritChildWitness` / `InheritChildEvent` / `InheritChildProtocolError` (what must be recorded)
+
+### Transport contracts (how to reason about failures)
+
+**Event bus framing**
+
+- Child→parent: JSONL events plus one sentinel line:
+  - Prefix: `EJ_CHILD_SENTINEL`
+  - Includes at least: `protocol_version=<v>` and `cap_namespace=<ns>`
+- Parent→child payloads (for byte capabilities like bookmarks):
+  - 1 header line: `EJ_CAP_PAYLOAD proto=<v> cap_ns=<ns> cap_id=<id> cap_type=<type> len=<n>`
+  - followed by exactly `<n>` raw bytes.
+
+**Rights bus framing**
+
+- Parent→child: one `sendmsg()` per capability with:
+  - `SCM_RIGHTS` containing the FD, and
+  - a 16-byte header of four `int32` values: `cap_id, meta0, meta1, meta2`
+    - `meta0` is the protocol version; `meta1/meta2` are reserved (0).
+
+Protocol mismatches and ordering violations are treated as **protocol bugs**, not “sandbox behavior”:
+
+- The child verifies protocol version/namespace from env + framing fields.
+- Unexpected `cap_id`, missing `SCM_RIGHTS`, or unexpected message ordering is emitted as a single early `child_capability_recv_failed` event and exits nonzero.
+- The parent maps these to distinct normalized outcomes (`child_protocol_violation`, `child_rights_bus_io_error`, `child_event_bus_io_error`) and records a structured `protocol_error` in the witness.
+
+### Scenario routing and the capability matrix
+
+`inherit_child` is scenario-routed: `--scenario <name>` selects a list of capability tests rather than a bespoke monolith.
+
+Scenario names are a contract surface (smoke + fixtures depend on them). The catalog is centralized in the probe implementation (`InProcessProbeCore.swift`) and should be updated as a single source of truth.
+
+Outputs:
+
+- `witness.events[]` — narrative timeline (sentinel, lifecycle phases, attempts, stop markers)
+- `witness.capability_results[]` — matrix rows with explicit acquire/use rc/errno (plus capability-specific fields like bookmark resolution/startAccessing/access attempts)
+- `witness.outcome_summary` — deterministic per-capability deltas (good for scanning without reading raw events)
+
+Ordering invariants (enforced by smoke + fixtures):
+
+- `child_ready` appears before any `child_*_attempt` event.
+- For each capability, the child emits an acquire attempt before a use attempt (no “use before acquire” races).
+
+### Witness invariants (don’t regress debuggability)
+
+For every `inherit_child` run — including early failures and child non-emission cases — the witness is expected to be present and to include at least:
+
+- Protocol: `schema_version`, `protocol_version`, `capability_namespace`
+- Identity: `run_id`, `scenario`, `service_bundle_id`, `process_name`
+- Child: `child_pid`, `child_exit_status`, `child_path`, `child_bundle_id`, `child_team_id`
+- Inheritance contract: `child_entitlements`, `inherit_contract_ok`
+- Transports: `child_event_fd`, `child_rights_fd` (should match the child sentinel line)
+- Logs: `sandbox_log_capture_status` (`not_requested|requested_unavailable|captured`) and `sandbox_log_capture` (string map)
+
+When the failure is a protocol-level bug, the witness also carries `protocol_error` (structured) so it can’t be misdiagnosed as sandbox behavior.
+When there are no child-emitted events, treat it as “child died before writing” (diagnostic), not as a sandbox deny.
+
+### Stop markers (inspection-first)
+
+`inherit_child` supports “stop points that matter”:
+
+- `--stop-on-entry` — child raises `SIGSTOP` ultra-early (deterministic attach point).
+- `--stop-on-deny` — on `EPERM`/`EACCES` shaped failures, emit the denying op + `callsite_id` + best-effort backtrace, then stop.
+
+Backtraces are best-effort and must never be fatal; failures are recorded as `backtrace_error` rather than aborting the run.
+
+### Signing/entitlements invariants (child helpers)
+
+The child helpers are part of the “inheritance contract” surface:
+
+- `ej-inherit-child` (good) must have **only**:
+  - `com.apple.security.app-sandbox=true`
+  - `com.apple.security.inherit=true`
+- `ej-inherit-child-bad` (canary) intentionally violates the contract by including an additional App Sandbox entitlement (for example `com.apple.security.files.user-selected.read-only=true`) so the OS predictably aborts it. This is used by the `inherit_bad_entitlements` scenario as a regression tripwire for signing/twinning changes.
+
+Correctness constraints enforced by the build + tests:
+
+- The build signs the per-service embedded helper copies with the service bundle identifier (`codesign --identifier <service bundle id> ...`) so security-scoped bookmark behavior is stable and attributable to the correct identity.
+- `tests/build-evidence.py` verifies child helper entitlements (good/bad) for the app-level copy and the per-service embedded copies (including injectable twins).
 
 ## Adding a new XPC service (development workflow)
 
