@@ -25,7 +25,7 @@ private func printUsage() {
                                [--max-entries <n>] [--allow-unsafe-path]
                                (--wait-fifo <path> | --wait-exists <path>) [--wait-timeout-ms <n>] [--wait-interval-ms <n>]
           net_op                --op <getaddrinfo|tcp_connect|udp_send> --host <host> [--port <1..65535>] [--numeric]
-          dlopen_external       --path <abs> (or set EJ_DLOPEN_PATH)
+          dlopen_external       --path <abs> (or set PW_DLOPEN_PATH)
           jit_map_jit           [--size <bytes>]
           jit_rwx_legacy        [--size <bytes>]
           bookmark_op           --bookmark-b64 <base64> | --bookmark-path <path>
@@ -566,12 +566,12 @@ final class QuarantineLabLocal {
     private func resolveOutputDir(_ pathClass: String?) throws -> URL {
         switch pathClass ?? "tmp" {
         case "tmp":
-            return FileManager.default.temporaryDirectory.appendingPathComponent("entitlement-jail-quarantine-lab", isDirectory: true)
+            return FileManager.default.temporaryDirectory.appendingPathComponent("policy-witness-quarantine-lab", isDirectory: true)
         case "app_support":
             guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
                 throw QuarantineLabError.missingAppSupportDir
             }
-            return appSupport.appendingPathComponent("entitlement-jail-quarantine-lab", isDirectory: true)
+            return appSupport.appendingPathComponent("policy-witness-quarantine-lab", isDirectory: true)
         default:
             throw QuarantineLabError.invalidPathClass(pathClass ?? "")
         }

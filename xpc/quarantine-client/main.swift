@@ -24,7 +24,7 @@ private func printUsage() {
     )
 }
 
-if ProcessInfo.processInfo.environment["EJ_XPC_CLIENT_DEBUG"] == "1" {
+if ProcessInfo.processInfo.environment["PW_XPC_CLIENT_DEBUG"] == "1" {
     let exePath = CommandLine.arguments.first ?? "<unknown>"
     let bundlePath = Bundle.main.bundleURL.path
     let bundleId = Bundle.main.bundleIdentifier ?? "<nil>"

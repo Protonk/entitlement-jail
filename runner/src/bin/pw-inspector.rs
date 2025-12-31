@@ -26,7 +26,7 @@ fn print_usage() {
     eprintln!(
         "\
 usage:
-  ej-inspector <pid> [--team-id <TEAMID>] [--bundle-id <id>|--bundle-id-prefix <prefix>] [--no-attach]
+  pw-inspector <pid> [--team-id <TEAMID>] [--bundle-id <id>|--bundle-id-prefix <prefix>] [--no-attach]
 
 notes:
   - validates target identity via codesign output (TeamIdentifier + Identifier)
@@ -181,7 +181,7 @@ fn main() {
     }
 
     if bundle_id.is_none() && bundle_prefix.is_none() {
-        bundle_prefix = Some("com.yourteam.entitlement-jail.".to_string());
+        bundle_prefix = Some("com.yourteam.policy-witness.".to_string());
     }
 
     if team_id.is_none() {

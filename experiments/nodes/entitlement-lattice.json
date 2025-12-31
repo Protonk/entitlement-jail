@@ -3,32 +3,32 @@
     {
       "node_id": "E0_minimal",
       "policy_profile": "experiments/policy/P0_minimal.sb",
-      "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_minimal",
-      "xpc_quarantine_service_bundle_id": "com.yourteam.entitlement-jail.QuarantineLab_default"
+      "xpc_probe_service_bundle_id": "com.yourteam.policy-witness.ProbeService_minimal",
+      "xpc_quarantine_service_bundle_id": "com.yourteam.policy-witness.QuarantineLab_default"
     },
     {
       "node_id": "E1_net_client",
       "policy_profile": "experiments/policy/P1_net_client.sb",
-      "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_net_client",
-      "xpc_quarantine_service_bundle_id": "com.yourteam.entitlement-jail.QuarantineLab_default"
+      "xpc_probe_service_bundle_id": "com.yourteam.policy-witness.ProbeService_net_client",
+      "xpc_quarantine_service_bundle_id": "com.yourteam.policy-witness.QuarantineLab_default"
     },
     {
       "node_id": "E2_downloads_rw",
       "policy_profile": "experiments/policy/P2_downloads_rw.sb",
-      "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_downloads_rw",
-      "xpc_quarantine_service_bundle_id": "com.yourteam.entitlement-jail.QuarantineLab_downloads_rw"
+      "xpc_probe_service_bundle_id": "com.yourteam.policy-witness.ProbeService_downloads_rw",
+      "xpc_quarantine_service_bundle_id": "com.yourteam.policy-witness.QuarantineLab_downloads_rw"
     },
     {
       "node_id": "E3_user_selected_executable",
       "policy_profile": "experiments/policy/P3_user_selected_executable.sb",
-      "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_user_selected_executable",
-      "xpc_quarantine_service_bundle_id": "com.yourteam.entitlement-jail.QuarantineLab_user_selected_executable"
+      "xpc_probe_service_bundle_id": "com.yourteam.policy-witness.ProbeService_user_selected_executable",
+      "xpc_quarantine_service_bundle_id": "com.yourteam.policy-witness.QuarantineLab_user_selected_executable"
     },
     {
       "node_id": "E4_bookmarks_app_scope",
       "policy_profile": "experiments/policy/P4_bookmarks_app_scope.sb",
-      "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_bookmarks_app_scope",
-      "xpc_quarantine_service_bundle_id": "com.yourteam.entitlement-jail.QuarantineLab_default"
+      "xpc_probe_service_bundle_id": "com.yourteam.policy-witness.ProbeService_bookmarks_app_scope",
+      "xpc_quarantine_service_bundle_id": "com.yourteam.policy-witness.QuarantineLab_default"
     }
   ]
 }

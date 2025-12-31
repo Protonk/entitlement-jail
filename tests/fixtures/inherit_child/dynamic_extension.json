@@ -173,5 +173,5 @@
   "protocol_version": 1,
   "sandbox_log_capture_status": "not_requested",
   "scenario": "dynamic_extension",
-  "schema_version": 3
+  "schema_version": 1
 }

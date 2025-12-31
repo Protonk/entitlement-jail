@@ -56,7 +56,7 @@ final class QuarantineLabService: NSObject, QuarantineLabProtocol {
         do {
             reply(try encodeJSON(response))
         } catch {
-            let fallback = #"{"schema_version":2,"rc":2,"normalized_outcome":"encode_failed"}"#
+            let fallback = #"{"schema_version":1,"rc":2,"normalized_outcome":"encode_failed"}"#
             reply(Data(fallback.utf8))
         }
     }
@@ -500,12 +500,12 @@ final class QuarantineLabService: NSObject, QuarantineLabProtocol {
     private func resolveOutputDir(_ pathClass: String?) throws -> URL {
         switch pathClass ?? "tmp" {
         case "tmp":
-            return FileManager.default.temporaryDirectory.appendingPathComponent("entitlement-jail-quarantine-lab", isDirectory: true)
+            return FileManager.default.temporaryDirectory.appendingPathComponent("policy-witness-quarantine-lab", isDirectory: true)
         case "app_support":
             guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
                 throw QuarantineLabError.missingAppSupportDir
             }
-            return appSupport.appendingPathComponent("entitlement-jail-quarantine-lab", isDirectory: true)
+            return appSupport.appendingPathComponent("policy-witness-quarantine-lab", isDirectory: true)
         default:
             throw QuarantineLabError.invalidPathClass(pathClass ?? "")
         }
@@ -542,17 +542,17 @@ final class QuarantineLabService: NSObject, QuarantineLabProtocol {
         case "shell_script", "command_file":
             let script = """
             #!/bin/sh
-            echo "entitlement-jail quarantine-lab \(tag)"
+            echo "policy-witness quarantine-lab \(tag)"
             exit 0
             """
             return (Data(script.utf8), true)
         case "text":
-            return (Data("entitlement-jail quarantine-lab \(tag)\n".utf8), false)
+            return (Data("policy-witness quarantine-lab \(tag)\n".utf8), false)
         case "webarchive_like":
             // Minimal plist-ish payload; intended for quarantine/writing experiments, not for correctness as a WebArchive.
             let html = """
             <!DOCTYPE html>
-            <html><body>entitlement-jail quarantine-lab \(tag)</body></html>
+            <html><body>policy-witness quarantine-lab \(tag)</body></html>
             """
             let b64 = Data(html.utf8).base64EncodedString()
             let plist = """

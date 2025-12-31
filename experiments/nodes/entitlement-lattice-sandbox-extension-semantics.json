@@ -3,9 +3,8 @@
     {
       "node_id": "E_temp_exception",
       "policy_profile": "experiments/policy/P5_sandbox_extension_semantics.sb",
-      "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_temporary_exception",
-      "xpc_quarantine_service_bundle_id": "com.yourteam.entitlement-jail.QuarantineLab_default"
+      "xpc_probe_service_bundle_id": "com.yourteam.policy-witness.ProbeService_temporary_exception",
+      "xpc_quarantine_service_bundle_id": "com.yourteam.policy-witness.QuarantineLab_default"
     }
   ]
 }
-

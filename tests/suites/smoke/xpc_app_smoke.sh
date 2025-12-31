@@ -19,11 +19,11 @@ step() {
   test_step "$1" "${2:-$1}"
 }
 
-EJ="${EJ_BIN:-${ROOT_DIR}/EntitlementJail.app/Contents/MacOS/entitlement-jail}"
-OUT_DIR="${EJ_TEST_ARTIFACTS}"
+PW="${PW_BIN:-${ROOT_DIR}/PolicyWitness.app/Contents/MacOS/policy-witness}"
+OUT_DIR="${PW_TEST_ARTIFACTS}"
 
-if [[ ! -x "${EJ}" ]]; then
-  test_fail "missing or non-executable EntitlementJail launcher at: ${EJ}"
+if [[ ! -x "${PW}" ]]; then
+  test_fail "missing or non-executable PolicyWitness launcher at: ${PW}"
 fi
 
 rm -rf "${OUT_DIR}"
@@ -31,7 +31,7 @@ mkdir -p "${OUT_DIR}"
 
 step "xpc_run_minimal_capabilities" "xpc run (minimal capabilities_snapshot)"
 CAP_JSON="${OUT_DIR}/xpc-run-minimal-capabilities.json"
-"${EJ}" xpc run --profile minimal capabilities_snapshot >"${CAP_JSON}"
+"${PW}" xpc run --profile minimal capabilities_snapshot >"${CAP_JSON}"
 
 /usr/bin/python3 - "${CAP_JSON}" <<'PY'
 import json
@@ -54,7 +54,7 @@ PY
 step "xpc_run_minimal_net_op" "xpc run (denial-shaped minimal net_op)"
 NET_JSON="${OUT_DIR}/xpc-run-minimal-net-op.json"
 NET_EXIT=0
-"${EJ}" xpc run --profile minimal net_op --op tcp_connect --host 127.0.0.1 --port 9 >"${NET_JSON}" || NET_EXIT="$?"
+"${PW}" xpc run --profile minimal net_op --op tcp_connect --host 127.0.0.1 --port 9 >"${NET_JSON}" || NET_EXIT="$?"
 test_step "net_op_exit_code" "xpc run exit_code=${NET_EXIT} (expected: 1 for denial-shaped probe)"
 
 /usr/bin/python3 - "${NET_JSON}" "${NET_EXIT}" <<'PY'
@@ -83,10 +83,10 @@ PY
 
 step "xpc_run_inherit_child" "xpc run (temporary_exception inherit_child)"
 INHERIT_JSON="${OUT_DIR}/xpc-run-inherit-child.json"
-INHERIT_PATH="${HOME}/Documents/ej_smoke_inherit_child.txt"
+INHERIT_PATH="${HOME}/Documents/pw_smoke_inherit_child.txt"
 mkdir -p "${HOME}/Documents"
-printf "entitlement-jail smoke\n" >"${INHERIT_PATH}"
-"${EJ}" xpc run --profile temporary_exception inherit_child --scenario dynamic_extension --path "${INHERIT_PATH}" --allow-unsafe-path >"${INHERIT_JSON}"
+printf "policy-witness smoke\n" >"${INHERIT_PATH}"
+"${PW}" xpc run --profile temporary_exception inherit_child --scenario dynamic_extension --path "${INHERIT_PATH}" --allow-unsafe-path >"${INHERIT_JSON}"
 
 /usr/bin/python3 - "${INHERIT_JSON}" <<'PY'
 import json
@@ -229,7 +229,7 @@ PY
 step "xpc_run_inherit_child_stop_markers" "xpc run (stop-on-entry/deny inherit_child)"
 STOP_JSON="${OUT_DIR}/xpc-run-inherit-child-stop-markers.json"
 STOP_DENY_PATH="/private/var/db/launchd.db/com.apple.launchd/overrides.plist"
-"${EJ}" xpc run --profile temporary_exception inherit_child --scenario dynamic_extension --path "${STOP_DENY_PATH}" --allow-unsafe-path --stop-on-entry --stop-on-deny --stop-auto-resume >"${STOP_JSON}"
+"${PW}" xpc run --profile temporary_exception inherit_child --scenario dynamic_extension --path "${STOP_DENY_PATH}" --allow-unsafe-path --stop-on-entry --stop-on-deny --stop-auto-resume >"${STOP_JSON}"
 
 /usr/bin/python3 - "${STOP_JSON}" <<'PY'
 import json
@@ -259,7 +259,7 @@ PY
 
 step "xpc_run_inherit_child_matrix_basic" "xpc run (matrix_basic inherit_child allowed-shaped)"
 MATRIX_JSON="${OUT_DIR}/xpc-run-inherit-child-matrix-basic.json"
-"${EJ}" xpc run --profile minimal inherit_child --scenario matrix_basic --path-class tmp --target specimen_file --name ej_matrix_child.txt --create >"${MATRIX_JSON}"
+"${PW}" xpc run --profile minimal inherit_child --scenario matrix_basic --path-class tmp --target specimen_file --name pw_matrix_child.txt --create >"${MATRIX_JSON}"
 
 /usr/bin/python3 - "${MATRIX_JSON}" <<'PY'
 import json
@@ -297,7 +297,7 @@ PY
 step "xpc_run_inherit_child_protocol_violation" "xpc run (protocol bad cap_id)"
 PROTO_JSON="${OUT_DIR}/xpc-run-inherit-child-protocol-violation.json"
 PROTO_EXIT=0
-"${EJ}" xpc run --profile minimal inherit_child --scenario matrix_basic --path-class tmp --target specimen_file --name ej_protocol_bad.txt --create --protocol-bad-cap-id >"${PROTO_JSON}" || PROTO_EXIT="$?"
+"${PW}" xpc run --profile minimal inherit_child --scenario matrix_basic --path-class tmp --target specimen_file --name pw_protocol_bad.txt --create --protocol-bad-cap-id >"${PROTO_JSON}" || PROTO_EXIT="$?"
 test_step "protocol_violation_exit_code" "xpc run exit_code=${PROTO_EXIT} (expected: 1 for protocol violation)"
 
 /usr/bin/python3 - "${PROTO_JSON}" "${PROTO_EXIT}" <<'PY'
@@ -325,7 +325,7 @@ PY
 
 step "xpc_run_inherit_child_bookmark" "xpc run (bookmark_ferry inherit_child)"
 BOOKMARK_JSON="${OUT_DIR}/xpc-run-inherit-child-bookmark.json"
-"${EJ}" xpc run --profile bookmarks_app_scope inherit_child --scenario bookmark_ferry --path-class tmp --target specimen_file --name ej_bookmark_child.txt --create --bookmark-move >"${BOOKMARK_JSON}"
+"${PW}" xpc run --profile bookmarks_app_scope inherit_child --scenario bookmark_ferry --path-class tmp --target specimen_file --name pw_bookmark_child.txt --create --bookmark-move >"${BOOKMARK_JSON}"
 
 /usr/bin/python3 - "${BOOKMARK_JSON}" <<'PY'
 import json
@@ -368,7 +368,7 @@ PY
 
 step "xpc_run_inherit_child_bookmark_invalid" "xpc run (bookmark_ferry invalid payload)"
 BOOKMARK_BAD_JSON="${OUT_DIR}/xpc-run-inherit-child-bookmark-invalid.json"
-"${EJ}" xpc run --profile bookmarks_app_scope inherit_child --scenario bookmark_ferry --path-class tmp --target specimen_file --name ej_bookmark_bad.txt --create --bookmark-invalid >"${BOOKMARK_BAD_JSON}"
+"${PW}" xpc run --profile bookmarks_app_scope inherit_child --scenario bookmark_ferry --path-class tmp --target specimen_file --name pw_bookmark_bad.txt --create --bookmark-invalid >"${BOOKMARK_BAD_JSON}"
 
 /usr/bin/python3 - "${BOOKMARK_BAD_JSON}" <<'PY'
 import json
@@ -402,7 +402,7 @@ PY
 
 step "xpc_run_inherit_child_lineage" "xpc run (lineage_basic inherit_child)"
 LINEAGE_JSON="${OUT_DIR}/xpc-run-inherit-child-lineage.json"
-"${EJ}" xpc run --profile minimal inherit_child --scenario lineage_basic >"${LINEAGE_JSON}"
+"${PW}" xpc run --profile minimal inherit_child --scenario lineage_basic >"${LINEAGE_JSON}"
 
 /usr/bin/python3 - "${LINEAGE_JSON}" <<'PY'
 import json
@@ -431,7 +431,7 @@ PY
 
 step "xpc_run_inherit_child_bad_entitlements" "xpc run (inherit_bad_entitlements scenario)"
 BAD_JSON="${OUT_DIR}/xpc-run-inherit-child-bad-entitlements.json"
-"${EJ}" xpc run --profile minimal inherit_child --scenario inherit_bad_entitlements >"${BAD_JSON}"
+"${PW}" xpc run --profile minimal inherit_child --scenario inherit_bad_entitlements >"${BAD_JSON}"
 
 /usr/bin/python3 - "${BAD_JSON}" <<'PY'
 import json
@@ -471,7 +471,7 @@ PY
 
 step "xpc_run_inherit_child_sandbox_logs" "xpc run (capture sandbox logs)"
 LOG_JSON="${OUT_DIR}/xpc-run-inherit-child-sandbox-logs.json"
-"${EJ}" xpc run --capture-sandbox-logs --profile minimal inherit_child --scenario matrix_basic --path-class tmp --target specimen_file --name ej_log_child.txt --create >"${LOG_JSON}"
+"${PW}" xpc run --capture-sandbox-logs --profile minimal inherit_child --scenario matrix_basic --path-class tmp --target specimen_file --name pw_log_child.txt --create >"${LOG_JSON}"
 
 /usr/bin/python3 - "${LOG_JSON}" <<'PY'
 import json
@@ -501,7 +501,7 @@ mkdir -p "${MATRIX_DIR}"
 echo "sentinel" >"${MATRIX_DIR}/sentinel.txt"
 
 RUN_MATRIX_ENVELOPE="${OUT_DIR}/run-matrix-envelope.json"
-"${EJ}" run-matrix --group baseline --out "${MATRIX_DIR}" capabilities_snapshot >"${RUN_MATRIX_ENVELOPE}"
+"${PW}" run-matrix --group baseline --out "${MATRIX_DIR}" capabilities_snapshot >"${RUN_MATRIX_ENVELOPE}"
 
 if [[ ! -f "${MATRIX_DIR}/run-matrix.json" ]]; then
   echo "missing: ${MATRIX_DIR}/run-matrix.json" 1>&2

@@ -2,6 +2,23 @@
 name = "runner"
 version = "0.1.0"
 edition = "2024"
+autobins = false
+
+[[bin]]
+name = "policy-witness"
+path = "src/main.rs"
+
+[[bin]]
+name = "quarantine-observer"
+path = "src/bin/quarantine-observer.rs"
+
+[[bin]]
+name = "sandbox-log-observer"
+path = "src/bin/sandbox-log-observer.rs"
+
+[[bin]]
+name = "pw-inspector"
+path = "src/bin/pw-inspector.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

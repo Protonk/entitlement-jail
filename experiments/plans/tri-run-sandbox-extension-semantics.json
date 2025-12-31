@@ -12,9 +12,9 @@
           "--class",
           "com.apple.app-sandbox.read",
           "--path",
-          "{{EJ_HARNESS_RUN_DIR}}/ej_update_old.txt",
+          "{{PW_HARNESS_RUN_DIR}}/pw_update_old.txt",
           "--new-path",
-          "{{EJ_HARNESS_RUN_DIR}}/ej_update_new.txt",
+          "{{PW_HARNESS_RUN_DIR}}/pw_update_new.txt",
           "--wait-for-external-rename",
           "--wait-timeout-ms",
           "5000",
@@ -23,15 +23,15 @@
         ]
       },
       "expected_side_effects": [
-        "host-coordinated rename under /tmp/entitlement-jail-harness"
+        "host-coordinated rename under /tmp/policy-witness-harness"
       ],
       "capture_spec": { "capture_sandbox_log": false },
       "host_actions": {
         "actions": [
           {
             "kind": "rename",
-            "from": "{{EJ_HARNESS_RUN_DIR}}/ej_update_old.txt",
-            "to": "{{EJ_HARNESS_RUN_DIR}}/ej_update_new.txt",
+            "from": "{{PW_HARNESS_RUN_DIR}}/pw_update_old.txt",
+            "to": "{{PW_HARNESS_RUN_DIR}}/pw_update_new.txt",
             "delay_ms": 500
           }
         ]
@@ -39,4 +39,3 @@
     }
   ]
 }
-

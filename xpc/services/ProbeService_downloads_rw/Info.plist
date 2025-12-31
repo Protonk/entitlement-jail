@@ -5,7 +5,7 @@
   <key>CFBundleExecutable</key>
   <string>ProbeService_downloads_rw</string>
   <key>CFBundleIdentifier</key>
-  <string>com.yourteam.entitlement-jail.ProbeService_downloads_rw</string>
+  <string>com.yourteam.policy-witness.ProbeService_downloads_rw</string>
   <key>CFBundleName</key>
   <string>ProbeService_downloads_rw</string>
   <key>CFBundlePackageType</key>

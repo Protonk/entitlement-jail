@@ -1,13 +1,13 @@
-# EntitlementJail.app (User Guide)
+# PolicyWitness.app (User Guide)
 
-EntitlementJail is a macOS research/teaching tool for exploring **App Sandbox + entitlements** while keeping “what happened” separate from “why it happened”.
+PolicyWitness is a macOS research/teaching tool for exploring **App Sandbox + entitlements** while keeping “what happened” separate from “why it happened”.
 
 It ships as an app bundle containing:
 
 - a host-side CLI launcher (plain-signed; not sandboxed), and
 - a process zoo of separately signed sandboxed XPC services (each with its own entitlement profile).
 
-This guide assumes you have only `EntitlementJail.app` and this file (`EntitlementJail.md`).
+This guide assumes you have only `PolicyWitness.app` and this file (`PolicyWitness.md`).
 
 ## Contents
 
@@ -28,44 +28,44 @@ This guide assumes you have only `EntitlementJail.app` and this file (`Entitleme
 - Sandbox extension flow: `sandbox_extension` (issue/consume/release)
 - Evidence bundle: `bundle-evidence` (plus `verify-evidence`, `inspect-macho`)
 - Quarantine/Gatekeeper deltas (no execution): `quarantine-lab`
-- Deny evidence (outside the sandbox boundary): `EntitlementJail.app/Contents/MacOS/sandbox-log-observer`
+- Deny evidence (outside the sandbox boundary): `PolicyWitness.app/Contents/MacOS/sandbox-log-observer`
 
 ## Quick start
 
 Set a convenience variable:
 
 ```sh
-EJ="$PWD/EntitlementJail.app/Contents/MacOS/entitlement-jail"
+PW="$PWD/PolicyWitness.app/Contents/MacOS/policy-witness"
 ```
 
-All invocations are subcommands (for example `$EJ xpc run ...`). To run a platform binary, use `run-system /bin/ls ...`; to run an embedded helper, use `run-embedded <tool-name> ...`.
+All invocations are subcommands (for example `$PW xpc run ...`). To run a platform binary, use `run-system /bin/ls ...`; to run an embedded helper, use `run-embedded <tool-name> ...`.
 
 Discover what’s inside:
 
 ```sh
-$EJ list-profiles
-$EJ list-services
-$EJ show-profile minimal
+$PW list-profiles
+$PW list-services
+$PW show-profile minimal
 ```
 
 Run a probe in the baseline sandbox profile:
 
 ```sh
-$EJ xpc run --profile minimal capabilities_snapshot
+$PW xpc run --profile minimal capabilities_snapshot
 ```
 
 Compare the same probe across a curated group:
 
 ```sh
-$EJ run-matrix --group baseline capabilities_snapshot
+$PW run-matrix --group baseline capabilities_snapshot
 ```
 
 Create a harness file and set an xattr (extract `data.details.file_path` without `jq`):
 
 ```sh
-$EJ xpc run --profile minimal fs_op --op create --path-class tmp --target specimen_file --name ej_xattr.txt > /tmp/ej_fs_op.json
-FILE_PATH=$(plutil -extract data.details.file_path raw -o - /tmp/ej_fs_op.json)
-$EJ xpc run --profile minimal fs_xattr --op set --path "$FILE_PATH" --name user.ej --value test
+$PW xpc run --profile minimal fs_op --op create --path-class tmp --target specimen_file --name pw_xattr.txt > /tmp/pw_fs_op.json
+FILE_PATH=$(plutil -extract data.details.file_path raw -o - /tmp/pw_fs_op.json)
+$PW xpc run --profile minimal fs_xattr --op set --path "$FILE_PATH" --name user.pw --value test
 ```
 
 ## Concepts
@@ -79,7 +79,7 @@ $EJ xpc run --profile minimal fs_xattr --op set --path "$FILE_PATH" --name user.
 
 ### Witness records (and attribution)
 
-EntitlementJail records *what happened* (return codes, errno, resolved paths, timing) and may attach attribution hints, but it avoids overclaiming:
+PolicyWitness records *what happened* (return codes, errno, resolved paths, timing) and may attach attribution hints, but it avoids overclaiming:
 
 - A permission-shaped failure (often `EPERM`/`EACCES`) is **not automatically** a sandbox denial.
 - “Seatbelt/App Sandbox denial” is an attribution claim that requires evidence (for example, a matching unified-log denial line for the service PID).
@@ -92,7 +92,7 @@ EntitlementJail records *what happened* (return codes, errno, resolved paths, ti
 
 ## Workflows
 
-All workflows use the CLI at `EntitlementJail.app/Contents/MacOS/entitlement-jail` (the quick start sets `EJ` to this path). Run `$EJ --help` to see the command list and the canonical invocation shapes.
+All workflows use the CLI at `PolicyWitness.app/Contents/MacOS/policy-witness` (the quick start sets `PW` to this path). Run `$PW --help` to see the command list and the canonical invocation shapes.
 
 ### Discover profiles and services
 
@@ -101,8 +101,8 @@ Profiles are the ergonomic interface for the process zoo.
 List them:
 
 ```sh
-$EJ list-profiles
-$EJ list-services
+$PW list-profiles
+$PW list-services
 ```
 
 `list-profiles` shows base profile ids; `list-services` shows both base and injectable service variants.
@@ -110,14 +110,14 @@ $EJ list-services
 Inspect a profile (entitlements, risk signals, tags):
 
 ```sh
-$EJ show-profile minimal
-$EJ show-profile minimal@injectable
+$PW show-profile minimal
+$PW show-profile minimal@injectable
 ```
 
 Inspect a service “statically” (what the profile says it should have):
 
 ```sh
-$EJ describe-service minimal@injectable
+$PW describe-service minimal@injectable
 ```
 
 **Risk signals**
@@ -154,7 +154,7 @@ Pick a profile/service, run one probe, and get a JSON witness record.
 Usage:
 
 ```sh
-$EJ xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>)
+$PW xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>)
             [--plan-id <id>] [--row-id <id>] [--correlation-id <id>]
             <probe-id> [probe-args...]
 ```
@@ -168,13 +168,13 @@ Notes:
 Common probes:
 
 ```sh
-$EJ xpc run --profile minimal probe_catalog
-$EJ xpc run --profile minimal capabilities_snapshot
-$EJ xpc run --profile minimal fs_op --op stat --path-class tmp
-$EJ xpc run --profile net_client net_op --op tcp_connect --host 127.0.0.1 --port 9
-$EJ xpc run --profile minimal --variant injectable sandbox_check --operation file-read-data --path /etc/hosts
-$EJ xpc run --profile temporary_exception sandbox_extension --op issue_file --class com.apple.app-sandbox.read --path /etc/hosts --allow-unsafe-path
-$EJ xpc run --profile temporary_exception inherit_child --scenario dynamic_extension --path /private/var/db/launchd.db/com.apple.launchd/overrides.plist --allow-unsafe-path
+$PW xpc run --profile minimal probe_catalog
+$PW xpc run --profile minimal capabilities_snapshot
+$PW xpc run --profile minimal fs_op --op stat --path-class tmp
+$PW xpc run --profile net_client net_op --op tcp_connect --host 127.0.0.1 --port 9
+$PW xpc run --profile minimal --variant injectable sandbox_check --operation file-read-data --path /etc/hosts
+$PW xpc run --profile temporary_exception sandbox_extension --op issue_file --class com.apple.app-sandbox.read --path /etc/hosts --allow-unsafe-path
+$PW xpc run --profile temporary_exception inherit_child --scenario dynamic_extension --path /private/var/db/launchd.db/com.apple.launchd/overrides.plist --allow-unsafe-path
 ```
 
 Use `probe_catalog` as the source of truth for per-probe usage; it also lists `fs_op_wait`, `bookmark_make`, `bookmark_op`, `bookmark_roundtrip`, `userdefaults_op`, `fs_coordinated_op`, and `network_tcp_connect`.
@@ -186,16 +186,16 @@ Use `probe_catalog` as the source of truth for per-probe usage; it also lists `f
 Example: issue a read extension for a harness file, consume it in `minimal`, then re-run the read:
 
 ```sh
-$EJ xpc run --profile temporary_exception sandbox_extension \
+$PW xpc run --profile temporary_exception sandbox_extension \
   --op issue_file --class com.apple.app-sandbox.read \
-  --path-class tmp --target specimen_file --name ej_extension.txt --create > /tmp/ej_issue_token.json
-FILE_PATH=$(plutil -extract data.details.file_path raw -o - /tmp/ej_issue_token.json)
-TOKEN=$(plutil -extract data.details.token raw -o - /tmp/ej_issue_token.json)
+  --path-class tmp --target specimen_file --name pw_extension.txt --create > /tmp/pw_issue_token.json
+FILE_PATH=$(plutil -extract data.details.file_path raw -o - /tmp/pw_issue_token.json)
+TOKEN=$(plutil -extract data.details.token raw -o - /tmp/pw_issue_token.json)
 
-$EJ xpc run --profile minimal fs_op --op open_read --path "$FILE_PATH"
-$EJ xpc run --profile minimal sandbox_extension --op consume --token "$TOKEN"
-$EJ xpc run --profile minimal fs_op --op open_read --path "$FILE_PATH"
-$EJ xpc run --profile minimal sandbox_extension --op release --token "$TOKEN"
+$PW xpc run --profile minimal fs_op --op open_read --path "$FILE_PATH"
+$PW xpc run --profile minimal sandbox_extension --op consume --token "$TOKEN"
+$PW xpc run --profile minimal fs_op --op open_read --path "$FILE_PATH"
+$PW xpc run --profile minimal sandbox_extension --op release --token "$TOKEN"
 ```
 
 Notes:
@@ -228,13 +228,13 @@ Facts it records/enforces (read these literally when interpreting the witness):
 Example (host-side rename choreography):
 
 ```sh
-old_path="/tmp/entitlement-jail-harness/ej_old.txt"
-new_path="/tmp/entitlement-jail-harness/ej_new.txt"
-printf 'ej rename-retarget demo\n' >"${old_path}"
+old_path="/tmp/policy-witness-harness/pw_old.txt"
+new_path="/tmp/policy-witness-harness/pw_new.txt"
+printf 'pw rename-retarget demo\n' >"${old_path}"
 
-$EJ xpc run --profile temporary_exception sandbox_extension \
+$PW xpc run --profile temporary_exception sandbox_extension \
   --op update_file_rename_delta --class com.apple.app-sandbox.read \
-  --path "${old_path}" --new-path "${new_path}" --wait-for-external-rename > /tmp/ej_update_file_rename_delta.json &
+  --path "${old_path}" --new-path "${new_path}" --wait-for-external-rename > /tmp/pw_update_file_rename_delta.json &
 pid=$!
 sleep 1
 mv "${old_path}" "${new_path}"
@@ -277,41 +277,41 @@ Examples:
 
 ```sh
 # A: Parent acquires via sandbox extension; child compares acquire vs use.
-$EJ xpc run --profile temporary_exception inherit_child \
+$PW xpc run --profile temporary_exception inherit_child \
   --scenario dynamic_extension \
   --path /private/var/db/launchd.db/com.apple.launchd/overrides.plist \
   --allow-unsafe-path
 
 # B: File/dir/socket FD ferries (no tokens).
-$EJ xpc run --profile minimal inherit_child \
+$PW xpc run --profile minimal inherit_child \
   --scenario matrix_basic \
-  --path-class tmp --target specimen_file --name ej_child.txt --create
+  --path-class tmp --target specimen_file --name pw_child.txt --create
 
 # B2: Same run, but attach sandbox log excerpt to the same JSON artifact.
-$EJ xpc run --capture-sandbox-logs --profile minimal inherit_child \
+$PW xpc run --capture-sandbox-logs --profile minimal inherit_child \
   --scenario matrix_basic \
-  --path-class tmp --target specimen_file --name ej_child.txt --create
+  --path-class tmp --target specimen_file --name pw_child.txt --create
 
 # B3: Deliberate protocol failure injection (expected: child_protocol_violation).
-$EJ xpc run --profile minimal inherit_child \
+$PW xpc run --profile minimal inherit_child \
   --scenario matrix_basic \
-  --path-class tmp --target specimen_file --name ej_child.txt --create \
+  --path-class tmp --target specimen_file --name pw_child.txt --create \
   --protocol-bad-cap-id
 
 # C: Bookmark ferry (success path) + a deliberate move to exercise resolution behavior.
-$EJ xpc run --profile bookmarks_app_scope inherit_child \
+$PW xpc run --profile bookmarks_app_scope inherit_child \
   --scenario bookmark_ferry \
-  --path-class tmp --target specimen_file --name ej_child.txt --create \
+  --path-class tmp --target specimen_file --name pw_child.txt --create \
   --bookmark-move
 
 # D: Bookmark ferry (invalid payload) — a deterministic “expected failure” diagnostic.
-$EJ xpc run --profile bookmarks_app_scope inherit_child \
+$PW xpc run --profile bookmarks_app_scope inherit_child \
   --scenario bookmark_ferry \
-  --path-class tmp --target specimen_file --name ej_child_bad.txt --create \
+  --path-class tmp --target specimen_file --name pw_child_bad.txt --create \
   --bookmark-invalid
 
 # E: Inheritance contract canary — the OS is expected to abort the child.
-$EJ xpc run --profile minimal inherit_child --scenario inherit_bad_entitlements
+$PW xpc run --profile minimal inherit_child --scenario inherit_bad_entitlements
 ```
 
 Attach/inspection knobs:
@@ -338,7 +338,7 @@ How to interpret failures:
 Usage:
 
 ```sh
-$EJ xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>)
+$PW xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>)
                 [--plan-id <id>] [--correlation-id <id>]
                 [--wait <fifo:auto|fifo:/abs|exists:/abs>]
                 [--wait-timeout-ms <n>] [--wait-interval-ms <n>]
@@ -388,10 +388,10 @@ The observer requires a PID and process name. You can get them from:
 One-shot pairing example:
 
 ```sh
-$EJ xpc run --profile minimal fs_op --op stat --path-class tmp > /tmp/ej_probe.json
-PID=$(plutil -extract data.details.service_pid raw -o - /tmp/ej_probe.json)
-NAME=$(plutil -extract data.details.process_name raw -o - /tmp/ej_probe.json)
-EntitlementJail.app/Contents/MacOS/sandbox-log-observer --pid "$PID" --process-name "$NAME" --last 10s
+$PW xpc run --profile minimal fs_op --op stat --path-class tmp > /tmp/pw_probe.json
+PID=$(plutil -extract data.details.service_pid raw -o - /tmp/pw_probe.json)
+NAME=$(plutil -extract data.details.process_name raw -o - /tmp/pw_probe.json)
+PolicyWitness.app/Contents/MacOS/sandbox-log-observer --pid "$PID" --process-name "$NAME" --last 10s
 ```
 
 Observer usage (summary):
@@ -411,14 +411,14 @@ Observer usage (summary):
 Usage:
 
 ```sh
-$EJ run-matrix --group <baseline|probe> [--variant <base|injectable>] [--out <dir>] <probe-id> [probe-args...]
+$PW run-matrix --group <baseline|probe> [--variant <base|injectable>] [--out <dir>] <probe-id> [probe-args...]
 ```
 
 Examples:
 
 ```sh
-$EJ run-matrix --group baseline capabilities_snapshot
-$EJ run-matrix --group probe --variant injectable capabilities_snapshot
+$PW run-matrix --group baseline capabilities_snapshot
+$PW run-matrix --group probe --variant injectable capabilities_snapshot
 ```
 
 High-concern variants are included without extra flags.
@@ -431,31 +431,31 @@ Groups (use `list-profiles` as the source of truth):
 Default output directory (per group, overwritten each run; see `data.output_dir`):
 
 ```
-~/Library/Application Support/entitlement-jail/matrix/<group>/<variant>/latest
+~/Library/Application Support/policy-witness/matrix/<group>/<variant>/latest
 ```
 
 ### Evidence and inspection
 
-EntitlementJail ships “static evidence” inside the app bundle:
+PolicyWitness ships “static evidence” inside the app bundle:
 
 - `Contents/Resources/Evidence/manifest.json` (hashes + entitlements for key Mach‑Os)
-- `Contents/Resources/Evidence/symbols.json` (stable `ej_*` marker symbols for tooling)
+- `Contents/Resources/Evidence/symbols.json` (stable `pw_*` marker symbols for tooling)
 - `Contents/Resources/Evidence/profiles.json` (the process zoo profiles and entitlements)
 
 Commands:
 
 ```sh
-$EJ verify-evidence
-$EJ inspect-macho main
-$EJ inspect-macho evidence.symbols
-$EJ inspect-macho evidence.profiles
-$EJ bundle-evidence
+$PW verify-evidence
+$PW inspect-macho main
+$PW inspect-macho evidence.symbols
+$PW inspect-macho evidence.profiles
+$PW bundle-evidence
 ```
 
 Default evidence bundle output directory (overwritten each run; see `data.output_dir`):
 
 ```
-~/Library/Application Support/entitlement-jail/evidence/latest
+~/Library/Application Support/policy-witness/evidence/latest
 ```
 
 ### Quarantine Lab (`quarantine-lab`)
@@ -467,19 +467,19 @@ Hard rule: it does **not** *run* payloads (no `execve`, no `posix_spawn`). Note 
 Usage:
 
 ```sh
-$EJ quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
+$PW quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
 ```
 
 Choosing a service id:
 
-- Run `$EJ list-profiles` and look for Quarantine Lab profiles (often `quarantine_*`).
-- Run `$EJ show-profile <id>` and copy `data.variant.bundle_id` into the `quarantine-lab` invocation.
+- Run `$PW list-profiles` and look for Quarantine Lab profiles (often `quarantine_*`).
+- Run `$PW show-profile <id>` and copy `data.variant.bundle_id` into the `quarantine-lab` invocation.
 
 Example:
 
 ```sh
-$EJ show-profile quarantine_default
-$EJ quarantine-lab <bundle_id_from_show_profile> shell_script --dir tmp
+$PW show-profile quarantine_default
+$PW quarantine-lab <bundle_id_from_show_profile> shell_script --dir tmp
 ```
 
 Payload classes:
@@ -489,7 +489,7 @@ Payload classes:
 For the full option list, run:
 
 ```sh
-EntitlementJail.app/Contents/MacOS/xpc-quarantine-client --help
+PolicyWitness.app/Contents/MacOS/xpc-quarantine-client --help
 ```
 
 ## Output format (JSON)
@@ -498,7 +498,7 @@ All commands that emit JSON use the same top-level envelope:
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 1,
   "kind": "probe_response",
   "generated_at_unix_ms": 1700000000000,
   "result": {
@@ -510,8 +510,8 @@ All commands that emit JSON use the same top-level envelope:
 }
 ```
 
-Note: Rust-emitted CLI reports use `schema_version: 4`. XPC probe/quarantine responses emitted by the embedded Swift clients use `schema_version: 2`.
-Some per-probe witness payloads also carry their own `schema_version` fields (for example `inherit_child` witness `schema_version: 3`).
+Note: Rust-emitted CLI reports use `schema_version: 1`. XPC probe/quarantine responses emitted by the embedded Swift clients use `schema_version: 1`.
+Some per-probe witness payloads also carry their own `schema_version` fields (for example `inherit_child` witness `schema_version: 1`).
 
 Rules:
 

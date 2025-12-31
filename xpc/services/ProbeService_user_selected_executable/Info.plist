@@ -5,7 +5,7 @@
   <key>CFBundleExecutable</key>
   <string>ProbeService_user_selected_executable</string>
   <key>CFBundleIdentifier</key>
-  <string>com.yourteam.entitlement-jail.ProbeService_user_selected_executable</string>
+  <string>com.yourteam.policy-witness.ProbeService_user_selected_executable</string>
   <key>CFBundleName</key>
   <string>ProbeService_user_selected_executable</string>
   <key>CFBundlePackageType</key>

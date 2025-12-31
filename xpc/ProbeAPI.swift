@@ -62,7 +62,7 @@ public struct SessionOpenResponse: Codable {
     public var wait_path: String?
 
     public init(
-        schema_version: Int = 3,
+        schema_version: Int = 1,
         rc: Int,
         error: String? = nil,
         session_token: String? = nil,
@@ -119,7 +119,7 @@ public struct SessionControlResponse: Codable {
     public var rc: Int
     public var error: String?
 
-    public init(schema_version: Int = 2, rc: Int, error: String? = nil) {
+    public init(schema_version: Int = 1, rc: Int, error: String? = nil) {
         self.schema_version = schema_version
         self.rc = rc
         self.error = error
@@ -267,7 +267,7 @@ public struct RunProbeResponse: Codable {
     public var layer_attribution: LayerAttribution?
 
     public init(
-        schema_version: Int = 2,
+        schema_version: Int = 1,
         plan_id: String? = nil,
         row_id: String? = nil,
         correlation_id: String? = nil,
@@ -318,8 +318,8 @@ public struct RunProbeResponse: Codable {
 public enum InheritChildProtocol {
     public static let version = 1
     public static let capabilityNamespace = "inherit_child.cap.v1"
-    public static let sentinelPrefix = "EJ_CHILD_SENTINEL"
-    public static let eventPayloadPrefix = "EJ_CAP_PAYLOAD"
+    public static let sentinelPrefix = "PW_CHILD_SENTINEL"
+    public static let eventPayloadPrefix = "PW_CAP_PAYLOAD"
     public static let sentinelKeyProtocolVersion = "protocol_version"
     public static let sentinelKeyCapabilityNamespace = "cap_namespace"
     public static let eventPayloadKeyProtocolVersion = "proto"
@@ -328,9 +328,9 @@ public enum InheritChildProtocol {
     public static let eventPayloadKeyCapType = "cap_type"
     public static let eventPayloadKeyLength = "len"
     // Event bus framing: JSONL events from child plus a sentinel line:
-    // "EJ_CHILD_SENTINEL ... protocol_version=<v> cap_namespace=<ns>\n".
+    // "PW_CHILD_SENTINEL ... protocol_version=<v> cap_namespace=<ns>\n".
     // Parent->child payloads over the event bus are a header line:
-    // "EJ_CAP_PAYLOAD proto=<v> cap_ns=<ns> cap_id=<id> cap_type=<type> len=<n>\n"
+    // "PW_CAP_PAYLOAD proto=<v> cap_ns=<ns> cap_id=<id> cap_type=<type> len=<n>\n"
     // followed by <n> raw bytes.
     // Rights bus header (SCM_RIGHTS payload) is four int32s: cap_id, meta0, meta1, meta2.
     // meta0 is the protocol version; meta1/meta2 are reserved (0).
@@ -593,7 +593,7 @@ public struct InheritChildWitness: Codable {
     public var outcome_summary: String?
 
     public init(
-        schema_version: Int = 3,
+        schema_version: Int = 1,
         protocol_version: Int = InheritChildProtocol.version,
         capability_namespace: String = InheritChildProtocol.capabilityNamespace,
         run_id: String,
@@ -779,7 +779,7 @@ public struct QuarantineWriteResponse: Codable {
     public var layer_attribution: LayerAttribution?
 
     public init(
-        schema_version: Int = 2,
+        schema_version: Int = 1,
         rc: Int,
         normalized_outcome: String,
         error: String? = nil,
@@ -886,7 +886,7 @@ public struct JsonEnvelope<T: Encodable>: Encodable {
     public var data: T
 
     public init(
-        schema_version: Int = 2,
+        schema_version: Int = 1,
         kind: String,
         generated_at_unix_ms: UInt64,
         result: JsonResult,

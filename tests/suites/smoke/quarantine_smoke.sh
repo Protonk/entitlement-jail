@@ -19,18 +19,18 @@ step() {
   test_step "$1" "${2:-$1}"
 }
 
-EJ="${EJ_BIN:-${ROOT_DIR}/EntitlementJail.app/Contents/MacOS/entitlement-jail}"
-OUT_DIR="${EJ_TEST_ARTIFACTS}"
+PW="${PW_BIN:-${ROOT_DIR}/PolicyWitness.app/Contents/MacOS/policy-witness}"
+OUT_DIR="${PW_TEST_ARTIFACTS}"
 
-if [[ ! -x "${EJ}" ]]; then
-  test_fail "missing or non-executable EntitlementJail launcher at: ${EJ}"
+if [[ ! -x "${PW}" ]]; then
+  test_fail "missing or non-executable PolicyWitness launcher at: ${PW}"
 fi
 
 rm -rf "${OUT_DIR}"
 mkdir -p "${OUT_DIR}"
 
 step "resolve_bundle_id" "resolve quarantine_default bundle id"
-BUNDLE_ID="$("${EJ}" show-profile quarantine_default | /usr/bin/python3 -c 'import json,sys; data=json.load(sys.stdin); print(((data.get("data") or {}).get("variant") or {}).get("bundle_id") or "")')"
+BUNDLE_ID="$("${PW}" show-profile quarantine_default | /usr/bin/python3 -c 'import json,sys; data=json.load(sys.stdin); print(((data.get("data") or {}).get("variant") or {}).get("bundle_id") or "")')"
 
 if [[ -z "${BUNDLE_ID}" ]]; then
   test_fail "failed to resolve quarantine_default bundle id"
@@ -38,7 +38,7 @@ fi
 
 step "quarantine_lab_create" "quarantine-lab text create_new"
 OUT_JSON="${OUT_DIR}/quarantine-default-text.json"
-"${EJ}" quarantine-lab "${BUNDLE_ID}" text --dir tmp --name ej_quarantine_smoke.txt --operation create_new --no-exec >"${OUT_JSON}"
+"${PW}" quarantine-lab "${BUNDLE_ID}" text --dir tmp --name pw_quarantine_smoke.txt --operation create_new --no-exec >"${OUT_JSON}"
 
 /usr/bin/python3 - "${OUT_JSON}" "${BUNDLE_ID}" <<'PY'
 import json
@@ -49,7 +49,7 @@ path = Path(sys.argv[1])
 bundle_id = sys.argv[2]
 data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
 
-if data.get("schema_version") != 2:
+if data.get("schema_version") != 1:
     raise SystemExit(f"unexpected schema_version: {data.get('schema_version')!r}")
 if data.get("kind") != "quarantine_response":
     raise SystemExit(f"unexpected kind: {data.get('kind')!r}")

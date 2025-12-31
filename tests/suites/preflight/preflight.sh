@@ -50,13 +50,13 @@ step() {
 }
 
 if [[ -z "${OUT_PATH}" ]]; then
-  OUT_PATH="${EJ_TEST_ARTIFACTS}/preflight.json"
+  OUT_PATH="${PW_TEST_ARTIFACTS}/preflight.json"
 fi
 
 mkdir -p "$(dirname "${OUT_PATH}")"
 
-APP_PATH="${ROOT_DIR}/EntitlementJail.app"
-INSPECTOR_PATH="${EJ_INSPECTOR_BIN:-${ROOT_DIR}/runner/target/debug/ej-inspector}"
+APP_PATH="${ROOT_DIR}/PolicyWitness.app"
+INSPECTOR_PATH="${PW_INSPECTOR_BIN:-${ROOT_DIR}/runner/target/debug/pw-inspector}"
 DYLIB_PATH="${ROOT_DIR}/tests/fixtures/TestDylib/out/testdylib.dylib"
 
 step "codesign_inspection" "inspect codesign metadata"
@@ -224,7 +224,7 @@ dylib_exists = os.path.exists(dylib_path)
 dylib_signed, dylib_error = codesign_verify(dylib_path) if dylib_exists else (False, "missing")
 
 report = {
-    "schema_version": 3,
+    "schema_version": 1,
     "profiles_manifest": {
         "path": profiles_manifest_path,
         "exists": os.path.exists(profiles_manifest_path),

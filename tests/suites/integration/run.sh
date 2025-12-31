@@ -6,13 +6,13 @@ source "${ROOT_DIR}/tests/lib/testlib.sh"
 
 test_begin "integration" "cli.integration"
 
-PRECHECK_JSON="${EJ_TEST_OUT_DIR}/suites/preflight/codesign.preflight/artifacts/preflight.json"
+PRECHECK_JSON="${PW_TEST_OUT_DIR}/suites/preflight/codesign.preflight/artifacts/preflight.json"
 if [[ -f "${PRECHECK_JSON}" ]]; then
-  export EJ_PREFLIGHT_JSON="${PRECHECK_JSON}"
+  export PW_PREFLIGHT_JSON="${PRECHECK_JSON}"
 fi
-export EJ_INTEGRATION=1
+export PW_INTEGRATION=1
 
-LOG_PATH="${EJ_TEST_ARTIFACTS}/cargo-test-integration.log"
+LOG_PATH="${PW_TEST_ARTIFACTS}/cargo-test-integration.log"
 
 test_step "cargo_test_integration" "cargo test --tests (cli integration)"
 set +e

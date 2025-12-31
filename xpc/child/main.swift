@@ -9,15 +9,15 @@ private let childProtocolViolationExit: Int32 = 96
 private let childRightsBusExit: Int32 = 97
 private let childEventBusExit: Int32 = 98
 
-@_cdecl("ej_inherit_child_stop_entry")
+@_cdecl("pw_inherit_child_stop_entry")
 @inline(never)
 @_optimize(none)
-public func ej_inherit_child_stop_entry_marker() {}
+public func pw_inherit_child_stop_entry_marker() {}
 
-@_cdecl("ej_inherit_child_stop_on_deny")
+@_cdecl("pw_inherit_child_stop_on_deny")
 @inline(never)
 @_optimize(none)
-public func ej_inherit_child_stop_on_deny_marker() {}
+public func pw_inherit_child_stop_on_deny_marker() {}
 
 private func nowUnixMs() -> UInt64 {
     UInt64(Date().timeIntervalSince1970 * 1000.0)
@@ -163,7 +163,7 @@ private func emitOpEvent(
             errno: errno,
             rc: rc
         )
-        ej_inherit_child_stop_on_deny_marker()
+        pw_inherit_child_stop_on_deny_marker()
         raise(SIGSTOP)
     }
 }
@@ -436,22 +436,22 @@ private func spawnGrandchild(
     depth: Int
 ) -> pid_t? {
     var env = ProcessInfo.processInfo.environment
-    env["EJ_RUN_ID"] = runId
-    env["EJ_SCENARIO"] = scenario
-    env["EJ_PATH"] = path
-    env["EJ_TARGET_NAME"] = targetName
-    env["EJ_SOCKET_PATH"] = socketPath
-    env["EJ_EVENT_FD"] = "\(eventFd)"
-    env["EJ_RIGHTS_FD"] = "-1"
-    env["EJ_RIGHTS_CAP_COUNT"] = "0"
-    env["EJ_EVENT_CAP_COUNT"] = "0"
-    env["EJ_CAP_COUNT"] = "0"
-    env["EJ_RIGHTS_CAP_IDS"] = ""
-    env["EJ_EVENT_CAP_IDS"] = ""
-    env["EJ_PROTOCOL_VERSION"] = "\(InheritChildProtocol.version)"
-    env["EJ_CAP_NAMESPACE"] = InheritChildProtocol.capabilityNamespace
-    env["EJ_ACTOR"] = "grandchild"
-    env["EJ_LINEAGE_DEPTH"] = "\(depth)"
+    env["PW_RUN_ID"] = runId
+    env["PW_SCENARIO"] = scenario
+    env["PW_PATH"] = path
+    env["PW_TARGET_NAME"] = targetName
+    env["PW_SOCKET_PATH"] = socketPath
+    env["PW_EVENT_FD"] = "\(eventFd)"
+    env["PW_RIGHTS_FD"] = "-1"
+    env["PW_RIGHTS_CAP_COUNT"] = "0"
+    env["PW_EVENT_CAP_COUNT"] = "0"
+    env["PW_CAP_COUNT"] = "0"
+    env["PW_RIGHTS_CAP_IDS"] = ""
+    env["PW_EVENT_CAP_IDS"] = ""
+    env["PW_PROTOCOL_VERSION"] = "\(InheritChildProtocol.version)"
+    env["PW_CAP_NAMESPACE"] = InheritChildProtocol.capabilityNamespace
+    env["PW_ACTOR"] = "grandchild"
+    env["PW_LINEAGE_DEPTH"] = "\(depth)"
 
     let envStrings = env.map { "\($0)=\($1)" }
     var envp: [UnsafeMutablePointer<CChar>?] = envStrings.map { strdup($0) }
@@ -486,30 +486,30 @@ private func spawnGrandchild(
 }
 
 let env = ProcessInfo.processInfo.environment
-let runId = env["EJ_RUN_ID"] ?? UUID().uuidString
-let scenario = env["EJ_SCENARIO"] ?? ""
-let path = env["EJ_PATH"] ?? ""
-let targetName = env["EJ_TARGET_NAME"] ?? ""
-let socketPath = env["EJ_SOCKET_PATH"] ?? ""
-let stopOnEntry = env["EJ_STOP_ON_ENTRY"] == "1"
-let stopOnDeny = env["EJ_STOP_ON_DENY"] == "1"
+let runId = env["PW_RUN_ID"] ?? UUID().uuidString
+let scenario = env["PW_SCENARIO"] ?? ""
+let path = env["PW_PATH"] ?? ""
+let targetName = env["PW_TARGET_NAME"] ?? ""
+let socketPath = env["PW_SOCKET_PATH"] ?? ""
+let stopOnEntry = env["PW_STOP_ON_ENTRY"] == "1"
+let stopOnDeny = env["PW_STOP_ON_DENY"] == "1"
 
 // Two-bus protocol (child view):
 // - Raw write(2) loops are used (not fragile FileHandle paths) so instrumentation failures don’t masquerade as sandbox outcomes.
 // - eventFd/rightsFd are the actual socketpair FDs from the parent (no hardcoded fd numbers); the sentinel records their identities.
-// - eventFd/rightFd are explicit numbers passed via EJ_EVENT_FD/EJ_RIGHTS_FD, dup2'd by the parent.
+// - eventFd/rightFd are explicit numbers passed via PW_EVENT_FD/PW_RIGHTS_FD, dup2'd by the parent.
 // - Event bus: child writes JSONL events; the first bytes are
-//   "EJ_CHILD_SENTINEL ... protocol_version=<v> cap_namespace=<ns>\n".
-//   Parent may send "EJ_CAP_PAYLOAD proto=<v> cap_ns=<ns> cap_id=<id> cap_type=<type> len=<n>\n"
+//   "PW_CHILD_SENTINEL ... protocol_version=<v> cap_namespace=<ns>\n".
+//   Parent may send "PW_CAP_PAYLOAD proto=<v> cap_ns=<ns> cap_id=<id> cap_type=<type> len=<n>\n"
 //   followed by <n> raw bytes.
 // - Rights bus: parent sends CapabilityPayload bytes with SCM_RIGHTS control; meta0 holds protocol_version.
-let eventFd = Int32(env["EJ_EVENT_FD"].flatMap { Int($0) } ?? -1)
-let rightsFd = Int32(env["EJ_RIGHTS_FD"].flatMap { Int($0) } ?? -1)
-let rightsCapCount = Int(env["EJ_RIGHTS_CAP_COUNT"] ?? env["EJ_CAP_COUNT"] ?? "") ?? 0
-let eventCapCount = Int(env["EJ_EVENT_CAP_COUNT"] ?? "") ?? 0
-let preAcquire = env["EJ_PRE_ACQUIRE"] == "1"
-let lineageDepth = Int(env["EJ_LINEAGE_DEPTH"] ?? "") ?? 1
-let actorLabel = env["EJ_ACTOR"] ?? (lineageDepth >= 2 ? "grandchild" : "child")
+let eventFd = Int32(env["PW_EVENT_FD"].flatMap { Int($0) } ?? -1)
+let rightsFd = Int32(env["PW_RIGHTS_FD"].flatMap { Int($0) } ?? -1)
+let rightsCapCount = Int(env["PW_RIGHTS_CAP_COUNT"] ?? env["PW_CAP_COUNT"] ?? "") ?? 0
+let eventCapCount = Int(env["PW_EVENT_CAP_COUNT"] ?? "") ?? 0
+let preAcquire = env["PW_PRE_ACQUIRE"] == "1"
+let lineageDepth = Int(env["PW_LINEAGE_DEPTH"] ?? "") ?? 1
+let actorLabel = env["PW_ACTOR"] ?? (lineageDepth >= 2 ? "grandchild" : "child")
 eventActorLabel = actorLabel
 eventLineage = InheritChildLineage(depth: lineageDepth, pid: Int(getpid()), ppid: Int(getppid()))
 
@@ -523,17 +523,17 @@ func parseCapNameList(_ raw: String?) -> [String] {
     return raw.split(separator: ",").map { String($0) }
 }
 
-let expectedRightsCapIds = parseCapIdList(env["EJ_RIGHTS_CAP_IDS"])
-let expectedEventCapIds = parseCapNameList(env["EJ_EVENT_CAP_IDS"])
+let expectedRightsCapIds = parseCapIdList(env["PW_RIGHTS_CAP_IDS"])
+let expectedEventCapIds = parseCapNameList(env["PW_EVENT_CAP_IDS"])
 
 let sentinel = "\(InheritChildProtocol.sentinelPrefix) pid=\(getpid()) run_id=\(runId) scenario=\(scenario) path=\(path) event_fd=\(eventFd) rights_fd=\(rightsFd) \(InheritChildProtocol.sentinelKeyProtocolVersion)=\(InheritChildProtocol.version) \(InheritChildProtocol.sentinelKeyCapabilityNamespace)=\(InheritChildProtocol.capabilityNamespace)\n"
 _ = writeSentinel(STDERR_FILENO, sentinel)
 if eventFd < 0 {
-    fputs("inherit_child: missing EJ_EVENT_FD (no event bus)\n", stderr)
+    fputs("inherit_child: missing PW_EVENT_FD (no event bus)\n", stderr)
     exit(childEventBusExit)
 }
 if rightsCapCount > 0, rightsFd < 0 {
-    fputs("inherit_child: missing EJ_RIGHTS_FD (no rights bus)\n", stderr)
+    fputs("inherit_child: missing PW_RIGHTS_FD (no rights bus)\n", stderr)
     exit(childRightsBusExit)
 }
 if eventFd >= 0 {
@@ -543,9 +543,9 @@ if eventFd >= 0 {
     }
 }
 
-let envProtocolStr = env["EJ_PROTOCOL_VERSION"] ?? ""
+let envProtocolStr = env["PW_PROTOCOL_VERSION"] ?? ""
 let envProtocol = Int(envProtocolStr) ?? -1
-let envCapNamespace = env["EJ_CAP_NAMESPACE"] ?? ""
+let envCapNamespace = env["PW_CAP_NAMESPACE"] ?? ""
 if envProtocol != InheritChildProtocol.version || envCapNamespace != InheritChildProtocol.capabilityNamespace {
     emitEvent(eventFd, runId: runId, phase: "child_protocol_violation", details: [
         "expected_protocol": "\(InheritChildProtocol.version)",
@@ -571,7 +571,7 @@ emitEvent(eventFd, runId: runId, phase: "child_start", details: [
 
 if stopOnEntry {
     emitEvent(eventFd, runId: runId, phase: "child_stop_on_entry")
-    ej_inherit_child_stop_entry_marker()
+    pw_inherit_child_stop_entry_marker()
     raise(SIGSTOP)
 }
 
@@ -614,7 +614,7 @@ func failEventBus(_ err: Int32?, context: String) -> Never {
         exit(childEventBusExit)
     }
     eventBusFailed = true
-    let msg = "EJ_CHILD_EVENT_BUS_ERROR context=\(context) errno=\(err.map { "\($0)" } ?? "")\n"
+    let msg = "PW_CHILD_EVENT_BUS_ERROR context=\(context) errno=\(err.map { "\($0)" } ?? "")\n"
     _ = writeSentinel(STDERR_FILENO, msg)
     exit(childEventBusExit)
 }

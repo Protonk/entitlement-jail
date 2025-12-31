@@ -1,44 +1,40 @@
-# EntitlementJail
+# PolicyWitness
 
-EntitlementJail is a macOS research/teaching repo where the experiment variable is **entitlements**: you run the same in-process probes inside a zoo of **separately signed, launchd-managed XPC services**, each with its own entitlement profile, and collect stable JSON “witness records” of what happened.
+PolicyWitness is a macOS tool to instrument App Sandbox and entitlement effects without hand-waving. It gives you a structured witness of what ran and what changed alongside on-demand lifecycle context about the sandboxed service and any child processes. Together, this makes sandbox attribution reproducible by separating OS policy enforcement from early process death, harness failures, and session restarts.
 
-Most of what gets maintained here is the “lab surface”:
+For sandbox instrumentation, the “API” you usually get back is just EPERM/EACCES (or a killed process), which rarely tells you what policy check fired, which operation/path/class triggered it, or whether you even reached the code you think you reached. Seatbelt/unified-log deny lines are often the only concrete explanation the OS will give you, but they’re easy to miss (wrong PID, process exits fast, log filtering, “deny” is silent for some paths) and easy to mis-correlate after the fact. 
 
-- the probe implementations and their safety boundaries,
-- the set of base entitlement profiles plus auto-generated injectable twins (one twin per service),
-- the `inherit_child` paired-process harness (frozen two-bus protocol + scenario/matrix witness),
-- the stable JSON output contract (for downstream tooling), and
-- the evidence + tests that keep the bundle and its claims honest.
+PolicyWitness avoids these issues because it keeps the control plane outside the sandbox and treats the XPC service as the sandbox boundary. That posture lets it start the service deterministically, record its PID, and observe lifecycle outcomes even when sandboxed code fails fast. When a probe needs liveness across multiple operations, it uses a durable session so all phases run in the same service process context. It also requires ultra-early sentinels and explicit lifecycle events from the service and any child helpers so “no event stream” becomes diagnostic rather than ambiguous. 
 
-## Core commitments
-
-- **Entitlements are the variable**: the knob is OS-enforced, separately signed XPC services inside one app; each base service has a build-generated injectable twin with a fixed overlay (variants are first-class).
-- **Outcomes first; attribution second**: outputs are witness records (rc/errno/paths/timing) without quietly upgrading them into stronger claims about *why* they happened.
-- **Deterministic sessions for attach/debug**: `xpc session` exposes explicit lifecycle events (PID/readiness/wait barriers), so tracing and debugging can coordinate without racing service startup.
-- **Evidence is a first-class artifact**: entitlement profiles are derived from *signed* entitlements in built artifacts during the build and embedded into the `.app` for inspection/verification.
-- **`inherit_child` is an inspection substrate**: a frozen two-bus protocol (event bus vs rights bus), scenario routing, strict witness invariants, and self-diagnosing failures protected by smoke + golden fixtures.
-- **Success is an access delta**: probes record post-action checks; success is “access delta observed”, not “rc==0” (see `sandbox_extension --op update_file_rename_delta` and `inherit_child`).
-
-## What ships
-
-This repo builds a single distributable specimen:
-
-- `EntitlementJail.app` — the bundle you run and inspect
-  - `Contents/MacOS/entitlement-jail` (Rust launcher; host-side)
-  - `Contents/XPCServices/*.xpc` (Swift services; sandboxed; entitlements vary per service)
-  - `Contents/MacOS/ej-inherit-child` + `Contents/MacOS/ej-inherit-child-bad` (paired-process helpers; also embedded per ProbeService bundle)
-  - `Contents/Resources/Evidence/*` (generated manifests: entitlements, hashes, profiles, symbols)
-- `EntitlementJail.md` — the user guide shipped alongside the app
+What’s hard in computing security is making correct claims about boundaries. The sandbox is an especially hard boundary to make a claim about because it often collapses into ambiguous signals, depends on identity and context, and frequently requires external evidence to attribute a denial. PolicyWitness makes claims by producing per-phase, per-process witnesses with durable-session context and explicit lifecycle signals.
 
 ## The Core Model
 >Profiles → Sessions → Probes → Witnesses
 
 The preferred execution surface is in-process probes dispatched by `probe_id` (not arbitrary path execution). If you want a three-way comparison (baseline vs `sandbox-exec` vs XPC), the tri-run harness under `experiments/` produces a mismatch atlas.
 
+## Commitments
+
+* Signed profiles are the variable: the sandbox boundary lives in separately signed XPC services (and variants) embedded in one app, so the same probe runs under OS-enforced entitlement differences rather than ad-hoc inheritance tricks.
+* Witness over interpretation: probes emit per-phase action/outcome records (rc/errno/paths/timing) and access-delta checks, so success and failure are defined by observable transitions, not return codes or narrative attribution.
+* Lifecycle is part of the experiment: the control plane stays outside the sandbox and uses durable sessions plus explicit lifecycle signals and ultra-early sentinels so fast exits, restarts, and missing child event streams are diagnosable.
+* Two-bus child semantics are explicit: inherit_child separates structured events from SCM_RIGHTS capability passing and enforces protocol validation so child/harness mismatches surface as explicit protocol errors rather than silent misreads.
+
+## What ships
+
+This repo builds a single distributable specimen:
+
+- `PolicyWitness.app` — the bundle you run and inspect
+  - `Contents/MacOS/policy-witness` (Rust launcher; host-side)
+  - `Contents/XPCServices/*.xpc` (Swift services; sandboxed; entitlements vary per service)
+  - `Contents/MacOS/pw-inherit-child` + `Contents/MacOS/pw-inherit-child-bad` (paired-process helpers; also embedded per ProbeService bundle)
+  - `Contents/Resources/Evidence/*` (generated manifests: entitlements, hashes, profiles, symbols)
+- `PolicyWitness.md` — the user guide shipped alongside the app
+
 ## Where To Learn
 
 If you're...
-- using the app / workflows: [`EntitlementJail.md`](EntitlementJail.md)
+- using the app / workflows: [`PolicyWitness.md`](PolicyWitness.md)
 - orienting yourself in the repo: [`AGENTS.md`](AGENTS.md)
 - contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 - signing/distributing: [`SIGNING.md`](SIGNING.md)

@@ -48,5 +48,5 @@
   "protocol_version": 1,
   "sandbox_log_capture_status": "not_requested",
   "scenario": "inherit_bad_entitlements",
-  "schema_version": 3
+  "schema_version": 1
 }

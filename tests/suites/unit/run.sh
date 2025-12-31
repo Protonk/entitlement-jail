@@ -6,7 +6,7 @@ source "${ROOT_DIR}/tests/lib/testlib.sh"
 
 test_begin "unit" "rust.unit"
 
-LOG_PATH="${EJ_TEST_ARTIFACTS}/cargo-test-bins.log"
+LOG_PATH="${PW_TEST_ARTIFACTS}/cargo-test-bins.log"
 
 test_step "cargo_test_bins" "cargo test --bins (unit tests)"
 set +e

@@ -2,13 +2,13 @@
 
 This is developer documentation for the Rust code in `runner/`. It builds the command-line launcher that ships as:
 
-- `EntitlementJail.app/Contents/MacOS/entitlement-jail`
+- `PolicyWitness.app/Contents/MacOS/policy-witness`
 
 This document exists so people working on the CLI can debug breakage without spelunking a user guide. It complements the user-facing docs and treats behavior as a contract: if you change the CLI, update this doc.
 
 Related docs:
 
-- User guide / workflows (shipped with the app): [EntitlementJail.md](../EntitlementJail.md)
+- User guide / workflows (shipped with the app): [PolicyWitness.md](../PolicyWitness.md)
 - XPC subsystem (Swift; build + services): [xpc/README.md](../xpc/README.md)
 - Contributing/build tour: [CONTRIBUTING.md](../CONTRIBUTING.md)
 - Signing/build procedure: [SIGNING.md](../SIGNING.md)
@@ -26,26 +26,26 @@ Core files:
 
 CLI tests:
 
-- `runner/tests/cli_integration.rs` — integration tests against a built `EntitlementJail.app` (or `EJ_BIN_PATH`)
+- `runner/tests/cli_integration.rs` — integration tests against a built `PolicyWitness.app` (or `PW_BIN_PATH`)
 - `tests/suites/smoke/update_file_rename_delta_fixtures.sh` — regression fixtures for the `sandbox_extension update_file_rename_delta` semantics harness (rename retargeting + per-candidate access-delta checks)
 
 This crate also builds standalone helper CLIs:
 
 - `runner/src/bin/quarantine-observer.rs` → `quarantine-observer` (outside the sandbox boundary)
 - `runner/src/bin/sandbox-log-observer.rs` → `sandbox-log-observer` (outside the sandbox boundary; embedded into the `.app`)
-- `runner/src/bin/ej-inspector.rs` → `ej-inspector` (debugger-side helper; not part of the in-sandbox surface)
+- `runner/src/bin/pw-inspector.rs` → `pw-inspector` (debugger-side helper; not part of the in-sandbox surface)
 
-## How it builds into `EntitlementJail.app`
+## How it builds into `PolicyWitness.app`
 
 The build is centralized in `build.sh` (invoked by `make build`).
 
 Key wiring:
 
-- `cargo build --manifest-path runner/Cargo.toml --release --bin runner` produces `runner/target/release/runner`.
-- The build script copies that binary to `EntitlementJail.app/Contents/MacOS/entitlement-jail`.
-- The build script also embeds `runner/target/release/sandbox-log-observer` as `EntitlementJail.app/Contents/MacOS/sandbox-log-observer`.
-- The build script builds `ej-inherit-child` and embeds it at `EntitlementJail.app/Contents/MacOS/ej-inherit-child`, then copies it into each `ProbeService_*` bundle (see `xpc/README.md`).
-- Evidence manifests are generated during the build by `tests/build-evidence.py` and embedded under `EntitlementJail.app/Contents/Resources/Evidence/`.
+- `cargo build --manifest-path runner/Cargo.toml --release --bin policy-witness` produces `runner/target/release/policy-witness`.
+- The build script copies that binary to `PolicyWitness.app/Contents/MacOS/policy-witness`.
+- The build script also embeds `runner/target/release/sandbox-log-observer` as `PolicyWitness.app/Contents/MacOS/sandbox-log-observer`.
+- The build script builds `pw-inherit-child` and embeds it at `PolicyWitness.app/Contents/MacOS/pw-inherit-child`, then copies it into each `ProbeService_*` bundle (see `xpc/README.md`).
+- Evidence manifests are generated during the build by `tests/build-evidence.py` and embedded under `PolicyWitness.app/Contents/Resources/Evidence/`.
 
 If you change bundle paths, add embedded executables, or change how services are enumerated/signed, expect to touch both `build.sh` and `tests/build-evidence.py`, plus the docs that describe the resulting bundle layout.
 
@@ -68,8 +68,8 @@ Instead, the supported execution surfaces are:
 
 The Rust launcher does not speak NSXPC directly.
 
-- `entitlement-jail xpc run` and `entitlement-jail xpc session` delegate to the embedded Swift helper `xpc-probe-client`.
-- `entitlement-jail quarantine-lab` delegates to the embedded Swift helper `xpc-quarantine-client`.
+- `policy-witness xpc run` and `policy-witness xpc session` delegate to the embedded Swift helper `xpc-probe-client`.
+- `policy-witness quarantine-lab` delegates to the embedded Swift helper `xpc-quarantine-client`.
 
 The launcher primarily acts as:
 
@@ -97,25 +97,25 @@ If you add a “high concern” entitlement, update the risk classifier so the r
 
 Shipped location:
 
-- `EntitlementJail.app/Contents/MacOS/entitlement-jail`
+- `PolicyWitness.app/Contents/MacOS/policy-witness`
 
 For CLI development, it’s useful to keep the raw subcommand surface area in view:
 
 ```sh
-./EntitlementJail.app/Contents/MacOS/entitlement-jail run-system <absolute-platform-binary> [args...]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail run-embedded <tool-name> [args...]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--capture-sandbox-logs] <probe-id> [probe-args...]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--correlation-id <id>] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail verify-evidence
-./EntitlementJail.app/Contents/MacOS/entitlement-jail inspect-macho <service-id|main|path>
-./EntitlementJail.app/Contents/MacOS/entitlement-jail list-profiles
-./EntitlementJail.app/Contents/MacOS/entitlement-jail list-services
-./EntitlementJail.app/Contents/MacOS/entitlement-jail show-profile <id[@variant]> [--variant <base|injectable>]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail describe-service <id[@variant]> [--variant <base|injectable>]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail health-check [--profile <id[@variant]>] [--variant <base|injectable>]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail bundle-evidence [--out <dir>] [--include-health-check]
-./EntitlementJail.app/Contents/MacOS/entitlement-jail run-matrix --group <name> [--variant <base|injectable>] [--out <dir>] <probe-id> [probe-args...]
+./PolicyWitness.app/Contents/MacOS/policy-witness run-system <absolute-platform-binary> [args...]
+./PolicyWitness.app/Contents/MacOS/policy-witness run-embedded <tool-name> [args...]
+./PolicyWitness.app/Contents/MacOS/policy-witness xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--capture-sandbox-logs] <probe-id> [probe-args...]
+./PolicyWitness.app/Contents/MacOS/policy-witness xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--correlation-id <id>] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
+./PolicyWitness.app/Contents/MacOS/policy-witness quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
+./PolicyWitness.app/Contents/MacOS/policy-witness verify-evidence
+./PolicyWitness.app/Contents/MacOS/policy-witness inspect-macho <service-id|main|path>
+./PolicyWitness.app/Contents/MacOS/policy-witness list-profiles
+./PolicyWitness.app/Contents/MacOS/policy-witness list-services
+./PolicyWitness.app/Contents/MacOS/policy-witness show-profile <id[@variant]> [--variant <base|injectable>]
+./PolicyWitness.app/Contents/MacOS/policy-witness describe-service <id[@variant]> [--variant <base|injectable>]
+./PolicyWitness.app/Contents/MacOS/policy-witness health-check [--profile <id[@variant]>] [--variant <base|injectable>]
+./PolicyWitness.app/Contents/MacOS/policy-witness bundle-evidence [--out <dir>] [--include-health-check]
+./PolicyWitness.app/Contents/MacOS/policy-witness run-matrix --group <name> [--variant <base|injectable>] [--out <dir>] <probe-id> [probe-args...]
 ```
 
 ## JSON output contract (envelope + kinds)
@@ -124,7 +124,7 @@ All JSON emitters in this repo (CLI outputs, XPC client outputs, and helper tool
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 1,
   "kind": "probe_response",
   "generated_at_unix_ms": 1700000000000,
   "result": {
@@ -147,7 +147,7 @@ Rules:
 - `result.rc` is used by probes/quarantine; `result.exit_code` is used by CLI/tools. Unused fields are `null`.
 - All command-specific fields live under `data` (no extra top-level keys).
 
-Note: Rust-emitted envelopes use `schema_version: 4`. XPC probe/quarantine responses emitted by the embedded Swift clients use `schema_version: 2`.
+Note: Rust-emitted envelopes use `schema_version: 1`. XPC probe/quarantine responses emitted by the embedded Swift clients use `schema_version: 1`.
 
 Envelope `kind` values used by the launcher and helpers:
 
@@ -201,9 +201,9 @@ Behavior:
 Resolution rules:
 
 - `tool-name` must be a single path component (no `/`, no `..`, no traversal).
-- Search paths are relative to the `.app` bundle that contains `entitlement-jail`:
-  - `EntitlementJail.app/Contents/Helpers/<tool-name>`
-  - `EntitlementJail.app/Contents/Helpers/Probes/<tool-name>`
+- Search paths are relative to the `.app` bundle that contains `policy-witness`:
+  - `PolicyWitness.app/Contents/Helpers/<tool-name>`
+  - `PolicyWitness.app/Contents/Helpers/Probes/<tool-name>`
 
 Behavior:
 
@@ -267,7 +267,7 @@ For the authoritative on-the-wire shapes, see `xpc/ProbeAPI.swift` and `xpc/Prob
 
 Profiles are short base ids that map to XPC service families in the “process zoo”.
 
-The authoritative inventory is `EntitlementJail.app/Contents/Resources/Evidence/profiles.json`, generated during build by `tests/build-evidence.py`.
+The authoritative inventory is `PolicyWitness.app/Contents/Resources/Evidence/profiles.json`, generated during build by `tests/build-evidence.py`.
 
 Each profile entry contains a `variants` array with at least:
 
@@ -290,7 +290,7 @@ Commands:
 Default output path (overwritten each run):
 
 ```
-~/Library/Application Support/entitlement-jail/matrix/<group>/<variant>/latest
+~/Library/Application Support/policy-witness/matrix/<group>/<variant>/latest
 ```
 
 Notes:
@@ -300,7 +300,7 @@ Notes:
 
 ## `quarantine-lab`: write/open artifacts and report quarantine metadata (no execution)
 
-`quarantine-lab` delegates to the embedded Swift helper `xpc-quarantine-client` plus an XPC service (for example `com.yourteam.entitlement-jail.QuarantineLab_default`).
+`quarantine-lab` delegates to the embedded Swift helper `xpc-quarantine-client` plus an XPC service (for example `com.yourteam.policy-witness.QuarantineLab_default`).
 
 Key contract:
 

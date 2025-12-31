@@ -15,20 +15,20 @@ fn print_usage() {
     eprintln!(
         "\
 usage:
-  entitlement-jail run-system <absolute-platform-binary> [args...]
-  entitlement-jail run-embedded <tool-name> [args...]
-  entitlement-jail xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--capture-sandbox-logs] <probe-id> [probe-args...]
-  entitlement-jail xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--correlation-id <id>] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
-  entitlement-jail quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
-  entitlement-jail verify-evidence
-  entitlement-jail inspect-macho <service-id|main|path>
-  entitlement-jail list-profiles
-  entitlement-jail list-services
-  entitlement-jail show-profile <id[@variant]> [--variant <base|injectable>]
-  entitlement-jail describe-service <id[@variant]> [--variant <base|injectable>]
-  entitlement-jail health-check [--profile <id[@variant]>] [--variant <base|injectable>]
-  entitlement-jail bundle-evidence [--out <dir>] [--include-health-check]
-  entitlement-jail run-matrix --group <name> [--variant <base|injectable>] [--out <dir>] <probe-id> [probe-args...]
+  policy-witness run-system <absolute-platform-binary> [args...]
+  policy-witness run-embedded <tool-name> [args...]
+  policy-witness xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--capture-sandbox-logs] <probe-id> [probe-args...]
+  policy-witness xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--correlation-id <id>] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
+  policy-witness quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
+  policy-witness verify-evidence
+  policy-witness inspect-macho <service-id|main|path>
+  policy-witness list-profiles
+  policy-witness list-services
+  policy-witness show-profile <id[@variant]> [--variant <base|injectable>]
+  policy-witness describe-service <id[@variant]> [--variant <base|injectable>]
+  policy-witness health-check [--profile <id[@variant]>] [--variant <base|injectable>]
+  policy-witness bundle-evidence [--out <dir>] [--include-health-check]
+  policy-witness run-matrix --group <name> [--variant <base|injectable>] [--out <dir>] <probe-id> [probe-args...]
 
 notes:
   - run-system only allows platform-style paths (/bin, /usr/bin, /sbin, /usr/sbin, /usr/libexec, /System/Library)
@@ -467,7 +467,7 @@ fn default_bundle_output_dir() -> Result<PathBuf, String> {
     Ok(PathBuf::from(home)
         .join("Library")
         .join("Application Support")
-        .join("entitlement-jail")
+        .join("policy-witness")
         .join("evidence")
         .join("latest"))
 }
@@ -477,7 +477,7 @@ fn default_matrix_output_dir(group_id: &str, variant: &str) -> Result<PathBuf, S
     Ok(PathBuf::from(home)
         .join("Library")
         .join("Application Support")
-        .join("entitlement-jail")
+        .join("policy-witness")
         .join("matrix")
         .join(group_id)
         .join(variant)
@@ -901,7 +901,7 @@ fn run_and_wait(cmd_path: PathBuf, cmd_args: Vec<OsString>) -> ! {
 }
 
 fn main() {
-    if env::var("EJ_DEBUG_DLOPEN").ok().as_deref() == Some("1") {
+    if env::var("PW_DEBUG_DLOPEN").ok().as_deref() == Some("1") {
         debug_entitlements_probe::try_dlopen_external_library();
     }
 

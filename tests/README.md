@@ -9,7 +9,7 @@ The test harness is intentionally **machine-readable**: every test emits structu
 
 Related docs:
 
-- User guide / workflows: [EntitlementJail.md](../EntitlementJail.md)
+- User guide / workflows: [PolicyWitness.md](../PolicyWitness.md)
 - Contributing philosophy + build tour: [CONTRIBUTING.md](../CONTRIBUTING.md)
 - Signing/build procedure: [SIGNING.md](../SIGNING.md)
 - CLI contract + integration tests: [runner/README.md](../runner/README.md)
@@ -37,7 +37,7 @@ Direct runner (useful for local iteration / agent loops):
 Notes:
 
 - Preflight is inspection-only (codesign/entitlements); unit tests are pure logic; integration/smoke tests will execute the CLI and launch XPC services.
-- Most integration/smoke tests assume a built `EntitlementJail.app` at the repo root. Build via the signed pipeline in [CONTRIBUTING.md](../CONTRIBUTING.md) / [SIGNING.md](../SIGNING.md).
+- Most integration/smoke tests assume a built `PolicyWitness.app` at the repo root. Build via the signed pipeline in [CONTRIBUTING.md](../CONTRIBUTING.md) / [SIGNING.md](../SIGNING.md).
 
 ## Suite layout
 
@@ -79,12 +79,12 @@ These expectations are asserted in `tests/suites/smoke/xpc_app_smoke.sh`.
 
 - Fixtures live under `tests/fixtures/inherit_child/`.
 - The smoke test `tests/suites/smoke/inherit_child_fixtures.sh` runs representative scenarios, scrubs volatile fields (PIDs, timestamps, run ids), and compares the result to the fixture JSON.
-- Update fixtures by running the fixture test with `EJ_UPDATE_FIXTURES=1` (only do this when you intend a schema/content change).
+- Update fixtures by running the fixture test with `PW_UPDATE_FIXTURES=1` (only do this when you intend a schema/content change).
 
 Example:
 
 ```sh
-EJ_UPDATE_FIXTURES=1 ./tests/suites/smoke/inherit_child_fixtures.sh
+PW_UPDATE_FIXTURES=1 ./tests/suites/smoke/inherit_child_fixtures.sh
 ```
 
 Tools:
@@ -124,8 +124,8 @@ Files:
 
 If you want deterministic identifiers for tooling, set:
 
-- `EJ_TEST_RUN_ID=<string>` (embedded in JSON events + `run.json`)
-- `EJ_TEST_OUT_DIR=<path>` (must be within `tests/out/`; the runner wipes it at start)
+- `PW_TEST_RUN_ID=<string>` (embedded in JSON events + `run.json`)
+- `PW_TEST_OUT_DIR=<path>` (must be within `tests/out/`; the runner wipes it at start)
 
 ## Event stream format (`events.jsonl`)
 
@@ -165,21 +165,21 @@ The intent is that a retrospective machine analysis can:
 
 Harness output:
 
-- `EJ_TEST_RUN_ID`: override run id (default generated).
-- `EJ_TEST_OUT_DIR`: override output root (default `tests/out`; the runner overwrites it each run).
+- `PW_TEST_RUN_ID`: override run id (default generated).
+- `PW_TEST_OUT_DIR`: override output root (default `tests/out`; the runner overwrites it each run).
 
 CLI location:
 
-- `EJ_BIN`: used by smoke scripts to locate the launcher (`EntitlementJail.app/Contents/MacOS/entitlement-jail` by default).
-- `EJ_BIN_PATH`: used by Rust integration tests (`runner/tests/cli_integration.rs`) to override the launcher path.
+- `PW_BIN`: used by smoke scripts to locate the launcher (`PolicyWitness.app/Contents/MacOS/policy-witness` by default).
+- `PW_BIN_PATH`: used by Rust integration tests (`runner/tests/cli_integration.rs`) to override the launcher path.
 
 Optional integration toggles:
 
-- `EJ_DLOPEN_TESTS=1`: enable `dlopen_external` integration checks (requires signed test dylib fixture).
+- `PW_DLOPEN_TESTS=1`: enable `dlopen_external` integration checks (requires signed test dylib fixture).
 
 Build/probe helpers:
 
-- `EJ_INSPECTOR_BIN`: override the `ej-inspector` path used by preflight.
+- `PW_INSPECTOR_BIN`: override the `pw-inspector` path used by preflight.
 
 ## Adding a new test
 
@@ -193,7 +193,7 @@ For new shell tests:
 
 1. Source `tests/lib/testlib.sh`.
 2. Call `test_begin "<suite>" "<stable.test_id>"`.
-3. Use `test_step` for each major action and write artifacts under `$EJ_TEST_ARTIFACTS`.
+3. Use `test_step` for each major action and write artifacts under `$PW_TEST_ARTIFACTS`.
 4. End with `test_pass` or `test_fail` (prefer `trap ... ERR` + `test_fail` for failures).
 
 Keep test ids stable. Treat them like API identifiers for dashboards and long-term trend analysis.

@@ -8,15 +8,15 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 fn integration_enabled() -> bool {
-    env::var("EJ_INTEGRATION").ok().as_deref() == Some("1")
+    env::var("PW_INTEGRATION").ok().as_deref() == Some("1")
 }
 
 fn dlopen_tests_enabled() -> bool {
-    env::var("EJ_DLOPEN_TESTS").ok().as_deref() == Some("1")
+    env::var("PW_DLOPEN_TESTS").ok().as_deref() == Some("1")
 }
 
-const RUST_SCHEMA_VERSION: u64 = 4;
-const PROBE_SCHEMA_VERSION: u64 = 2;
+const RUST_SCHEMA_VERSION: u64 = 1;
+const PROBE_SCHEMA_VERSION: u64 = 1;
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -25,29 +25,29 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn ej_bin_path() -> PathBuf {
-    if let Ok(val) = env::var("EJ_BIN_PATH") {
+fn pw_bin_path() -> PathBuf {
+    if let Ok(val) = env::var("PW_BIN_PATH") {
         return PathBuf::from(val);
     }
     repo_root()
-        .join("EntitlementJail.app")
+        .join("PolicyWitness.app")
         .join("Contents")
         .join("MacOS")
-        .join("entitlement-jail")
+        .join("policy-witness")
 }
 
-fn require_ej_bin() -> PathBuf {
-    let path = ej_bin_path();
+fn require_pw_bin() -> PathBuf {
+    let path = pw_bin_path();
     if !path.exists() {
         panic!(
-            "EntitlementJail.app not found at {} (build the app or set EJ_BIN_PATH)",
+            "PolicyWitness.app not found at {} (build the app or set PW_BIN_PATH)",
             path.display()
         );
     }
     path
 }
 
-fn run_ej(bin: &Path, args: &[&str]) -> Output {
+fn run_pw(bin: &Path, args: &[&str]) -> Output {
     Command::new(bin)
         .args(args)
         .output()
@@ -68,7 +68,7 @@ fn parse_json(output: &Output) -> serde_json::Value {
 }
 
 fn load_preflight() -> Option<serde_json::Value> {
-    let path = env::var("EJ_PREFLIGHT_JSON").ok()?;
+    let path = env::var("PW_PREFLIGHT_JSON").ok()?;
     let data = std::fs::read_to_string(&path).ok()?;
     serde_json::from_str(&data).ok()
 }
@@ -299,9 +299,9 @@ fn cli_integration_smoke() {
     }
 
     let preflight = load_preflight();
-    let bin = require_ej_bin();
+    let bin = require_pw_bin();
 
-    let verify_out = run_ej(&bin, &["verify-evidence"]);
+    let verify_out = run_pw(&bin, &["verify-evidence"]);
     assert!(
         verify_out.status.success(),
         "verify-evidence failed: {}",
@@ -324,7 +324,7 @@ fn cli_integration_smoke() {
         Some(true)
     );
 
-    let inspect_symbols = run_ej(&bin, &["inspect-macho", "evidence.symbols"]);
+    let inspect_symbols = run_pw(&bin, &["inspect-macho", "evidence.symbols"]);
     assert!(
         inspect_symbols.status.success(),
         "inspect-macho evidence.symbols failed: {}",
@@ -339,7 +339,7 @@ fn cli_integration_smoke() {
         .unwrap_or("");
     assert_eq!(inspect_id, "evidence.symbols");
 
-    let inspect_profiles = run_ej(&bin, &["inspect-macho", "evidence.profiles"]);
+    let inspect_profiles = run_pw(&bin, &["inspect-macho", "evidence.profiles"]);
     assert!(
         inspect_profiles.status.success(),
         "inspect-macho evidence.profiles failed: {}",
@@ -354,7 +354,7 @@ fn cli_integration_smoke() {
         .unwrap_or("");
     assert_eq!(inspect_profiles_id, "evidence.profiles");
 
-    let list_out = run_ej(&bin, &["list-profiles"]);
+    let list_out = run_pw(&bin, &["list-profiles"]);
     assert!(
         list_out.status.success(),
         "list-profiles failed: {}",
@@ -397,7 +397,7 @@ fn cli_integration_smoke() {
         "minimal profile missing injectable variant"
     );
 
-    let show_out = run_ej(&bin, &["show-profile", "minimal"]);
+    let show_out = run_pw(&bin, &["show-profile", "minimal"]);
     assert!(
         show_out.status.success(),
         "show-profile minimal failed: {}",
@@ -427,14 +427,14 @@ fn cli_integration_smoke() {
         .unwrap_or("");
     assert_eq!(variant, "base");
 
-    let services_out = run_ej(&bin, &["list-services"]);
+    let services_out = run_pw(&bin, &["list-services"]);
     assert!(
         services_out.status.success(),
         "list-services failed: {}",
         String::from_utf8_lossy(&services_out.stderr)
     );
 
-    let probe_out = run_ej(&bin, &["xpc", "run", "--profile", "minimal", "probe_catalog"]);
+    let probe_out = run_pw(&bin, &["xpc", "run", "--profile", "minimal", "probe_catalog"]);
     assert!(
         probe_out.status.success(),
         "xpc run minimal probe_catalog failed: {}",
@@ -468,13 +468,13 @@ fn cli_integration_smoke() {
                     .is_some_and(|symbols| {
                         symbols
                             .iter()
-                            .any(|s| s.as_str() == Some("ej_probe_fs_op"))
+                            .any(|s| s.as_str() == Some("pw_probe_fs_op"))
                     })
         }),
-        "trace_symbols missing fs_op -> ej_probe_fs_op"
+        "trace_symbols missing fs_op -> pw_probe_fs_op"
     );
 
-    let fs_out = run_ej(
+    let fs_out = run_pw(
         &bin,
         &[
             "xpc",
@@ -494,7 +494,7 @@ fn cli_integration_smoke() {
         String::from_utf8_lossy(&fs_out.stderr)
     );
 
-    let health_out = run_ej(&bin, &["health-check", "--profile", "minimal"]);
+    let health_out = run_pw(&bin, &["health-check", "--profile", "minimal"]);
     assert!(
         health_out.status.success(),
         "health-check failed: {}",
@@ -517,7 +517,7 @@ fn cli_integration_smoke() {
         Some(true)
     );
 
-    let injectable_out = run_ej(
+    let injectable_out = run_pw(
         &bin,
         &[
             "xpc",
@@ -535,7 +535,7 @@ fn cli_integration_smoke() {
         String::from_utf8_lossy(&injectable_out.stderr)
     );
 
-    let matrix_out = run_ej(
+    let matrix_out = run_pw(
         &bin,
         &["run-matrix", "--group", "baseline", "capabilities_snapshot"],
     );
@@ -570,7 +570,7 @@ fn cli_integration_smoke() {
     assert!(matrix_dir.join("run-matrix.json").exists());
     assert!(matrix_dir.join("run-matrix.table.txt").exists());
 
-    let bundle_out = run_ej(&bin, &["bundle-evidence"]);
+    let bundle_out = run_pw(&bin, &["bundle-evidence"]);
     assert!(
         bundle_out.status.success(),
         "bundle-evidence failed: {}",
@@ -626,7 +626,7 @@ fn cli_integration_smoke() {
                 &inspector_bin,
                 &[
                     "--bundle-id-prefix",
-                    "com.yourteam.entitlement-jail.",
+                    "com.yourteam.policy-witness.",
                     &hold.pid.to_string(),
                 ],
             );
@@ -635,9 +635,9 @@ fn cli_integration_smoke() {
                 inspector_json
                     .get("result")
                     .and_then(|v| v.get("ok"))
-                    .and_then(|v| v.as_bool()),
+                .and_then(|v| v.as_bool()),
                 Some(true),
-                "ej-inspector refused injectable pid: {}",
+                "pw-inspector refused injectable pid: {}",
                 String::from_utf8_lossy(&inspector_out.stderr)
             );
 
@@ -658,7 +658,7 @@ fn cli_integration_smoke() {
                 &inspector_bin,
                 &[
                     "--bundle-id-prefix",
-                    "com.yourteam.entitlement-jail.",
+                    "com.yourteam.policy-witness.",
                     &hold.pid.to_string(),
                 ],
             );
@@ -667,9 +667,9 @@ fn cli_integration_smoke() {
                 inspector_json
                     .get("data")
                     .and_then(|v| v.get("allowed"))
-                    .and_then(|v| v.as_bool()),
+                .and_then(|v| v.as_bool()),
                 Some(true),
-                "ej-inspector did not allow minimal identity"
+                "pw-inspector did not allow minimal identity"
             );
             assert_eq!(
                 inspector_json
@@ -710,7 +710,7 @@ fn cli_integration_smoke() {
             if dylib_ready && relax_ok {
                 let dylib = PathBuf::from(dylib_path);
                 assert!(dylib.exists(), "test dylib missing at {}", dylib.display());
-                let dlopen_out = run_ej(
+                let dlopen_out = run_pw(
                     &bin,
                     &[
                         "xpc",
@@ -742,7 +742,7 @@ fn cli_integration_smoke() {
                 eprintln!("skip dlopen test: missing signed test dylib or entitlement");
             }
         } else {
-            eprintln!("skip dlopen test: set EJ_DLOPEN_TESTS=1 to enable");
+            eprintln!("skip dlopen test: set PW_DLOPEN_TESTS=1 to enable");
         }
 
         let jit_ok = preflight_bool(
@@ -760,7 +760,7 @@ fn cli_integration_smoke() {
                 ],
             ) == Some(true);
         if jit_ok {
-            let jit_map_out = run_ej(
+            let jit_map_out = run_pw(
                 &bin,
                 &[
                     "xpc",
@@ -778,7 +778,7 @@ fn cli_integration_smoke() {
                 String::from_utf8_lossy(&jit_map_out.stderr)
             );
 
-            let jit_rwx_out = run_ej(
+            let jit_rwx_out = run_pw(
                 &bin,
                 &[
                     "xpc",
@@ -809,7 +809,7 @@ fn cli_integration_smoke() {
             &["services", "net_client", "base", "entitlements", "network_client"],
         ) == Some(true);
         if net_client_ok {
-            let net_min_out = run_ej(
+            let net_min_out = run_pw(
                 &bin,
                 &[
                     "xpc",
@@ -835,7 +835,7 @@ fn cli_integration_smoke() {
                 "expected permission_error for minimal net_op"
             );
 
-            let net_client_out = run_ej(
+            let net_client_out = run_pw(
                 &bin,
                 &[
                     "xpc",
@@ -866,7 +866,7 @@ fn cli_integration_smoke() {
             eprintln!("skip network test: missing network client entitlement");
         }
     } else {
-        eprintln!("skip inspector/dlopen/jit/network tests: missing EJ_PREFLIGHT_JSON");
+        eprintln!("skip inspector/dlopen/jit/network tests: missing PW_PREFLIGHT_JSON");
     }
 }
 
@@ -876,7 +876,7 @@ fn xpc_session_wait_flow() {
         return;
     }
 
-    let bin = require_ej_bin();
+    let bin = require_pw_bin();
     let mut session = spawn_xpc_session_stream(
         &bin,
         &[

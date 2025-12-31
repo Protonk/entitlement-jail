@@ -16,7 +16,7 @@
     {
       "probe_id": "downloads_rw",
       "inputs": { "kind": "probe", "argv": [] },
-      "expected_side_effects": ["may create and then remove a file under ~/Downloads/entitlement-jail-harness/"],
+      "expected_side_effects": ["may create and then remove a file under ~/Downloads/policy-witness-harness/"],
       "capture_spec": { "capture_sandbox_log": true }
     },
     {
@@ -26,9 +26,8 @@
         "payload_class": "shell_script",
         "argv": ["--dir", "tmp", "--operation", "create_new", "--name", "tri-run-probe"]
       },
-      "expected_side_effects": ["writes a specimen under TMPDIR/entitlement-jail-quarantine-lab (no execution)"],
+      "expected_side_effects": ["writes a specimen under TMPDIR/policy-witness-quarantine-lab (no execution)"],
       "capture_spec": { "capture_sandbox_log": false }
     }
   ]
 }
-

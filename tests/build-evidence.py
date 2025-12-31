@@ -225,7 +225,7 @@ def split_variant(service_name: str, bundle_id: Optional[str]) -> Tuple[str, str
     return service_name, "base"
 
 
-def exported_ej_symbols(path: Path) -> Tuple[list[str], Optional[str]]:
+def exported_pw_symbols(path: Path) -> Tuple[list[str], Optional[str]]:
     try:
         out = subprocess.check_output(
             ["/usr/bin/nm", "-g", str(path)],
@@ -246,7 +246,7 @@ def exported_ej_symbols(path: Path) -> Tuple[list[str], Optional[str]]:
         if sym_type == "U":
             continue
         sym = parts[-1]
-        if sym.startswith("_ej_"):
+        if sym.startswith("_pw_"):
             symbols.add(sym[1:])
     return sorted(symbols), None
 
@@ -274,8 +274,8 @@ def validate_inherit_child_entitlements(entries: list[dict[str, Any]]) -> list[s
         kind = entry.get("kind")
         entry_id = entry.get("id") or ""
         is_child = kind in ("xpc-child", "xpc-child-bad") or entry_id in (
-            "ej-inherit-child",
-            "ej-inherit-child-bad",
+            "pw-inherit-child",
+            "pw-inherit-child-bad",
         )
         if not is_child:
             continue
@@ -322,8 +322,8 @@ def validate_inherit_child_entitlements(entries: list[dict[str, Any]]) -> list[s
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build Evidence BOM for EntitlementJail.app")
-    parser.add_argument("--app-bundle", required=True, help="Path to EntitlementJail.app")
+    parser = argparse.ArgumentParser(description="Build Evidence BOM for PolicyWitness.app")
+    parser.add_argument("--app-bundle", required=True, help="Path to PolicyWitness.app")
     parser.add_argument("--app-entitlements", required=True, help="Path to main app entitlements plist")
     args = parser.parse_args()
 
@@ -352,8 +352,8 @@ def main() -> int:
         "xpc-probe-client",
         "xpc-quarantine-client",
         "sandbox-log-observer",
-        "ej-inherit-child",
-        "ej-inherit-child-bad",
+        "pw-inherit-child",
+        "pw-inherit-child-bad",
     ]
     for name in helper_names:
         helper_path = contents_dir / "MacOS" / name
@@ -398,7 +398,7 @@ def main() -> int:
                 entry["entitlements_error"] = err
             entries.append(entry)
 
-            child_bin = svc_bundle / "Contents" / "MacOS" / "ej-inherit-child"
+            child_bin = svc_bundle / "Contents" / "MacOS" / "pw-inherit-child"
             if child_bin.exists():
                 child_entitlements, child_err = entitlements_from_codesign(child_bin)
                 child_entry = {
@@ -415,7 +415,7 @@ def main() -> int:
                     child_entry["entitlements_error"] = child_err
                 entries.append(child_entry)
 
-            child_bad_bin = svc_bundle / "Contents" / "MacOS" / "ej-inherit-child-bad"
+            child_bad_bin = svc_bundle / "Contents" / "MacOS" / "pw-inherit-child-bad"
             if child_bad_bin.exists():
                 child_bad_entitlements, child_bad_err = entitlements_from_codesign(child_bad_bin)
                 child_bad_entry = {
@@ -441,7 +441,7 @@ def main() -> int:
     symbols_entries = []
     for entry in entries:
         abs_path = app_bundle / entry["rel_path"]
-        syms, err = exported_ej_symbols(abs_path)
+        syms, err = exported_pw_symbols(abs_path)
         if err:
             symbols_entries.append({
                 "id": entry["id"],
@@ -639,10 +639,10 @@ def main() -> int:
     })
 
     manifest = {
-        "schema_version": 2,
+        "schema_version": 1,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "app_bundle_id": app_bundle_id,
-        "app_binary_rel_path": "Contents/MacOS/entitlement-jail",
+        "app_binary_rel_path": "Contents/MacOS/policy-witness",
         "app_entitlements": app_entitlements,
         "entries": entries,
         "notes": [

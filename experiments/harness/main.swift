@@ -143,7 +143,7 @@ struct Atlas: Codable {
 // MARK: - CLI
 
 private func printUsage() {
-    let exe = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "ej-harness"
+    let exe = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "pw-harness"
     fputs(
         """
         usage:
@@ -154,13 +154,13 @@ private func printUsage() {
           --nodes <path>           (default: experiments/nodes/entitlement-lattice.json)
           --out-dir <dir>          (default: experiments/out/<plan-id>-<timestamp>)
           --substrate <path>       (default: experiments/bin/witness-substrate)
-          --entitlement-jail <path> (default: EntitlementJail.app/Contents/MacOS/entitlement-jail)
+          --policy-witness <path>  (default: PolicyWitness.app/Contents/MacOS/policy-witness)
 
         notes:
           - Baseline/policy run the substrate (unsandboxed vs `sandbox-exec`).
-          - Entitlement runs use `entitlement-jail xpc run` / `quarantine-lab` against XPC targets.
+          - Entitlement runs use `policy-witness xpc run` / `quarantine-lab` against XPC targets.
           - Rows are never dropped: missing services become explicit service_refusal results.
-          - Probe rows may include `host_actions` (e.g. a host-side rename) and use `{{EJ_HARNESS_RUN_DIR}}` for per-run paths.
+          - Probe rows may include `host_actions` (e.g. a host-side rename) and use `{{PW_HARNESS_RUN_DIR}}` for per-run paths.
         """,
         stderr
     )
@@ -194,7 +194,7 @@ let args = Args(Array(argv.dropFirst(2)))
 let planPath = args.value("--plan") ?? "experiments/plans/tri-run-default.json"
 let nodesPath = args.value("--nodes") ?? "experiments/nodes/entitlement-lattice.json"
 let substratePath = args.value("--substrate") ?? "experiments/bin/witness-substrate"
-let entitlementJailPath = args.value("--entitlement-jail") ?? "EntitlementJail.app/Contents/MacOS/entitlement-jail"
+let policyWitnessPath = args.value("--policy-witness") ?? "PolicyWitness.app/Contents/MacOS/policy-witness"
 
 let plan: ProbePlan = try decodeFileJSON(planPath, as: ProbePlan.self)
 let lattice: EntitlementLattice = try decodeFileJSON(nodesPath, as: EntitlementLattice.self)
@@ -283,7 +283,7 @@ for probe in plan.probes {
         )
 
         let entitlementCmd = try makeEntitlementCommand(
-            entitlementJailPath: entitlementJailPath,
+            policyWitnessPath: policyWitnessPath,
             probe: probe,
             node: node,
             tcpPort: tcpPort,
@@ -400,14 +400,14 @@ private func makeBaselineCommand(substratePath: String, probe: ProbeRow, tcpPort
 }
 
 private func makeEntitlementCommand(
-    entitlementJailPath: String,
+    policyWitnessPath: String,
     probe: ProbeRow,
     node: EntitlementNode,
     tcpPort: Int,
     planId: String,
     rowId: String
 ) throws -> CommandSpec? {
-    let ej = resolvePath(entitlementJailPath).path
+    let pw = resolvePath(policyWitnessPath).path
     let kind = probe.inputs.kind
     let argv = probe.inputs.argv ?? []
 
@@ -417,7 +417,7 @@ private func makeEntitlementCommand(
         let svc = node.xpc_probe_service_bundle_id
         let hint = SandboxLogHint(term: xpcExecutableName(fromBundleId: svc) ?? svc)
         return CommandSpec(
-            argv: [ej, "xpc", "run", "--plan-id", planId, "--row-id", rowId, "--service", svc, probe.probe_id] + adjusted,
+            argv: [pw, "xpc", "run", "--plan-id", planId, "--row-id", rowId, "--service", svc, probe.probe_id] + adjusted,
             logHint: hint,
             serviceBundleId: svc
         )
@@ -430,7 +430,7 @@ private func makeEntitlementCommand(
         }
         let hint = SandboxLogHint(term: xpcExecutableName(fromBundleId: svc) ?? svc)
         return CommandSpec(
-            argv: [ej, "quarantine-lab", svc, payloadClass] + argv,
+            argv: [pw, "quarantine-lab", svc, payloadClass] + argv,
             logHint: hint,
             serviceBundleId: svc
         )
@@ -475,10 +475,10 @@ private func runAndNormalize(
 	var hostActionsCleanupDir: URL? = nil
 
 	let needsHarnessDir: Bool = {
-	    if argvContainsTemplate(resolvedArgv, key: "EJ_HARNESS_RUN_DIR") {
+	    if argvContainsTemplate(resolvedArgv, key: "PW_HARNESS_RUN_DIR") {
 	        return true
 	    }
-	    if let hostActions, hostActionsContainsTemplate(hostActions, key: "EJ_HARNESS_RUN_DIR") {
+	    if let hostActions, hostActionsContainsTemplate(hostActions, key: "PW_HARNESS_RUN_DIR") {
 	        return true
 	    }
 	    if let hostActions, !hostActions.actions.isEmpty {
@@ -491,7 +491,7 @@ private func runAndNormalize(
 	if needsHarnessDir {
 	    let harnessDir = try makeHostActionHarnessDir(rowId: rowId, label: label, nodeId: nodeId)
 	    hostActionsCleanupDir = harnessDir
-	    vars["EJ_HARNESS_RUN_DIR"] = harnessDir.path
+	    vars["PW_HARNESS_RUN_DIR"] = harnessDir.path
 	    resolvedArgv = substituteTemplate(argv: resolvedArgv, vars: vars)
 	}
 
@@ -511,7 +511,7 @@ private func runAndNormalize(
 	}
 
 	if let hostActionsCleanupDir {
-	    let keep = ProcessInfo.processInfo.environment["EJ_HARNESS_KEEP_ACTION_ARTIFACTS"] == "1"
+	    let keep = ProcessInfo.processInfo.environment["PW_HARNESS_KEEP_ACTION_ARTIFACTS"] == "1"
 	    if !keep {
 	        try? FileManager.default.removeItem(at: hostActionsCleanupDir)
 	    }
@@ -971,15 +971,15 @@ private func substituteTemplate(_ s: String, vars: [String: String]) -> String {
 }
 
 private func isSafeHostActionPath(_ path: String) -> Bool {
-    if path == "/tmp/entitlement-jail-harness" { return true }
-    if path.hasPrefix("/tmp/entitlement-jail-harness/") { return true }
-    if path == "/private/tmp/entitlement-jail-harness" { return true }
-    if path.hasPrefix("/private/tmp/entitlement-jail-harness/") { return true }
+    if path == "/tmp/policy-witness-harness" { return true }
+    if path.hasPrefix("/tmp/policy-witness-harness/") { return true }
+    if path == "/private/tmp/policy-witness-harness" { return true }
+    if path.hasPrefix("/private/tmp/policy-witness-harness/") { return true }
     return false
 }
 
 private func makeHostActionHarnessDir(rowId: String, label: String, nodeId: String?) throws -> URL {
-    let root = URL(fileURLWithPath: "/tmp/entitlement-jail-harness/ej-harness", isDirectory: true)
+    let root = URL(fileURLWithPath: "/tmp/policy-witness-harness/pw-harness", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: nil)
 
     let rowComponent = safePathComponent(rowId)
@@ -1011,7 +1011,7 @@ private func resolveHostActions(_ hostActions: HostActions, vars: [String: Strin
                 throw HarnessError("host_actions.actions[\(idx)] rename paths must be absolute")
             }
             if !isSafeHostActionPath(from) || !isSafeHostActionPath(to) {
-                throw HarnessError("host_actions.actions[\(idx)] rename paths must be under /tmp/entitlement-jail-harness")
+                throw HarnessError("host_actions.actions[\(idx)] rename paths must be under /tmp/policy-witness-harness")
             }
             let delayMs = max(0, min(300_000, action.delay_ms ?? 1000))
             out.append(.rename(from: from, to: to, delayMs: delayMs))
@@ -1041,7 +1041,7 @@ private func runProcessWithHostActions(_ argv: [String], hostActions: [ResolvedH
             try? FileManager.default.createDirectory(at: fromDir, withIntermediateDirectories: true, attributes: nil)
             try? FileManager.default.createDirectory(at: toDir, withIntermediateDirectories: true, attributes: nil)
             try? FileManager.default.removeItem(atPath: to)
-            try? writeString("ej-harness host action \(idx)\n", to: URL(fileURLWithPath: from))
+            try? writeString("pw-harness host action \(idx)\n", to: URL(fileURLWithPath: from))
             logLines.append("pre_rename[\(idx)]: prepared from=\(from) to=\(to)")
         }
     }
@@ -1237,7 +1237,7 @@ private func firstDenyOp(in log: String) -> String? {
 final class LocalTCPServer {
     private let fd: Int32
     let port: Int
-    private let queue = DispatchQueue(label: "ej-harness.local-tcp-server")
+    private let queue = DispatchQueue(label: "pw-harness.local-tcp-server")
     private var running = true
 
     init() throws {

@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-pub const EVIDENCE_SCHEMA_VERSION: u32 = 2;
+pub const EVIDENCE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Deserialize)]
 pub struct EvidenceManifest {
@@ -188,15 +188,15 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        base.join(format!("ej-evidence-test-{}", stamp))
+        base.join(format!("pw-evidence-test-{}", stamp))
     }
 
     #[test]
     fn parses_manifest() {
         let manifest = r#"{
-  "schema_version": 2,
+  "schema_version": 1,
   "app_bundle_id": "com.example.app",
-  "app_binary_rel_path": "Contents/MacOS/entitlement-jail",
+  "app_binary_rel_path": "Contents/MacOS/policy-witness",
   "app_entitlements": {"com.apple.security.app-sandbox": true},
   "entries": [
     {
@@ -212,7 +212,7 @@ mod tests {
   "notes": ["ok"]
 }"#;
         let parsed: EvidenceManifest = serde_json::from_str(manifest).unwrap();
-        assert_eq!(parsed.schema_version, 2);
+        assert_eq!(parsed.schema_version, 1);
         assert_eq!(parsed.entries.len(), 1);
         assert_eq!(parsed.entries[0].id, "com.example.service");
     }
@@ -323,13 +323,13 @@ mod tests {
   "entries": [
     {
       "id": "com.example.service",
-      "symbols": ["ej_probe_fs_op"]
+      "symbols": ["pw_probe_fs_op"]
     }
   ]
 }"#;
         let parsed: SymbolsManifest = serde_json::from_str(symbols).unwrap();
         assert_eq!(parsed.entries.len(), 1);
         assert_eq!(parsed.entries[0].id, "com.example.service");
-        assert!(parsed.entries[0].symbols.contains(&"ej_probe_fs_op".to_string()));
+        assert!(parsed.entries[0].symbols.contains(&"pw_probe_fs_op".to_string()));
     }
 }

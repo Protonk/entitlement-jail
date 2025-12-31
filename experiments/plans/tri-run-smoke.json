@@ -32,7 +32,7 @@
         "payload_class": "text",
         "argv": ["--dir", "tmp", "--operation", "create_new", "--name", "smoke"]
       },
-      "expected_side_effects": ["writes a text specimen under TMPDIR/entitlement-jail-quarantine-lab (no execution)"],
+      "expected_side_effects": ["writes a text specimen under TMPDIR/policy-witness-quarantine-lab (no execution)"],
       "capture_spec": { "capture_sandbox_log": false }
     }
   ]

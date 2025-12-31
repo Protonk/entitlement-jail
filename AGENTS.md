@@ -1,6 +1,4 @@
-# AGENTS.md (contributor router + invariants)
-
-EntitlementJail is a macOS research/teaching repo that builds a single distributable artifact: `EntitlementJail.app`. The “experiment variable” is **which embedded XPC service you run**, because each `.xpc` is separately signed with its own entitlements.
+# AGENTS.md 
 
 This file is for people and agents *working in the repo*: where to make changes, what contracts exist, what you must keep stable, and the fastest way to orient yourself when something breaks.
 
@@ -8,7 +6,7 @@ This file is for people and agents *working in the repo*: where to make changes,
 
 Pick the thing you’re changing:
 
-- **User-facing usage / workflows** → [`EntitlementJail.md`](EntitlementJail.md) (the **only** user-facing guide)
+- **User-facing usage / workflows** → [`PolicyWitness.md`](PolicyWitness.md) (the **only** user-facing guide)
 - **CLI behavior contract** → [`runner/README.md`](runner/README.md) (authoritative; flags, refusal rules, JSON kinds)
 - **XPC architecture + how to add services** → [`xpc/README.md`](xpc/README.md)
 - **Tri-run harness + mismatch atlas schema** → [`experiments/README.md`](experiments/README.md)
@@ -26,26 +24,26 @@ Pick the thing that’s failing:
 
 This repo is intentionally multi-language:
 
-- `runner/` (Rust): builds the CLI that ships as `EntitlementJail.app/Contents/MacOS/entitlement-jail`
+- `runner/` (Rust): builds the CLI that ships as `PolicyWitness.app/Contents/MacOS/policy-witness`
   - Owns: command parsing, refusal-by-design boundaries, JSON envelope, risk-gating, evidence inspection.
 - `xpc/` (Swift): builds the embedded XPC client helpers and all XPC services.
   - Owns: XPC wire types (`ProbeAPI.swift`) and the in-process probe implementation (`InProcessProbeCore.swift`).
 - `experiments/` (Swift + scripts): tri-run harness + policy profiles (`sandbox-exec`) + baseline substrate.
 - `tests/` (bash + python): smoke tests, preflight signing checks, evidence BOM generator.
-- `build.sh` (bash): builds everything into `EntitlementJail.app`, generates evidence, codesigns, and zips.
+- `build.sh` (bash): builds everything into `PolicyWitness.app`, generates evidence, codesigns, and zips.
 
 The app bundle is a *layout contract*:
 
-- `EntitlementJail.app/Contents/MacOS/entitlement-jail` (Rust CLI launcher)
-- `EntitlementJail.app/Contents/MacOS/xpc-probe-client` (Swift; NSXPCConnection wrapper)
-- `EntitlementJail.app/Contents/MacOS/xpc-quarantine-client` (Swift; QuarantineLab wrapper)
-- `EntitlementJail.app/Contents/MacOS/ej-inherit-child` (Swift; paired-process child helper)
-- `EntitlementJail.app/Contents/MacOS/ej-inherit-child-bad` (Swift; intentionally mis-entitled abort canary)
-- `EntitlementJail.app/Contents/MacOS/sandbox-log-observer` (Rust observer helper)
-- `EntitlementJail.app/Contents/XPCServices/*.xpc` (Swift services; entitlement variable)
-- `EntitlementJail.app/Contents/XPCServices/ProbeService_*/Contents/MacOS/ej-inherit-child` (helper copy used by `inherit_child`)
-- `EntitlementJail.app/Contents/XPCServices/ProbeService_*/Contents/MacOS/ej-inherit-child-bad` (helper copy used by `inherit_bad_entitlements`)
-- `EntitlementJail.app/Contents/Resources/Evidence/*` (generated manifests: hashes, profiles, symbols)
+- `PolicyWitness.app/Contents/MacOS/policy-witness` (Rust CLI launcher)
+- `PolicyWitness.app/Contents/MacOS/xpc-probe-client` (Swift; NSXPCConnection wrapper)
+- `PolicyWitness.app/Contents/MacOS/xpc-quarantine-client` (Swift; QuarantineLab wrapper)
+- `PolicyWitness.app/Contents/MacOS/pw-inherit-child` (Swift; paired-process child helper)
+- `PolicyWitness.app/Contents/MacOS/pw-inherit-child-bad` (Swift; intentionally mis-entitled abort canary)
+- `PolicyWitness.app/Contents/MacOS/sandbox-log-observer` (Rust observer helper)
+- `PolicyWitness.app/Contents/XPCServices/*.xpc` (Swift services; entitlement variable)
+- `PolicyWitness.app/Contents/XPCServices/ProbeService_*/Contents/MacOS/pw-inherit-child` (helper copy used by `inherit_child`)
+- `PolicyWitness.app/Contents/XPCServices/ProbeService_*/Contents/MacOS/pw-inherit-child-bad` (helper copy used by `inherit_bad_entitlements`)
+- `PolicyWitness.app/Contents/Resources/Evidence/*` (generated manifests: hashes, profiles, symbols)
 
 If you change names/paths here, expect downstream breakage (tests, docs, evidence verification).
 
@@ -60,10 +58,10 @@ Key build facts worth knowing before you touch anything:
 
 - `build.sh` requires `IDENTITY` to be set to a **Developer ID Application** identity present in your keychain (it validates via `security find-identity -p codesigning`).
 - `build.sh` compiles:
-  - Rust binaries from `runner/Cargo.toml` (`runner`, `quarantine-observer`, `sandbox-log-observer`, `ej-inspector`)
+  - Rust binaries from `runner/Cargo.toml` (`policy-witness`, `quarantine-observer`, `sandbox-log-observer`, `pw-inspector`)
   - Swift client(s) + every service under `xpc/services/*` (enumerated dynamically)
 - Build knobs (mostly for debugging):
-  - `EJ_INSPECTION=1` (default) builds with symbols/frame pointers; set `EJ_INSPECTION=0` for a more optimized build.
+  - `PW_INSPECTION=1` (default) builds with symbols/frame pointers; set `PW_INSPECTION=0` for a more optimized build.
   - `BUILD_XPC=0` skips building/embedding XPC services and Swift clients (useful when iterating only on Rust).
   - `SWIFT_OPT_LEVEL`, `SWIFT_DEBUG_FLAGS`, `RUSTFLAGS` are respected by the build script.
 - Evidence is generated during the build:
@@ -94,7 +92,7 @@ Key build facts worth knowing before you touch anything:
 - `ProbeAPI.swift` defines `RunProbeRequest/RunProbeResponse` and `QuarantineWriteRequest/QuarantineWriteResponse`.
 - Services and clients pass JSON bytes (`Data`) rather than rich XPC objects.
   - If you evolve these types, update both sides together, bump `schema_version` when the JSON contract changes, and delete old protocol paths (no long-lived shims).
-- The Rust launcher does not speak NSXPC directly; `entitlement-jail xpc {run,session}` and `quarantine-lab` shell out to the embedded Swift clients under `Contents/MacOS/`.
+- The Rust launcher does not speak NSXPC directly; `policy-witness xpc {run,session}` and `quarantine-lab` shell out to the embedded Swift clients under `Contents/MacOS/`.
 
 ### Probe witness semantics are delta-based (not “rc==0”)
 
@@ -120,8 +118,8 @@ Key build facts worth knowing before you touch anything:
 - Scenario names are part of the public probe contract (smoke + fixtures depend on them).
   - The catalog lives in `xpc/InProcessProbeCore.swift` (`inheritChildScenarioCatalog`).
 - `inherit_bad_entitlements` is a deliberate regression tripwire:
-  - `ej-inherit-child` must be **app-sandbox + inherit only**.
-  - `ej-inherit-child-bad` intentionally violates the inheritance contract so the OS aborts it.
+  - `pw-inherit-child` must be **app-sandbox + inherit only**.
+  - `pw-inherit-child-bad` intentionally violates the inheritance contract so the OS aborts it.
   - Build-time guardrails in `tests/build-evidence.py` verify both helpers’ entitlements across app-level and per-service embedded copies (including injectable twins).
 
 ### JSON envelopes are stable and key-sorted
@@ -174,31 +172,31 @@ The reference patterns live in `xpc/InProcessProbeCore.swift`.
 4. Rebuild so evidence/profiles are regenerated (and signing includes the new service + its auto-generated injectable twin).
 5. Update docs if the new profile should be discoverable:
    - `xpc/README.md` (service list / purpose)
-   - `EntitlementJail.md` (user-visible profile/workflow) if appropriate
+   - `PolicyWitness.md` (user-visible profile/workflow) if appropriate
 
 ### Add a new probe
 
 1. Add implementation in `xpc/InProcessProbeCore.swift` (dispatch by `probe_id`).
 2. Add/update help text and ensure it returns structured `normalized_outcome` + details.
-3. If you want it externally traceable, add a stable `ej_*` marker and expose it via `probe_catalog`.
+3. If you want it externally traceable, add a stable `pw_*` marker and expose it via `probe_catalog`.
 4. Consider updating smoke/integration tests to cover the new probe without heavy side effects.
 
 ### Change CLI behavior or outputs
 
 1. Implement in `runner/src/main.rs` (and friends).
 2. Update the authoritative behavior docs in `runner/README.md`.
-3. If the change affects end users, also update `EntitlementJail.md`.
+3. If the change affects end users, also update `PolicyWitness.md`.
 4. If JSON output schema changes, be deliberate: keep old fields where possible, and only bump schema when necessary.
 
 ## Testing notes (what runs what)
 
 - `tests/suites/preflight/preflight.sh` is intentionally “observer style”: it inspects signatures/entitlements and emits a JSON report under `tests/out/suites/preflight/...` (the test runner overwrites `tests/out/` each run).
-  - Integration tests use it to decide what to skip via `EJ_PREFLIGHT_JSON`.
-- `runner/tests/cli_integration.rs` expects a built `EntitlementJail.app` unless you set `EJ_BIN_PATH`.
+  - Integration tests use it to decide what to skip via `PW_PREFLIGHT_JSON`.
+- `runner/tests/cli_integration.rs` expects a built `PolicyWitness.app` unless you set `PW_BIN_PATH`.
 - Smoke scripts (`tests/suites/smoke/*.sh`) write under `tests/out/suites/smoke/...` (the test runner overwrites `tests/out/` each run).
 
 ## Safety defaults (for agents)
 
-- Treat `EntitlementJail.app` and produced zips as **specimens**: don’t execute them unless the user explicitly asks.
+- Treat `PolicyWitness.app` and produced zips as **specimens**: don’t execute them unless the user explicitly asks.
 - Prefer read-only inspection when diagnosing signing/quarantine questions (`codesign -d`, `spctl -a`, xattr reads, etc.).
 - If you do add a feature that intentionally executes code (e.g. dylib initializers), make it opt-in and label it clearly in docs and risk gating.

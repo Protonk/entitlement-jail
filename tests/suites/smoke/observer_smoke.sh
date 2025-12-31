@@ -19,12 +19,12 @@ step() {
   test_step "$1" "${2:-$1}"
 }
 
-EJ="${EJ_BIN:-${ROOT_DIR}/EntitlementJail.app/Contents/MacOS/entitlement-jail}"
-OBSERVER="${EJ%/*}/sandbox-log-observer"
-OUT_DIR="${EJ_TEST_ARTIFACTS}"
+PW="${PW_BIN:-${ROOT_DIR}/PolicyWitness.app/Contents/MacOS/policy-witness}"
+OBSERVER="${PW%/*}/sandbox-log-observer"
+OUT_DIR="${PW_TEST_ARTIFACTS}"
 
-if [[ ! -x "${EJ}" ]]; then
-  test_fail "missing or non-executable EntitlementJail launcher at: ${EJ}"
+if [[ ! -x "${PW}" ]]; then
+  test_fail "missing or non-executable PolicyWitness launcher at: ${PW}"
 fi
 
 if [[ ! -x "${OBSERVER}" ]]; then
@@ -43,13 +43,13 @@ PY
 
 step "observer_json_show" "sandbox-log-observer JSON (show)"
 TOKEN="$(uuid)"
-/usr/bin/logger "ej-observer-test deny ${TOKEN}"
+/usr/bin/logger "pw-observer-test deny ${TOKEN}"
 sleep 0.5
 
 SHOW_JSON="${OUT_DIR}/observer-show.json"
 "${OBSERVER}" \
   --pid $$ \
-  --process-name ej-test \
+  --process-name pw-test \
   --last 10s \
   --predicate "eventMessage CONTAINS[c] \"${TOKEN}\"" \
   --output "${SHOW_JSON}" \
@@ -82,7 +82,7 @@ TOKEN_STREAM="$(uuid)"
 JSONL_PATH="${OUT_DIR}/observer-stream.jsonl"
 "${OBSERVER}" \
   --pid $$ \
-  --process-name ej-test \
+  --process-name pw-test \
   --duration 3 \
   --format jsonl \
   --predicate "eventMessage CONTAINS[c] \"${TOKEN_STREAM}\"" \
@@ -91,7 +91,7 @@ JSONL_PATH="${OUT_DIR}/observer-stream.jsonl"
 OBS_PID=$!
 
 sleep 0.5
-/usr/bin/logger "ej-observer-test deny ${TOKEN_STREAM}"
+/usr/bin/logger "pw-observer-test deny ${TOKEN_STREAM}"
 wait "${OBS_PID}"
 
 /usr/bin/python3 - "${JSONL_PATH}" "${TOKEN_STREAM}" <<'PY'

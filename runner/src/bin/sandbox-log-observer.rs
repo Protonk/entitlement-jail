@@ -45,7 +45,7 @@ usage:
 notes:
   - runs `log show` (default) or `log stream` (with --duration/--follow) with a sandbox-deny predicate (observer-only)
   - --format jsonl emits per-line events plus a final report line
-  - intended to run outside EntitlementJail.app (unsandboxed)"
+  - intended to run outside PolicyWitness.app (unsandboxed)"
     );
 }
 

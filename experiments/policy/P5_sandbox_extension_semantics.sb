@@ -4,7 +4,7 @@
 ;; This is an intentionally small, teaching-grade hypothesis, not a faithful model of App Sandbox.
 ;;
 ;; Goals:
-;; - Make file reads under /tmp/entitlement-jail-harness denied by default (pre-consume).
+;; - Make file reads under /tmp/policy-witness-harness denied by default (pre-consume).
 ;; - Allow sandbox extension SPI to re-grant access after consume/update.
 
 (version 1)
@@ -12,10 +12,9 @@
 (allow default)
 
 ;; Treat the harness root as "metadata ok, content denied" until a sandbox extension is consumed.
-(allow file-read-metadata (subpath "/tmp/entitlement-jail-harness"))
-(deny file-read-data file-write* (subpath "/tmp/entitlement-jail-harness"))
+(allow file-read-metadata (subpath "/tmp/policy-witness-harness"))
+(deny file-read-data file-write* (subpath "/tmp/policy-witness-harness"))
 
 ;; /tmp is typically a symlink to /private/tmp.
-(allow file-read-metadata (subpath "/private/tmp/entitlement-jail-harness"))
-(deny file-read-data file-write* (subpath "/private/tmp/entitlement-jail-harness"))
-
+(allow file-read-metadata (subpath "/private/tmp/policy-witness-harness"))
+(deny file-read-data file-write* (subpath "/private/tmp/policy-witness-harness"))

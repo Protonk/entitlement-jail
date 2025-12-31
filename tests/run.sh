@@ -7,16 +7,16 @@ source "${ROOT_DIR}/tests/lib/testlib.sh"
 testlib_init
 
 RUN_START_MS="$(now_ms)"
-RUN_OUT_RAW="${EJ_TEST_OUT_DIR}"
+RUN_OUT_RAW="${PW_TEST_OUT_DIR}"
 RUN_OUT="$(
-  EJ_TEST_ROOT="${ROOT_DIR}" \
-  EJ_TEST_OUT_RAW="${RUN_OUT_RAW}" \
+  PW_TEST_ROOT="${ROOT_DIR}" \
+  PW_TEST_OUT_RAW="${RUN_OUT_RAW}" \
   /usr/bin/python3 - <<'PY'
 import os
 import os.path
 
-root = os.environ["EJ_TEST_ROOT"]
-raw = os.environ["EJ_TEST_OUT_RAW"]
+root = os.environ["PW_TEST_ROOT"]
+raw = os.environ["PW_TEST_OUT_RAW"]
 
 if os.path.isabs(raw):
     out = os.path.normpath(raw)
@@ -29,11 +29,11 @@ PY
 RUN_JSON="${RUN_OUT}/run.json"
 
 if [[ -z "${RUN_OUT}" ]]; then
-  echo "ERROR: EJ_TEST_OUT_DIR resolved to an empty path" 1>&2
+  echo "ERROR: PW_TEST_OUT_DIR resolved to an empty path" 1>&2
   exit 2
 fi
 if [[ "${RUN_OUT}" == "/" ]]; then
-  echo "ERROR: refusing to use '/' as EJ_TEST_OUT_DIR" 1>&2
+  echo "ERROR: refusing to use '/' as PW_TEST_OUT_DIR" 1>&2
   exit 2
 fi
 
@@ -42,14 +42,14 @@ case "${RUN_OUT}" in
   "${DEFAULT_OUT}"| "${DEFAULT_OUT}/"*)
     ;;
   *)
-    echo "ERROR: EJ_TEST_OUT_DIR must be within ${DEFAULT_OUT} (got: ${RUN_OUT})" 1>&2
+    echo "ERROR: PW_TEST_OUT_DIR must be within ${DEFAULT_OUT} (got: ${RUN_OUT})" 1>&2
     exit 2
     ;;
 esac
 
-EJ_TEST_OUT_DIR="${RUN_OUT}"
-EJ_TEST_EVENTS="${EJ_TEST_OUT_DIR}/events.jsonl"
-export EJ_TEST_OUT_DIR EJ_TEST_EVENTS
+PW_TEST_OUT_DIR="${RUN_OUT}"
+PW_TEST_EVENTS="${PW_TEST_OUT_DIR}/events.jsonl"
+export PW_TEST_OUT_DIR PW_TEST_EVENTS
 
 # This repo's test loops are designed to be agent-friendly: overwrite the prior run
 # so external tooling can just read stable paths under tests/out/.
@@ -111,11 +111,11 @@ done
 RUN_END_MS="$(now_ms)"
 DURATION_MS=$((RUN_END_MS - RUN_START_MS))
 
-EJ_RUN_START_MS="${RUN_START_MS}" \
-EJ_RUN_END_MS="${RUN_END_MS}" \
-EJ_RUN_DURATION_MS="${DURATION_MS}" \
-EJ_RUN_ID="${EJ_TEST_RUN_ID}" \
-EJ_RUN_OUT="${RUN_OUT}" \
+PW_RUN_START_MS="${RUN_START_MS}" \
+PW_RUN_END_MS="${RUN_END_MS}" \
+PW_RUN_DURATION_MS="${DURATION_MS}" \
+PW_RUN_ID="${PW_TEST_RUN_ID}" \
+PW_RUN_OUT="${RUN_OUT}" \
 /usr/bin/python3 - <<'PY'
 import json
 import os
@@ -127,7 +127,7 @@ def maybe_int(value):
     except Exception:
         return None
 
-run_out = Path(os.environ["EJ_RUN_OUT"])
+run_out = Path(os.environ["PW_RUN_OUT"])
 reports = []
 for report_path in sorted(run_out.glob("suites/*/*/report.json")):
     try:
@@ -159,10 +159,10 @@ for report in reports:
 
 run = {
     "schema_version": 1,
-    "run_id": os.environ.get("EJ_RUN_ID", ""),
-    "started_at_unix_ms": maybe_int(os.environ.get("EJ_RUN_START_MS")),
-    "finished_at_unix_ms": maybe_int(os.environ.get("EJ_RUN_END_MS")),
-    "duration_ms": maybe_int(os.environ.get("EJ_RUN_DURATION_MS")),
+    "run_id": os.environ.get("PW_RUN_ID", ""),
+    "started_at_unix_ms": maybe_int(os.environ.get("PW_RUN_START_MS")),
+    "finished_at_unix_ms": maybe_int(os.environ.get("PW_RUN_END_MS")),
+    "duration_ms": maybe_int(os.environ.get("PW_RUN_DURATION_MS")),
     "ok": counts["fail"] == 0,
     "counts": counts,
     "suites": suite_counts,

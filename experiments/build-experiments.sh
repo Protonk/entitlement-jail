@@ -32,12 +32,12 @@ echo "==> Building tri-run harness"
 "${SWIFTC[@]}" \
   -module-cache-path "${SWIFT_MODULE_CACHE}" \
   "${SWIFT_OPT_LEVEL}" \
-  -o "${ROOT_DIR}/experiments/bin/ej-harness" \
+  -o "${ROOT_DIR}/experiments/bin/pw-harness" \
   "${ROOT_DIR}/xpc/ProbeAPI.swift" \
   "${ROOT_DIR}/experiments/harness/main.swift"
 
-chmod +x "${ROOT_DIR}/experiments/bin/ej-harness"
+chmod +x "${ROOT_DIR}/experiments/bin/pw-harness"
 
 echo "DONE:"
 echo "  - experiments/bin/witness-substrate"
-echo "  - experiments/bin/ej-harness"
+echo "  - experiments/bin/pw-harness"

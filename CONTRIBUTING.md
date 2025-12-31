@@ -1,4 +1,4 @@
-# Contributing to EntitlementJail
+# Contributing to PolicyWitness
 
 This repo is a research/teaching tool. Contributions are welcome, but “the product” here is not just code — it’s *inspectable behavior* plus the written guides that explain what that behavior is supposed to mean.
 
@@ -9,7 +9,7 @@ This repo is a research/teaching tool. Contributions are welcome, but “the pro
 If a change affects behavior, outputs, or safety boundaries, it needs matching words.
 
 - Keep the docs in sync with reality:
-  - End-user workflows live in `EntitlementJail.md`.
+  - End-user workflows live in `PolicyWitness.md`.
   - The authoritative CLI contract lives in `runner/README.md`.
   - XPC architecture/extension guidance lives in `xpc/README.md`.
   - Build/signing procedure lives in `SIGNING.md`.
@@ -26,7 +26,7 @@ This is a macOS app-bundle + signing + XPC repo. Some tests are inherently “un
 Preferred options, in roughly increasing integration cost:
 
 - **Rust unit tests** for pure logic (JSON envelopes, parsing, path policy helpers).
-- **CLI integration tests** in `runner/tests/cli_integration.rs` (expects a built `EntitlementJail.app` or `EJ_BIN_PATH`).
+- **CLI integration tests** in `runner/tests/cli_integration.rs` (expects a built `PolicyWitness.app` or `PW_BIN_PATH`).
 - **Smoke scripts** in `tests/suites/smoke/` for end-to-end “does the bundle basically work”.
 
 If you can’t write a durable automated test, add a small smokeable workflow to docs (a command that produces a witness JSON) so reviewers have a consistent way to verify your change.
@@ -41,7 +41,7 @@ If you change `inherit_child`, treat these as compatibility requirements:
 - **Protocol + witness schema are contracts**: `xpc/ProbeAPI.swift` (`InheritChildProtocol`, `InheritChildWitness`) is authoritative. If you break framing, bump the protocol version and update both parent + child together.
 - **Scenario names are part of the probe contract**: they are enumerated by a single catalog (`xpc/InProcessProbeCore.swift`) and are exercised by smoke + golden fixtures. Don’t silently rename/drop scenarios.
 - **Self-diagnosing failures matter**: protocol violations, bus I/O errors, and expected abort canaries must remain distinct normalized outcomes (don’t collapse them into “deny-shaped” failures).
-- **Golden fixtures must be updated intentionally**: if you change witness schema or deterministic fields like `outcome_summary`, update `tests/fixtures/inherit_child/` via the fixture harness (`EJ_UPDATE_FIXTURES=1`) and keep the scrub/compare tools accurate.
+- **Golden fixtures must be updated intentionally**: if you change witness schema or deterministic fields like `outcome_summary`, update `tests/fixtures/inherit_child/` via the fixture harness (`PW_UPDATE_FIXTURES=1`) and keep the scrub/compare tools accurate.
 
 ### Probes are multi-phase transcripts (not single return codes)
 
@@ -62,16 +62,16 @@ For transport-heavy probes (especially `inherit_child`), contributor requirement
 
 ### Write Swift like you want it trivially reverse-engineered
 
-EntitlementJail’s Swift is intentionally “inspection-friendly”. Optimize for clarity over cleverness:
+PolicyWitness’s Swift is intentionally “inspection-friendly”. Optimize for clarity over cleverness:
 
 - Prefer straightforward control flow and explicit types over “cute” abstractions.
 - Keep request/response structs in `xpc/ProbeAPI.swift` stable; treat them like an API.
 - Avoid unnecessary reflection, runtime magic, or metaprogramming that makes traces and disassembly noisy.
 - Keep strings (probe ids, `normalized_outcome` labels, error text) stable and descriptive as they become part of witness records.
 
-## Building EntitlementJail.app (developer guide)
+## Building PolicyWitness.app (developer guide)
 
-The build produces a single distributable artifact: `EntitlementJail.app` (plus `EntitlementJail.zip` for notarization/distribution flows).
+The build produces a single distributable artifact: `PolicyWitness.app` (plus `PolicyWitness.zip` for notarization/distribution flows).
 
 Canonical signing/packaging procedures live in `SIGNING.md`. This section is the “tour” version: how the build is structured and what you’ll need to know when changing it. For XPC build layout details, also see `xpc/README.md`.
 
@@ -110,7 +110,7 @@ Edit `xpc/services/ProbeService_example_combo/Info.plist`:
 
 - `CFBundleExecutable` → `ProbeService_example_combo`
 - `CFBundleName` → `ProbeService_example_combo`
-- `CFBundleIdentifier` → `com.yourteam.entitlement-jail.ProbeService_example_combo`
+- `CFBundleIdentifier` → `com.yourteam.policy-witness.ProbeService_example_combo`
 
 The directory name, plist names, and executable name must line up: the build script compiles the service binary to `.../<ServiceName>.xpc/Contents/MacOS/<ServiceName>`.
 
@@ -136,6 +136,6 @@ The build will also generate an injectable twin (`<ServiceName>__injectable` wit
 If the new service is intended to be a stable research target, also update:
 
 - `xpc/README.md` (list the service and what’s different about it)
-- `EntitlementJail.md` (if users are expected to run it by profile)
+- `PolicyWitness.md` (if users are expected to run it by profile)
 
 If your entitlement adds a “high concern” capability, update the risk classifier in `tests/build-evidence.py` so the profile carries the correct risk signal.

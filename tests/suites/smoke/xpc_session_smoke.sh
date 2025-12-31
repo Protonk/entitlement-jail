@@ -19,11 +19,11 @@ step() {
   test_step "$1" "${2:-$1}"
 }
 
-EJ="${EJ_BIN:-${ROOT_DIR}/EntitlementJail.app/Contents/MacOS/entitlement-jail}"
-OUT_DIR="${EJ_TEST_ARTIFACTS}"
+PW="${PW_BIN:-${ROOT_DIR}/PolicyWitness.app/Contents/MacOS/policy-witness}"
+OUT_DIR="${PW_TEST_ARTIFACTS}"
 
-if [[ ! -x "${EJ}" ]]; then
-  test_fail "missing or non-executable EntitlementJail launcher at: ${EJ}"
+if [[ ! -x "${PW}" ]]; then
+  test_fail "missing or non-executable PolicyWitness launcher at: ${PW}"
 fi
 
 rm -rf "${OUT_DIR}"
@@ -39,7 +39,7 @@ SESSION_STDERR="${OUT_DIR}/session.stderr"
 step "open_session" "open session (attach wait)"
 exec 3<> "${CONTROL_FIFO}"
 
-"${EJ}" xpc session --profile minimal --variant injectable --wait fifo:auto --wait-timeout-ms 10000 0<&3 >"${SESSION_JSONL}" 2>"${SESSION_STDERR}" &
+"${PW}" xpc session --profile minimal --variant injectable --wait fifo:auto --wait-timeout-ms 10000 0<&3 >"${SESSION_JSONL}" 2>"${SESSION_STDERR}" &
 SESSION_PID="$!"
 
 python3 - "${SESSION_JSONL}" <<'PY'

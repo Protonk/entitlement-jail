@@ -5,7 +5,7 @@
   <key>CFBundleExecutable</key>
   <string>ProbeService_temporary_exception</string>
   <key>CFBundleIdentifier</key>
-  <string>com.yourteam.entitlement-jail.ProbeService_temporary_exception</string>
+  <string>com.yourteam.policy-witness.ProbeService_temporary_exception</string>
   <key>CFBundleName</key>
   <string>ProbeService_temporary_exception</string>
   <key>CFBundlePackageType</key>

@@ -33,7 +33,7 @@ private func bundleString(_ key: String) -> String? {
 
 private func autoWaitFifoPath() -> String {
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent(
-        "entitlement-jail-session",
+        "policy-witness-session",
         isDirectory: true
     )
     let name = "wait.\(UUID().uuidString).fifo"

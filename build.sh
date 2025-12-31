@@ -4,21 +4,21 @@ set -euo pipefail
 # Usage:
 #   ./build.sh
 #   IDENTITY='Developer ID Application: ...' ./build.sh
-#   EJ_INSPECTION=0 IDENTITY='Developer ID Application: ...' ./build.sh
+#   PW_INSPECTION=0 IDENTITY='Developer ID Application: ...' ./build.sh
 #
 # Produces:
-#   EntitlementJail.app
-#   EntitlementJail.zip  (ready for notarytool submit)
+#   PolicyWitness.app
+#   PolicyWitness.zip  (ready for notarytool submit)
 
-APP_NAME="EntitlementJail"
+APP_NAME="PolicyWitness"
 APP_BUNDLE="${APP_NAME}.app"
 ZIP_NAME="${APP_NAME}.zip"
 
 # Paths in this repo
 RUNNER_MANIFEST="runner/Cargo.toml"
-ENTITLEMENTS_PLIST="EntitlementJail.entitlements"
-INHERIT_ENTITLEMENTS_PLIST="EntitlementJail.inherit.entitlements"
-BAD_INHERIT_ENTITLEMENTS_PLIST="EntitlementJail.inherit.bad.entitlements"
+ENTITLEMENTS_PLIST="PolicyWitness.entitlements"
+INHERIT_ENTITLEMENTS_PLIST="PolicyWitness.inherit.entitlements"
+BAD_INHERIT_ENTITLEMENTS_PLIST="PolicyWitness.inherit.bad.entitlements"
 INSPECTOR_ENTITLEMENTS_PLIST="Inspector.entitlements"
 INFO_PLIST_TEMPLATE="Info.plist"
 
@@ -46,9 +46,9 @@ INJECTABLE_ENTITLEMENTS_DIR=".tmp/injectable-entitlements"
 SWIFT_MODULE_CACHE="${SWIFT_MODULE_CACHE:-.tmp/swift-module-cache}"
 SWIFT_OPT_LEVEL="${SWIFT_OPT_LEVEL:-}"
 SWIFT_DEBUG_FLAGS="${SWIFT_DEBUG_FLAGS:-}"
-EJ_INSPECTION="${EJ_INSPECTION:-1}"
+PW_INSPECTION="${PW_INSPECTION:-1}"
 
-if [[ "${EJ_INSPECTION}" == "1" ]]; then
+if [[ "${PW_INSPECTION}" == "1" ]]; then
   if [[ -z "${SWIFT_OPT_LEVEL}" ]]; then
     SWIFT_OPT_LEVEL="-Onone"
   fi
@@ -164,15 +164,15 @@ PY
 
 echo "==> Building Rust runner + tools"
 cargo build --manifest-path "${RUNNER_MANIFEST}" --release \
-  --bin runner \
+  --bin policy-witness \
   --bin quarantine-observer \
   --bin sandbox-log-observer \
-  --bin ej-inspector
+  --bin pw-inspector
 
 # Find the built binary. (Assumes standard Cargo layout.)
-RUNNER_BIN="runner/target/release/runner"
+RUNNER_BIN="runner/target/release/policy-witness"
 if [[ ! -x "${RUNNER_BIN}" ]]; then
-  echo "ERROR: expected runner binary at ${RUNNER_BIN}" 1>&2
+  echo "ERROR: expected policy-witness binary at ${RUNNER_BIN}" 1>&2
   exit 2
 fi
 QUARANTINE_OBSERVER_BIN="runner/target/release/quarantine-observer"
@@ -185,9 +185,9 @@ if [[ ! -x "${SANDBOX_LOG_OBSERVER_BIN}" ]]; then
   echo "ERROR: expected sandbox-log-observer binary at ${SANDBOX_LOG_OBSERVER_BIN}" 1>&2
   exit 2
 fi
-EJ_INSPECTOR_BIN="runner/target/release/ej-inspector"
-if [[ ! -x "${EJ_INSPECTOR_BIN}" ]]; then
-  echo "ERROR: expected ej-inspector binary at ${EJ_INSPECTOR_BIN}" 1>&2
+PW_INSPECTOR_BIN="runner/target/release/pw-inspector"
+if [[ ! -x "${PW_INSPECTOR_BIN}" ]]; then
+  echo "ERROR: expected pw-inspector binary at ${PW_INSPECTOR_BIN}" 1>&2
   exit 2
 fi
 
@@ -205,8 +205,8 @@ fi
 cp "${INFO_PLIST_TEMPLATE}" "${APP_BUNDLE}/Contents/Info.plist"
 
 # Install main executable
-cp "${RUNNER_BIN}" "${APP_BUNDLE}/Contents/MacOS/entitlement-jail"
-chmod +x "${APP_BUNDLE}/Contents/MacOS/entitlement-jail"
+cp "${RUNNER_BIN}" "${APP_BUNDLE}/Contents/MacOS/policy-witness"
+chmod +x "${APP_BUNDLE}/Contents/MacOS/policy-witness"
 
 # Embed observer tooling (runs outside the App Sandbox boundary when launched from Terminal)
 cp "${SANDBOX_LOG_OBSERVER_BIN}" "${APP_BUNDLE}/Contents/MacOS/sandbox-log-observer"
@@ -264,11 +264,11 @@ if [[ "${BUILD_XPC}" == "1" ]]; then
   fi
 
   echo "==> Building inherit-child helper"
-  "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${APP_BUNDLE}/Contents/MacOS/ej-inherit-child" "${XPC_API_FILE}" "${XPC_INHERIT_CHILD_MAIN}"
-  chmod +x "${APP_BUNDLE}/Contents/MacOS/ej-inherit-child"
+  "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${APP_BUNDLE}/Contents/MacOS/pw-inherit-child" "${XPC_API_FILE}" "${XPC_INHERIT_CHILD_MAIN}"
+  chmod +x "${APP_BUNDLE}/Contents/MacOS/pw-inherit-child"
   echo "==> Building inherit-child helper (bad entitlements)"
-  "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${APP_BUNDLE}/Contents/MacOS/ej-inherit-child-bad" "${XPC_API_FILE}" "${XPC_INHERIT_CHILD_MAIN}"
-  chmod +x "${APP_BUNDLE}/Contents/MacOS/ej-inherit-child-bad"
+  "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${APP_BUNDLE}/Contents/MacOS/pw-inherit-child-bad" "${XPC_API_FILE}" "${XPC_INHERIT_CHILD_MAIN}"
+  chmod +x "${APP_BUNDLE}/Contents/MacOS/pw-inherit-child-bad"
 
   if [[ -d "${XPC_SERVICES_DIR}" ]]; then
     echo "==> Building embedded XPC services"
@@ -419,8 +419,8 @@ echo "==> Codesigning embedded MacOS tools (plain; unsandboxed host-side)"
 sign_macho_plain "${APP_BUNDLE}/Contents/MacOS/xpc-probe-client"
 sign_macho_plain "${APP_BUNDLE}/Contents/MacOS/xpc-quarantine-client"
 sign_macho_plain "${APP_BUNDLE}/Contents/MacOS/sandbox-log-observer"
-sign_macho_inherit "${APP_BUNDLE}/Contents/MacOS/ej-inherit-child"
-sign_macho_inherit_bad "${APP_BUNDLE}/Contents/MacOS/ej-inherit-child-bad"
+sign_macho_inherit "${APP_BUNDLE}/Contents/MacOS/pw-inherit-child"
+sign_macho_inherit_bad "${APP_BUNDLE}/Contents/MacOS/pw-inherit-child-bad"
 
 echo "==> Codesigning embedded XPC services"
 if [[ "${BUILD_XPC}" == "1" ]] && [[ -d "${XPC_SERVICES_DIR}" ]]; then
@@ -449,8 +449,8 @@ if [[ "${BUILD_XPC}" == "1" ]] && [[ -d "${XPC_SERVICES_DIR}" ]]; then
 
     if [[ "${svc_name}" == ProbeService_* ]]; then
       # Embed the inherit-child helper inside the service bundle so the sandbox can exec it.
-      inherit_child_src="${APP_BUNDLE}/Contents/MacOS/ej-inherit-child"
-      inherit_child_bad_src="${APP_BUNDLE}/Contents/MacOS/ej-inherit-child-bad"
+      inherit_child_src="${APP_BUNDLE}/Contents/MacOS/pw-inherit-child"
+      inherit_child_bad_src="${APP_BUNDLE}/Contents/MacOS/pw-inherit-child-bad"
       if [[ ! -x "${inherit_child_src}" ]]; then
         echo "ERROR: missing inherit child helper at ${inherit_child_src}" 1>&2
         exit 2
@@ -459,10 +459,10 @@ if [[ "${BUILD_XPC}" == "1" ]] && [[ -d "${XPC_SERVICES_DIR}" ]]; then
         echo "ERROR: missing bad inherit child helper at ${inherit_child_bad_src}" 1>&2
         exit 2
       fi
-      inherit_child_dst="${svc_bundle}/Contents/MacOS/ej-inherit-child"
-      inherit_child_twin_dst="${twin_bundle}/Contents/MacOS/ej-inherit-child"
-      inherit_child_bad_dst="${svc_bundle}/Contents/MacOS/ej-inherit-child-bad"
-      inherit_child_bad_twin_dst="${twin_bundle}/Contents/MacOS/ej-inherit-child-bad"
+      inherit_child_dst="${svc_bundle}/Contents/MacOS/pw-inherit-child"
+      inherit_child_twin_dst="${twin_bundle}/Contents/MacOS/pw-inherit-child"
+      inherit_child_bad_dst="${svc_bundle}/Contents/MacOS/pw-inherit-child-bad"
+      inherit_child_bad_twin_dst="${twin_bundle}/Contents/MacOS/pw-inherit-child-bad"
       cp "${inherit_child_src}" "${inherit_child_dst}"
       cp "${inherit_child_src}" "${inherit_child_twin_dst}"
       cp "${inherit_child_bad_src}" "${inherit_child_bad_dst}"
@@ -516,7 +516,7 @@ codesign --display --entitlements - "${APP_BUNDLE}" >/dev/null
 echo "==> Codesigning observer tools (not embedded)"
 sign_macho_plain "${QUARANTINE_OBSERVER_BIN}"
 sign_macho_plain "${SANDBOX_LOG_OBSERVER_BIN}"
-sign_macho_entitlements "${EJ_INSPECTOR_BIN}" "${INSPECTOR_ENTITLEMENTS_PLIST}"
+sign_macho_entitlements "${PW_INSPECTOR_BIN}" "${INSPECTOR_ENTITLEMENTS_PLIST}"
 
 echo "==> Creating zip (for notarization): ${ZIP_NAME}"
 rm -f "${ZIP_NAME}"
@@ -528,7 +528,7 @@ echo "  - ${APP_BUNDLE}"
 echo "  - ${ZIP_NAME}"
 echo "  - ${QUARANTINE_OBSERVER_BIN}"
 echo "  - ${SANDBOX_LOG_OBSERVER_BIN}"
-echo "  - ${EJ_INSPECTOR_BIN}"
+echo "  - ${PW_INSPECTOR_BIN}"
 echo
 echo "Next (notarize with your saved profile):"
 cat <<EOF

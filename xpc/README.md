@@ -6,7 +6,7 @@ This document is intentionally build/implementation-focused and avoids duplicati
 
 For usage/behavior contracts, see:
 
-- User guide: [EntitlementJail.md](../EntitlementJail.md)
+- User guide: [PolicyWitness.md](../PolicyWitness.md)
 - CLI contract: [runner/README.md](../runner/README.md)
 - Signing/build procedure: [SIGNING.md](../SIGNING.md)
 - Contribution guide (includes a toy “add a service” example): [CONTRIBUTING.md](../CONTRIBUTING.md)
@@ -19,7 +19,7 @@ For usage/behavior contracts, see:
 - `InProcessProbeCore.swift`
   - The in-process probe implementations (dispatched by `probe_id`)
   - The safety gates around potentially destructive filesystem operations
-  - Stable `ej_*` trace marker symbols used by external tooling
+  - Stable `pw_*` trace marker symbols used by external tooling
 - `client/main.swift` → builds the embedded `xpc-probe-client`
 - `quarantine-client/main.swift` → builds the embedded `xpc-quarantine-client`
 - `QuarantineLabServiceHost.swift`
@@ -29,7 +29,7 @@ For usage/behavior contracts, see:
 - `entitlements_overlays/injectable.plist`
   - Canonical entitlement overlay for generating injectable twins at build time
 
-## How it builds into `EntitlementJail.app`
+## How it builds into `PolicyWitness.app`
 
 `xpc/` is built and embedded by [build.sh](../build.sh) when `BUILD_XPC=1` (default).
 
@@ -41,16 +41,16 @@ Note: `xcrun dyld_info` (not `dyldinfo`) is the tool for dyld cache inspection o
 
 The build script produces:
 
-- `EntitlementJail.app/Contents/MacOS/xpc-probe-client`
-- `EntitlementJail.app/Contents/MacOS/xpc-quarantine-client`
-- `EntitlementJail.app/Contents/MacOS/ej-inherit-child`
-- `EntitlementJail.app/Contents/MacOS/ej-inherit-child-bad`
-- `EntitlementJail.app/Contents/XPCServices/<ServiceName>.xpc`
+- `PolicyWitness.app/Contents/MacOS/xpc-probe-client`
+- `PolicyWitness.app/Contents/MacOS/xpc-quarantine-client`
+- `PolicyWitness.app/Contents/MacOS/pw-inherit-child`
+- `PolicyWitness.app/Contents/MacOS/pw-inherit-child-bad`
+- `PolicyWitness.app/Contents/XPCServices/<ServiceName>.xpc`
   - `…/<ServiceName>.xpc/Contents/MacOS/<ServiceName>` (the service executable)
-  - `…/ProbeService_*/Contents/MacOS/ej-inherit-child` (embedded child helper for `inherit_child`)
-  - `…/ProbeService_*/Contents/MacOS/ej-inherit-child-bad` (embedded bad helper for `inherit_bad_entitlements`)
+  - `…/ProbeService_*/Contents/MacOS/pw-inherit-child` (embedded child helper for `inherit_child`)
+  - `…/ProbeService_*/Contents/MacOS/pw-inherit-child-bad` (embedded bad helper for `inherit_bad_entitlements`)
 
-The client helpers must live under `Contents/MacOS` so `Bundle.main` resolves to `EntitlementJail.app` (XPC lookup and path resolution depend on having the correct bundle context).
+The client helpers must live under `Contents/MacOS` so `Bundle.main` resolves to `PolicyWitness.app` (XPC lookup and path resolution depend on having the correct bundle context).
 
 ### What `build.sh` assumes about services
 
@@ -72,7 +72,7 @@ If you change naming/layout here, you also need to update the build script, Evid
 Build composition is shared-source based:
 
 - Client helpers are compiled from `ProbeAPI.swift` + their `main.swift`.
-- `ej-inherit-child` is compiled from `ProbeAPI.swift` + `xpc/child/main.swift`.
+- `pw-inherit-child` is compiled from `ProbeAPI.swift` + `xpc/child/main.swift`.
 - Probe services (`ProbeService_*`) are compiled from:
   - `ProbeAPI.swift`
   - `InProcessProbeCore.swift`
@@ -94,14 +94,14 @@ All signing procedure lives in [SIGNING.md](../SIGNING.md).
 
 `build.sh` respects:
 
-- `EJ_INSPECTION=1` (default): builds Swift with `-Onone -g` and Rust with frame pointers + debuginfo (easier to inspect).
+- `PW_INSPECTION=1` (default): builds Swift with `-Onone -g` and Rust with frame pointers + debuginfo (easier to inspect).
 - `SWIFT_MODULE_CACHE` (default `./.tmp/swift-module-cache`): should be writable even in sandboxed harnesses.
 - `SWIFT_OPT_LEVEL`, `SWIFT_DEBUG_FLAGS`: forwarded to `swiftc`.
 
 ## Runtime wiring (who talks to whom)
 
-- `EntitlementJail.app/Contents/MacOS/entitlement-jail` (Rust launcher) does not speak NSXPC directly.
-- For `entitlement-jail xpc {run,session}` / `quarantine-lab`, it invokes the embedded Swift client helpers:
+- `PolicyWitness.app/Contents/MacOS/policy-witness` (Rust launcher) does not speak NSXPC directly.
+- For `policy-witness xpc {run,session}` / `quarantine-lab`, it invokes the embedded Swift client helpers:
   - `xpc-probe-client` opens an `NSXPCConnection(serviceName: <bundle-id>)` and calls `ProbeServiceProtocol`.
   - `xpc-quarantine-client` does the same for `QuarantineLabProtocol`.
 - Services decode JSON request bytes, perform work, and reply with JSON response bytes.
@@ -110,7 +110,7 @@ CLI flag semantics and JSON envelope details are defined in [runner/README.md](.
 
 ## Session mode (debug/attach)
 
-EntitlementJail v2 uses **sessions** as the primary XPC surface for probes, so external tooling can attach deterministically without racing service startup.
+PolicyWitness uses **sessions** as the primary XPC surface for probes, so external tooling can attach deterministically without racing service startup.
 
 Shape:
 
@@ -123,7 +123,7 @@ Where to look:
 - Service implementation: `xpc/ProbeServiceSessionHost.swift` (shared session host)
 - Service entrypoints: `xpc/services/*/main.swift` (tiny; listener + delegate)
 - Client implementation: `xpc/client/main.swift` (`xpc-probe-client session <bundle-id>`; JSONL stdin/stdout)
-- Rust wrapper command: `runner/src/main.rs` (`entitlement-jail xpc session ...`)
+- Rust wrapper command: `runner/src/main.rs` (`policy-witness xpc session ...`)
 
 ## Targets in `xpc/services/` (three buckets)
 
@@ -156,7 +156,7 @@ These targets exist to observe quarantine/Gatekeeper-related metadata deltas wit
 - `QuarantineLab_downloads_rw` — `com.apple.security.files.downloads.read-write`
 - `QuarantineLab_user_selected_executable` — `com.apple.security.files.user-selected.executable`
 
-User-facing `quarantine-lab` workflows are documented in [EntitlementJail.md](../EntitlementJail.md).
+User-facing `quarantine-lab` workflows are documented in [PolicyWitness.md](../PolicyWitness.md).
 
 If you modify Quarantine Lab behavior, apply the same change across the whole `QuarantineLab_*` family so entitlements remain the primary variable.
 
@@ -166,7 +166,7 @@ These are not XPC services, but they are part of the XPC subsystem and are requi
 
 - `xpc-probe-client` (from `xpc/client/main.swift`): wraps NSXPC calls, prints JSON envelopes to stdout, exits with the probe `rc` in one-shot mode.
 - `xpc-quarantine-client` (from `xpc/quarantine-client/main.swift`): wraps NSXPC calls for Quarantine Lab, prints a JSON envelope, exits with the lab `rc`.
-- `ej-inherit-child` (from `xpc/child/main.swift`): sandbox-inheriting child helper used by the `inherit_child` probe (paired-process harness).
+- `pw-inherit-child` (from `xpc/child/main.swift`): sandbox-inheriting child helper used by the `inherit_child` probe (paired-process harness).
 
 ## Probe execution model (what a ProbeService is allowed to do)
 
@@ -199,11 +199,11 @@ The `sandbox_extension` probe’s consume/release path is intentionally defensiv
 
 If you need to pin behavior for ABI investigation, pass `--call-symbol` and `--call-variant` explicitly.
 
-## Trace markers (`ej_*`)
+## Trace markers (`pw_*`)
 
-Some probes call stable, C-callable marker functions such as `ej_probe_fs_op`. These symbols exist in the service Mach‑O and make it easy for external tools to locate probe boundaries.
+Some probes call stable, C-callable marker functions such as `pw_probe_fs_op`. These symbols exist in the service Mach‑O and make it easy for external tools to locate probe boundaries.
 
-The probe catalog includes a `trace_symbols` mapping; see [runner/README.md](../runner/README.md) / [EntitlementJail.md](../EntitlementJail.md) for how to request it.
+The probe catalog includes a `trace_symbols` mapping; see [runner/README.md](../runner/README.md) / [PolicyWitness.md](../PolicyWitness.md) for how to request it.
 
 ## `inherit_child` (paired-process harness: frozen two-bus protocol)
 
@@ -225,10 +225,10 @@ The single source of truth for protocol constants, framing, and witness schema i
 **Event bus framing**
 
 - Child→parent: JSONL events plus one sentinel line:
-  - Prefix: `EJ_CHILD_SENTINEL`
+  - Prefix: `PW_CHILD_SENTINEL`
   - Includes at least: `protocol_version=<v>` and `cap_namespace=<ns>`
 - Parent→child payloads (for byte capabilities like bookmarks):
-  - 1 header line: `EJ_CAP_PAYLOAD proto=<v> cap_ns=<ns> cap_id=<id> cap_type=<type> len=<n>`
+  - 1 header line: `PW_CAP_PAYLOAD proto=<v> cap_ns=<ns> cap_id=<id> cap_type=<type> len=<n>`
   - followed by exactly `<n>` raw bytes.
 
 **Rights bus framing**
@@ -288,10 +288,10 @@ Backtraces are best-effort and must never be fatal; failures are recorded as `ba
 
 The child helpers are part of the “inheritance contract” surface:
 
-- `ej-inherit-child` (good) must have **only**:
+- `pw-inherit-child` (good) must have **only**:
   - `com.apple.security.app-sandbox=true`
   - `com.apple.security.inherit=true`
-- `ej-inherit-child-bad` (canary) intentionally violates the contract by including an additional App Sandbox entitlement (for example `com.apple.security.files.user-selected.read-only=true`) so the OS predictably aborts it. This is used by the `inherit_bad_entitlements` scenario as a regression tripwire for signing/twinning changes.
+- `pw-inherit-child-bad` (canary) intentionally violates the contract by including an additional App Sandbox entitlement (for example `com.apple.security.files.user-selected.read-only=true`) so the OS predictably aborts it. This is used by the `inherit_bad_entitlements` scenario as a regression tripwire for signing/twinning changes.
 
 Correctness constraints enforced by the build + tests:
 

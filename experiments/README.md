@@ -6,20 +6,20 @@ The tri-run witnesses are:
 
 1. **baseline** — an unsandboxed Swift substrate binary
 2. **policy** — the same substrate under `sandbox-exec -f <profile.sb>` (hypothesis witness; `sandbox-exec` is deprecated)
-3. **entitlement** — `EntitlementJail.app` running probes inside sandboxed XPC services (entitlements are the variable)
+3. **entitlement** — `PolicyWitness.app` running probes inside sandboxed XPC services (entitlements are the variable)
 
 Related docs:
 
 - CLI behavior and JSON envelopes: [runner/README.md](../runner/README.md)
 - XPC services as entitlement targets: [xpc/README.md](../xpc/README.md)
-- End-user workflows (matrix runs, log capture, evidence): [EntitlementJail.md](../EntitlementJail.md)
+- End-user workflows (matrix runs, log capture, evidence): [PolicyWitness.md](../PolicyWitness.md)
 - Build/sign the app bundle: [SIGNING.md](../SIGNING.md)
 
 ## What lives in `experiments/`
 
 Build outputs:
 
-- `bin/ej-harness` — the tri-run harness (built from `harness/main.swift`)
+- `bin/pw-harness` — the tri-run harness (built from `harness/main.swift`)
 - `bin/witness-substrate` — the baseline/policy witness runner (built from `substrate/main.swift`)
 
 Sources:
@@ -52,7 +52,7 @@ This runs `./experiments/build-experiments.sh`, which:
   - `xpc/ProbeAPI.swift`
   - `xpc/InProcessProbeCore.swift`
   - `experiments/substrate/main.swift`
-- builds `experiments/bin/ej-harness` from:
+- builds `experiments/bin/pw-harness` from:
   - `xpc/ProbeAPI.swift`
   - `experiments/harness/main.swift`
 
@@ -66,7 +66,7 @@ Useful knobs:
 The harness CLI is intentionally tiny:
 
 ```sh
-./experiments/bin/ej-harness run [options]
+./experiments/bin/pw-harness run [options]
 ```
 
 Options (see `experiments/harness/main.swift` for the authoritative defaults):
@@ -75,17 +75,17 @@ Options (see `experiments/harness/main.swift` for the authoritative defaults):
 - `--nodes <path>` (default: `experiments/nodes/entitlement-lattice.json`)
 - `--out-dir <dir>` (default: `experiments/out/<plan-id>-<timestamp>`)
 - `--substrate <path>` (default: `experiments/bin/witness-substrate`)
-- `--entitlement-jail <path>` (default: `EntitlementJail.app/Contents/MacOS/entitlement-jail`)
+- `--policy-witness <path>` (default: `PolicyWitness.app/Contents/MacOS/policy-witness`)
 
 The command prints the absolute path to the written `atlas.json` (one line).
 
 Common runs:
 
 ```sh
-./experiments/bin/ej-harness run
-./experiments/bin/ej-harness run --plan experiments/plans/tri-run-smoke.json
-./experiments/bin/ej-harness run --nodes experiments/nodes/entitlement-lattice-e0-e2.json
-./experiments/bin/ej-harness run --nodes experiments/nodes/entitlement-lattice-debug-jit.json --plan experiments/plans/tri-run-debug-jit.json
+./experiments/bin/pw-harness run
+./experiments/bin/pw-harness run --plan experiments/plans/tri-run-smoke.json
+./experiments/bin/pw-harness run --nodes experiments/nodes/entitlement-lattice-e0-e2.json
+./experiments/bin/pw-harness run --nodes experiments/nodes/entitlement-lattice-debug-jit.json --plan experiments/plans/tri-run-debug-jit.json
 ```
 
 ## The witness model (what’s being compared)
@@ -102,14 +102,14 @@ The policy witness is simply:
 
 The `-D HOME=...` parameter is required because the SBPL profiles reference `(param "HOME")`.
 
-### Entitlement witness goes through `EntitlementJail.app`
+### Entitlement witness goes through `PolicyWitness.app`
 
 The entitlement witness uses the shipped CLI and the XPC services specified by the node:
 
-- probe rows → `EntitlementJail.app/.../entitlement-jail xpc run --service <service> <probe-id> ...`
-- quarantine-lab rows → `EntitlementJail.app/.../entitlement-jail quarantine-lab <service> <payload-class> ...`
+- probe rows → `PolicyWitness.app/.../policy-witness xpc run --service <service> <probe-id> ...`
+- quarantine-lab rows → `PolicyWitness.app/.../policy-witness quarantine-lab <service> <payload-class> ...`
 
-Those commands rely on a built and signed `EntitlementJail.app` with the expected embedded services. See [SIGNING.md](../SIGNING.md).
+Those commands rely on a built and signed `PolicyWitness.app` with the expected embedded services. See [SIGNING.md](../SIGNING.md).
 
 ### About `sandbox-exec`
 
@@ -158,8 +158,8 @@ A plan is a list of probe rows. Minimal schema (matches `ProbePlan`/`ProbeRow` i
 
 `inputs.kind`:
 
-- `probe` → runs `witness-substrate probe <probe-id> ...` for baseline/policy and `entitlement-jail xpc run ...` for entitlement
-- `quarantine-lab` → runs `witness-substrate quarantine-lab ...` for baseline/policy and `entitlement-jail quarantine-lab ...` for entitlement
+- `probe` → runs `witness-substrate probe <probe-id> ...` for baseline/policy and `policy-witness xpc run ...` for entitlement
+- `quarantine-lab` → runs `witness-substrate quarantine-lab ...` for baseline/policy and `policy-witness quarantine-lab ...` for entitlement
 
 `row_id`:
 
@@ -176,10 +176,10 @@ Host-coordinated actions (optional):
 - Probe rows may include `host_actions` to perform host-side file operations *during* a witness run (useful when the witness is sandboxed and cannot perform the action itself).
 - The harness supports:
   - `kind=rename` with `{from,to,delay_ms}`.
-- When `host_actions` are present, the harness allocates a per-run directory under `/tmp/entitlement-jail-harness/ej-harness/...` and provides one template variable:
-  - `{{EJ_HARNESS_RUN_DIR}}` (substituted into both `inputs.argv` and `host_actions` fields).
-- Host action paths are refused unless they live under `/tmp/entitlement-jail-harness` (or `/private/tmp/entitlement-jail-harness`).
-- The harness writes a best-effort transcript to `host-actions.txt` under each run directory; set `EJ_HARNESS_KEEP_ACTION_ARTIFACTS=1` to keep the temporary harness directory after the run.
+- When `host_actions` are present, the harness allocates a per-run directory under `/tmp/policy-witness-harness/pw-harness/...` and provides one template variable:
+  - `{{PW_HARNESS_RUN_DIR}}` (substituted into both `inputs.argv` and `host_actions` fields).
+- Host action paths are refused unless they live under `/tmp/policy-witness-harness` (or `/private/tmp/policy-witness-harness`).
+- The harness writes a best-effort transcript to `host-actions.txt` under each run directory; set `PW_HARNESS_KEEP_ACTION_ARTIFACTS=1` to keep the temporary harness directory after the run.
 
 ### Nodes / lattice (`experiments/nodes/*.json`)
 
@@ -191,8 +191,8 @@ Nodes define the “lattice” you run the plan across. Minimal schema (matches 
     {
       "node_id": "E0_minimal",
       "policy_profile": "experiments/policy/P0_minimal.sb",
-      "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_minimal",
-      "xpc_quarantine_service_bundle_id": "com.yourteam.entitlement-jail.QuarantineLab_default"
+      "xpc_probe_service_bundle_id": "com.yourteam.policy-witness.ProbeService_minimal",
+      "xpc_quarantine_service_bundle_id": "com.yourteam.policy-witness.QuarantineLab_default"
     }
   ]
 }
@@ -202,7 +202,7 @@ Notes:
 
 - `policy_profile` is copied into the output bundle under `nodes/<node_id>/policy-profile.sb` so an atlas is self-contained.
 - `xpc_quarantine_service_bundle_id` is optional. If a plan row is `kind=quarantine-lab` and a node omits the quarantine service id, the harness writes a synthetic “service missing” result for that witness (rows are not dropped).
-- Bundle ids may target either base or injectable variants. Injectable twins use the `.injectable` bundle id suffix (for example `com.yourteam.entitlement-jail.ProbeService_minimal.injectable`) and are generated automatically during the app build.
+- Bundle ids may target either base or injectable variants. Injectable twins use the `.injectable` bundle id suffix (for example `com.yourteam.policy-witness.ProbeService_minimal.injectable`) and are generated automatically during the app build.
 
 ### Policy profiles (`experiments/policy/*.sb`)
 
@@ -325,7 +325,7 @@ The harness computes a `parity.parity_class` for each row/node comparing **polic
 ### Add a new entitlement node
 
 1. Add a new node to one of the lattices under `experiments/nodes/`.
-2. Ensure the corresponding XPC service exists under `xpc/services/` and is embedded/signed into `EntitlementJail.app`.
+2. Ensure the corresponding XPC service exists under `xpc/services/` and is embedded/signed into `PolicyWitness.app`.
    - See [xpc/README.md](../xpc/README.md) and [CONTRIBUTING.md](../CONTRIBUTING.md#toy-example-adding-a-new-xpc-service).
 3. Rebuild the app (`make build`) so the service exists and Evidence is regenerated.
 

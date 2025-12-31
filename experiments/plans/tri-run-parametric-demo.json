@@ -12,7 +12,7 @@
       "row_id": "fs_create_tmp",
       "probe_id": "fs_op",
       "inputs": { "kind": "probe", "argv": ["--op", "create", "--path-class", "tmp"] },
-      "expected_side_effects": ["may create and then remove a file under TMPDIR/entitlement-jail-harness/fs-op/..."],
+      "expected_side_effects": ["may create and then remove a file under TMPDIR/policy-witness-harness/fs-op/..."],
       "capture_spec": { "capture_sandbox_log": true }
     },
     {

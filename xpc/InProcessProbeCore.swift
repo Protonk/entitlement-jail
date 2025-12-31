@@ -3,50 +3,50 @@ import Darwin
 import Security
 
 // Stable, C-callable trace markers for external instrumentation tools.
-@_cdecl("ej_probe_fs_op")
+@_cdecl("pw_probe_fs_op")
 @inline(never)
 @_optimize(none)
-public func ej_probe_fs_op_marker() {}
+public func pw_probe_fs_op_marker() {}
 
-@_cdecl("ej_probe_fs_op_wait")
+@_cdecl("pw_probe_fs_op_wait")
 @inline(never)
 @_optimize(none)
-public func ej_probe_fs_op_wait_marker() {}
+public func pw_probe_fs_op_wait_marker() {}
 
-@_cdecl("ej_probe_net_op")
+@_cdecl("pw_probe_net_op")
 @inline(never)
 @_optimize(none)
-public func ej_probe_net_op_marker() {}
+public func pw_probe_net_op_marker() {}
 
-@_cdecl("ej_probe_dlopen_external")
+@_cdecl("pw_probe_dlopen_external")
 @inline(never)
 @_optimize(none)
-public func ej_probe_dlopen_external_marker() {}
+public func pw_probe_dlopen_external_marker() {}
 
-@_cdecl("ej_probe_jit_map_jit")
+@_cdecl("pw_probe_jit_map_jit")
 @inline(never)
 @_optimize(none)
-public func ej_probe_jit_map_jit_marker() {}
+public func pw_probe_jit_map_jit_marker() {}
 
-@_cdecl("ej_probe_jit_rwx_legacy")
+@_cdecl("pw_probe_jit_rwx_legacy")
 @inline(never)
 @_optimize(none)
-public func ej_probe_jit_rwx_legacy_marker() {}
+public func pw_probe_jit_rwx_legacy_marker() {}
 
-@_cdecl("ej_probe_sandbox_check")
+@_cdecl("pw_probe_sandbox_check")
 @inline(never)
 @_optimize(none)
-public func ej_probe_sandbox_check_marker() {}
+public func pw_probe_sandbox_check_marker() {}
 
-@_cdecl("ej_probe_sandbox_extension")
+@_cdecl("pw_probe_sandbox_extension")
 @inline(never)
 @_optimize(none)
-public func ej_probe_sandbox_extension_marker() {}
+public func pw_probe_sandbox_extension_marker() {}
 
-@_cdecl("ej_probe_inherit_child")
+@_cdecl("pw_probe_inherit_child")
 @inline(never)
 @_optimize(none)
-public func ej_probe_inherit_child_marker() {}
+public func pw_probe_inherit_child_marker() {}
 
 private enum InheritChildCapabilityTransport {
     case rightsBus
@@ -240,7 +240,7 @@ public enum InProcessProbeCore {
         response.started_at_iso8601 = iso8601(started)
         response.ended_at_iso8601 = iso8601(ended)
         response.thread_id = threadIdString()
-        response.schema_version = 2
+        response.schema_version = 1
 
         var details = response.details ?? [:]
         details["correlation_id"] = correlationId
@@ -350,7 +350,7 @@ public enum InProcessProbeCore {
         ),
         ProbeSpec(
             probe_id: "downloads_rw",
-            summary: "read/write/remove a file under Downloads/entitlement-jail-harness",
+            summary: "read/write/remove a file under Downloads/policy-witness-harness",
             usage: "downloads_rw [--name <file-name>]",
             required_args: [],
 	            optional_args: [
@@ -362,7 +362,7 @@ public enum InProcessProbeCore {
             ],
             entitlement_hints: ["com.apple.security.files.downloads.read-write"],
             notes: [
-                "Writes under Downloads/entitlement-jail-harness."
+                "Writes under Downloads/policy-witness-harness."
             ]
         ),
         ProbeSpec(
@@ -392,7 +392,7 @@ fs_op --op <stat|open_read|open_write|create|truncate|rename|unlink|mkdir|rmdir|
             ],
             entitlement_hints: ["path-dependent (file access entitlements)"],
             notes: [
-                "Destructive direct-path ops are refused unless you use --path-class/--target (or a path under */entitlement-jail-harness/*) or set --allow-unsafe-path.",
+                "Destructive direct-path ops are refused unless you use --path-class/--target (or a path under */policy-witness-harness/*) or set --allow-unsafe-path.",
                 "Use --no-cleanup to keep harness artifacts after rename/truncate for update_file_by_fileid experiments."
             ]
         ),
@@ -422,7 +422,7 @@ fs_op_wait --op <stat|open_read|open_write|create|truncate|rename|unlink|mkdir|r
                 "--wait-interval-ms <n>"
             ],
             examples: [
-                "fs_op_wait --op open_read --path-class tmp --wait-fifo /tmp/ej-wait.fifo",
+                "fs_op_wait --op open_read --path-class tmp --wait-fifo /tmp/pw-wait.fifo",
                 "fs_op_wait --op stat --path /tmp/target --wait-exists /tmp/trigger --wait-timeout-ms 60000"
             ],
             entitlement_hints: ["path-dependent (file access entitlements)"],
@@ -455,9 +455,9 @@ fs_op_wait --op <stat|open_read|open_write|create|truncate|rename|unlink|mkdir|r
         ProbeSpec(
             probe_id: "dlopen_external",
             summary: "dlopen a signed dylib by absolute path",
-            usage: "dlopen_external --path <abs> (or set EJ_DLOPEN_PATH)",
+            usage: "dlopen_external --path <abs> (or set PW_DLOPEN_PATH)",
             required_args: [
-                "--path <abs> (or EJ_DLOPEN_PATH)"
+                "--path <abs> (or PW_DLOPEN_PATH)"
             ],
             optional_args: [],
             examples: [
@@ -714,9 +714,9 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 	            ],
 		            examples: [
 		                "sandbox_extension --op issue_file --class com.apple.app-sandbox.read --path /etc/hosts --allow-unsafe-path",
-		                "sandbox_extension --op issue_file --class com.apple.app-sandbox.read --path-class tmp --target specimen_file --name ej_extension.txt --create",
+		                "sandbox_extension --op issue_file --class com.apple.app-sandbox.read --path-class tmp --target specimen_file --name pw_extension.txt --create",
 		                "sandbox_extension --op issue_file_to_pid --pid self --class com.apple.app-sandbox.read --path /etc/hosts --allow-unsafe-path",
-		                "sandbox_extension --op issue_extension --path-class tmp --target specimen_file --name ej_extension.txt --create",
+		                "sandbox_extension --op issue_extension --path-class tmp --target specimen_file --name pw_extension.txt --create",
 		                "sandbox_extension --op issue_fs_extension --flags 8 --path /etc/hosts --allow-unsafe-path",
 		                "sandbox_extension --op consume --token <token> --token-format full",
 		                "sandbox_extension --op consume --token <token> --call-variant token_second --call-symbol sandbox_consume_extension",
@@ -724,11 +724,11 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 		                "sandbox_extension --op release --handle <i64>",
 		                "sandbox_extension --op release_file --token <token>",
 		                "sandbox_extension --op update_file --path /etc/hosts --flags 0 --allow-unsafe-path",
-		                "sandbox_extension --op update_file_rename_delta --class com.apple.app-sandbox.read --path /Users/me/Desktop/ej_old.txt --new-path /Users/me/Desktop/ej_new.txt --wait-for-external-rename --allow-unsafe-path",
+		                "sandbox_extension --op update_file_rename_delta --class com.apple.app-sandbox.read --path /Users/me/Desktop/pw_old.txt --new-path /Users/me/Desktop/pw_new.txt --wait-for-external-rename --allow-unsafe-path",
 		                "sandbox_extension --op update_file_by_fileid --token <token> --path /etc/hosts --flags 0",
 		                "sandbox_extension --op update_file_by_fileid --token <token> --file-id <u64> --selector 2 --call-variant payload_ptr_selector",
-		                "sandbox_extension --op update_file_by_fileid_sweep --class com.apple.app-sandbox.read --path-class tmp --target specimen_file --name ej_sweep.txt --create --selectors 0,1,2",
-		                "sandbox_extension --op update_file_by_fileid_delta --class com.apple.app-sandbox.read --path-class tmp --target specimen_file --name ej_delta.txt --create --selector 2 --payload-source st_dev",
+		                "sandbox_extension --op update_file_by_fileid_sweep --class com.apple.app-sandbox.read --path-class tmp --target specimen_file --name pw_sweep.txt --create --selectors 0,1,2",
+		                "sandbox_extension --op update_file_by_fileid_delta --class com.apple.app-sandbox.read --path-class tmp --target specimen_file --name pw_delta.txt --create --selector 2 --payload-source st_dev",
 	                "sandbox_extension --op issue_file --class com.apple.app-sandbox.read --path /etc/hosts --allow-unsafe-path --introspect"
 	            ],
             entitlement_hints: [
@@ -738,7 +738,7 @@ bookmark_op --bookmark-b64 <base64> | --bookmark-path <path>
 		                "issue_file returns the token in stdout and in details.token.",
 		                "issue_file_to_pid issues a token scoped to another process via sandbox_extension_issue_file_to_process_by_pid.",
 		                "issue_extension/issue_fs_extension/issue_fs_rw_extension are thin wrappers around sandbox_extension_issue_file.",
-		                "Direct-path issuance outside */entitlement-jail-harness/* is refused unless you pass --allow-unsafe-path.",
+		                "Direct-path issuance outside */policy-witness-harness/* is refused unless you pass --allow-unsafe-path.",
 		                "If consume/release fails with invalid-token style errors, try --token-format prefix (uses the substring before the first ';').",
 		                "consume returns a (typically positive) i64 handle in stdout + details.consume_handle when sandbox_extension_consume(handle) is usable.",
 		                "release prefers --handle from a prior consume; token-based release variants are supported for experimentation only.",
@@ -782,15 +782,15 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
             ],
             examples: [
                 "inherit_child --scenario dynamic_extension --path /private/var/db/launchd.db/com.apple.launchd/overrides.plist --allow-unsafe-path",
-                "inherit_child --scenario matrix_basic --path-class tmp --target specimen_file --name ej_child.txt --create",
-                "inherit_child --scenario bookmark_ferry --path-class documents --target specimen_file --name ej_child.txt --create",
+                "inherit_child --scenario matrix_basic --path-class tmp --target specimen_file --name pw_child.txt --create",
+                "inherit_child --scenario bookmark_ferry --path-class documents --target specimen_file --name pw_child.txt --create",
                 "inherit_child --scenario inherit_bad_entitlements"
             ],
             entitlement_hints: [
                 "com.apple.security.temporary-exception.sbpl (needed for sandbox_extension issue_file in dynamic_extension)"
             ],
             notes: [
-                "Spawns the bundled ej-inherit-child helper using posix_spawn and an event bus + rights bus (SCM_RIGHTS).",
+                "Spawns the bundled pw-inherit-child helper using posix_spawn and an event bus + rights bus (SCM_RIGHTS).",
                 "Emits a structured witness payload under RunProbeResponse.witness.",
                 "dynamic_extension uses sandbox extension issuance for parent-only acquisition; matrix_basic skips tokens.",
                 "bookmark_ferry passes security-scoped bookmark bytes over the event bus; bookmark resolution is identity-sensitive, so the spawned helper must share the service bundle id.",
@@ -858,21 +858,21 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
             ],
             entitlement_hints: ["path-dependent (file access entitlements)"],
             notes: [
-                "Coordinated writes to direct paths are refused unless you use --path-class/--target (or a path under */entitlement-jail-harness/*) or set --allow-unsafe-path."
+                "Coordinated writes to direct paths are refused unless you use --path-class/--target (or a path under */policy-witness-harness/*) or set --allow-unsafe-path."
             ]
         )
     ]
 
     private static let traceSymbols: [TraceSymbolSpec] = [
-        TraceSymbolSpec(probe_id: "fs_op", symbols: ["ej_probe_fs_op"]),
-        TraceSymbolSpec(probe_id: "fs_op_wait", symbols: ["ej_probe_fs_op_wait"]),
-        TraceSymbolSpec(probe_id: "net_op", symbols: ["ej_probe_net_op"]),
-        TraceSymbolSpec(probe_id: "dlopen_external", symbols: ["ej_probe_dlopen_external"]),
-        TraceSymbolSpec(probe_id: "jit_map_jit", symbols: ["ej_probe_jit_map_jit"]),
-        TraceSymbolSpec(probe_id: "jit_rwx_legacy", symbols: ["ej_probe_jit_rwx_legacy"]),
-        TraceSymbolSpec(probe_id: "sandbox_check", symbols: ["ej_probe_sandbox_check"]),
-        TraceSymbolSpec(probe_id: "sandbox_extension", symbols: ["ej_probe_sandbox_extension"]),
-        TraceSymbolSpec(probe_id: "inherit_child", symbols: ["ej_probe_inherit_child"]),
+        TraceSymbolSpec(probe_id: "fs_op", symbols: ["pw_probe_fs_op"]),
+        TraceSymbolSpec(probe_id: "fs_op_wait", symbols: ["pw_probe_fs_op_wait"]),
+        TraceSymbolSpec(probe_id: "net_op", symbols: ["pw_probe_net_op"]),
+        TraceSymbolSpec(probe_id: "dlopen_external", symbols: ["pw_probe_dlopen_external"]),
+        TraceSymbolSpec(probe_id: "jit_map_jit", symbols: ["pw_probe_jit_map_jit"]),
+        TraceSymbolSpec(probe_id: "jit_rwx_legacy", symbols: ["pw_probe_jit_rwx_legacy"]),
+        TraceSymbolSpec(probe_id: "sandbox_check", symbols: ["pw_probe_sandbox_check"]),
+        TraceSymbolSpec(probe_id: "sandbox_extension", symbols: ["pw_probe_sandbox_extension"]),
+        TraceSymbolSpec(probe_id: "inherit_child", symbols: ["pw_probe_inherit_child"]),
     ]
 
     private static func probeSpec(for probeId: String) -> ProbeSpec? {
@@ -881,7 +881,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 
     private static func probeCatalog() -> RunProbeResponse {
         let catalog = ProbeCatalog(
-            schema_version: 2,
+            schema_version: 1,
             generated_at_iso8601: ISO8601DateFormatter().string(from: Date()),
             probes: probeSpecs,
             trace_symbols: traceSymbols
@@ -1079,7 +1079,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
         var addrCopy = addr
         let connectResult: Int32 = withUnsafePointer(to: &addrCopy) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
-                ej_connect(fd, saPtr, socklen_t(MemoryLayout<sockaddr_in>.stride))
+                pw_connect(fd, saPtr, socklen_t(MemoryLayout<sockaddr_in>.stride))
             }
         }
 
@@ -1142,7 +1142,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
             )
         }
 
-        let harnessDir = downloadsDir.appendingPathComponent("entitlement-jail-harness", isDirectory: true)
+        let harnessDir = downloadsDir.appendingPathComponent("policy-witness-harness", isDirectory: true)
         let fileName = requestedName?.isEmpty == false ? requestedName! : "probe-\(UUID().uuidString).txt"
         let fileURL = harnessDir.appendingPathComponent(fileName, isDirectory: false)
 
@@ -1173,7 +1173,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
             return opError(outcome, error, op: "mkdir")
         }
 
-        let payload = Data("entitlement-jail downloads_rw probe\n".utf8)
+        let payload = Data("policy-witness downloads_rw probe\n".utf8)
         do {
             try payload.write(to: fileURL, options: [.atomic])
         } catch {
@@ -1287,7 +1287,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	    // MARK: - fs_op_wait (delayed fs_op for attach)
 
 	    private static func probeFsOpWait(argv: [String]) -> RunProbeResponse {
-	        ej_probe_fs_op_wait_marker()
+	        pw_probe_fs_op_wait_marker()
 	        let args = Argv(argv)
 	        let expectedOps = FsOp.allCases.map(\.rawValue).joined(separator: "|")
 	        guard let opStr = args.value("--op"), FsOp(rawValue: opStr) != nil else {
@@ -1380,7 +1380,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 
 	        DispatchQueue.global(qos: .userInitiated).async {
 	            let fd = path.withCString { ptr in
-	                ej_open(ptr, O_RDONLY, 0)
+	                pw_open(ptr, O_RDONLY, 0)
 	            }
 	            lock.lock()
 	            if fd < 0 {
@@ -1402,7 +1402,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 
 	        if timedOut {
 	            let unblockFd = path.withCString { ptr in
-	                ej_open(ptr, O_WRONLY | O_NONBLOCK, 0)
+	                pw_open(ptr, O_WRONLY | O_NONBLOCK, 0)
 	            }
 	            if unblockFd >= 0 {
 	                close(unblockFd)
@@ -1480,7 +1480,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	    }
 
 	    private static func probeFsOp(argv: [String]) -> RunProbeResponse {
-	        ej_probe_fs_op_marker()
+	        pw_probe_fs_op_marker()
 	        let args = Argv(argv)
 	        let expectedOps = FsOp.allCases.map(\.rawValue).joined(separator: "|")
 	        guard let opStr = args.value("--op"), let op = FsOp(rawValue: opStr) else {
@@ -1542,7 +1542,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
                 stderr: "",
                 normalized_outcome: "bad_request",
                 errno: nil,
-                error: "refusing potentially destructive op=\(op.rawValue) on non-harness path (use --path-class <...> or a path under */entitlement-jail-harness/*; use --allow-unsafe-path to override)",
+                error: "refusing potentially destructive op=\(op.rawValue) on non-harness path (use --path-class <...> or a path under */policy-witness-harness/*; use --allow-unsafe-path to override)",
                 details: details,
                 layer_attribution: nil
             )
@@ -1661,7 +1661,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	                return finish(rc: 0, outcome: "ok", errno: nil, error: nil)
 
 	            case .create:
-	                try writeSmallFile(path: targetPath, bytes: Data("entitlement-jail fs_op create\n".utf8))
+	                try writeSmallFile(path: targetPath, bytes: Data("policy-witness fs_op create\n".utf8))
 	                bestEffortCleanup(resolvedTarget.cleanupRoots)
 	                return finish(rc: 0, outcome: cleanupErrors.isEmpty ? "ok" : "ok_cleanup_failed", errno: nil, error: cleanupErrors.isEmpty ? nil : cleanupErrors.joined(separator: "; "))
 
@@ -1670,7 +1670,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	                    try writeSmallFile(path: targetPath, bytes: Data("x".utf8))
 	                }
                 let fd = targetPath.withCString { ptr in
-                    ej_open(ptr, O_RDONLY, 0)
+                    pw_open(ptr, O_RDONLY, 0)
                 }
 	                if fd < 0 {
 	                    let e = errno
@@ -1694,7 +1694,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	                    try createParentDirsIfNeeded(for: targetPath)
 	                }
                 let fd = targetPath.withCString { ptr in
-                    ej_open(ptr, O_WRONLY | O_CREAT, Int32(S_IRUSR | S_IWUSR))
+                    pw_open(ptr, O_WRONLY | O_CREAT, Int32(S_IRUSR | S_IWUSR))
                 }
 	                if fd < 0 {
 	                    let e = errno
@@ -1738,7 +1738,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
                     }
                     toPath = to
                     if !allowUnsafe, (!isSafeWritePath(targetPath) || !isSafeWritePath(toPath)) {
-                        return badRequest("refusing rename outside harness paths (use --path-class <...> or a path under */entitlement-jail-harness/*; use --allow-unsafe-path to override)")
+                        return badRequest("refusing rename outside harness paths (use --path-class <...> or a path under */policy-witness-harness/*; use --allow-unsafe-path to override)")
                     }
                 } else {
 	                    let runDir = resolvedTarget.runDir ?? URL(fileURLWithPath: targetPath).deletingLastPathComponent().path
@@ -1808,7 +1808,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	            return (nil, badRequest("invalid --path-class: \(pathClass) (expected: home|tmp|downloads|desktop|documents|app_support|caches)"))
 	        }
 
-	        let harnessRoot = baseURL.appendingPathComponent("entitlement-jail-harness", isDirectory: true)
+	        let harnessRoot = baseURL.appendingPathComponent("policy-witness-harness", isDirectory: true)
 	        let runDir = harnessRoot.appendingPathComponent("fs-op", isDirectory: true).appendingPathComponent(UUID().uuidString, isDirectory: true)
 
 	        let name = (requestedName?.isEmpty == false) ? requestedName! : "specimen-\(UUID().uuidString).txt"
@@ -1867,15 +1867,15 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 
 		    private static func isSafeWritePath(_ path: String) -> Bool {
 		        let candidates: [String?] = [
-		            URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).appendingPathComponent("entitlement-jail-harness", isDirectory: true).path,
-		            "/tmp/entitlement-jail-harness",
-		            "/private/tmp/entitlement-jail-harness",
-		            URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent("entitlement-jail-harness", isDirectory: true).path,
-		            FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.appendingPathComponent("entitlement-jail-harness", isDirectory: true).path,
-		            FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first?.appendingPathComponent("entitlement-jail-harness", isDirectory: true).path,
-		            FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("entitlement-jail-harness", isDirectory: true).path,
-	            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("entitlement-jail-harness", isDirectory: true).path,
-	            FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.appendingPathComponent("entitlement-jail-harness", isDirectory: true).path,
+		            URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).appendingPathComponent("policy-witness-harness", isDirectory: true).path,
+		            "/tmp/policy-witness-harness",
+		            "/private/tmp/policy-witness-harness",
+		            URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent("policy-witness-harness", isDirectory: true).path,
+		            FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.appendingPathComponent("policy-witness-harness", isDirectory: true).path,
+		            FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first?.appendingPathComponent("policy-witness-harness", isDirectory: true).path,
+		            FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("policy-witness-harness", isDirectory: true).path,
+	            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("policy-witness-harness", isDirectory: true).path,
+	            FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.appendingPathComponent("policy-witness-harness", isDirectory: true).path,
 	        ]
 
 	        for root in candidates.compactMap({ $0 }) {
@@ -1905,7 +1905,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	    }
 
 	    private static func probeNetOp(argv: [String]) -> RunProbeResponse {
-	        ej_probe_net_op_marker()
+	        pw_probe_net_op_marker()
 	        let args = Argv(argv)
 	        let expectedOps = NetOp.allCases.map(\.rawValue).joined(separator: "|")
 	        guard let opStr = args.value("--op"), let op = NetOp(rawValue: opStr) else {
@@ -1939,7 +1939,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	                ai_next: nil
 	            )
 	            var res: UnsafeMutablePointer<addrinfo>?
-            let rc = ej_getaddrinfo(host, nil, &hints, &res)
+            let rc = pw_getaddrinfo(host, nil, &hints, &res)
 	            if rc != 0 {
 	                return RunProbeResponse(
 	                    rc: 1,
@@ -1999,7 +1999,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	                ai_next: nil
 	            )
 	            var res: UnsafeMutablePointer<addrinfo>?
-            let gai = ej_getaddrinfo(host, String(port), &hints, &res)
+            let gai = pw_getaddrinfo(host, String(port), &hints, &res)
 	            if gai != 0 {
 	                return RunProbeResponse(
 	                    rc: 1,
@@ -2029,7 +2029,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	                defer { close(fd) }
 
 	                if op == .tcp_connect {
-                    if ej_connect(fd, ai.ai_addr, ai.ai_addrlen) == 0 {
+                    if pw_connect(fd, ai.ai_addr, ai.ai_addrlen) == 0 {
 	                        details["attempts"] = "\(attempts)"
 	                        details["connect"] = "ok"
 	                        return RunProbeResponse(rc: 0, stdout: "", stderr: "", normalized_outcome: "ok", errno: nil, error: nil, details: details, layer_attribution: nil)
@@ -2038,7 +2038,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	                } else {
 	                    var b: UInt8 = 0x58
                     let sent = withUnsafePointer(to: &b) { ptr in
-                        ej_sendto(fd, ptr, 1, 0, ai.ai_addr, ai.ai_addrlen)
+                        pw_sendto(fd, ptr, 1, 0, ai.ai_addr, ai.ai_addrlen)
                     }
 	                    if sent == 1 {
 	                        details["attempts"] = "\(attempts)"
@@ -2082,11 +2082,11 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	    // MARK: - dlopen_external (library validation / injection surface)
 
 	    private static func probeDlopenExternal(argv: [String]) -> RunProbeResponse {
-	        ej_probe_dlopen_external_marker()
+	        pw_probe_dlopen_external_marker()
 	        let args = Argv(argv)
-	        let path = args.value("--path") ?? ProcessInfo.processInfo.environment["EJ_DLOPEN_PATH"]
+	        let path = args.value("--path") ?? ProcessInfo.processInfo.environment["PW_DLOPEN_PATH"]
 	        guard let path, path.hasPrefix("/") else {
-	            return badRequest("missing/invalid --path (expected absolute path or EJ_DLOPEN_PATH)")
+	            return badRequest("missing/invalid --path (expected absolute path or PW_DLOPEN_PATH)")
 	        }
 
 	        var details = baseDetails([
@@ -2112,7 +2112,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 
 	        dlerror()
 	        let handle = path.withCString { ptr in
-	            ej_dlopen(ptr, Int32(RTLD_NOW))
+	            pw_dlopen(ptr, Int32(RTLD_NOW))
 	        }
 	        if let handle {
 	            dlclose(handle)
@@ -2146,7 +2146,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	    // MARK: - jit_map_jit (MAP_JIT probe)
 
 	    private static func probeJitMapJit(argv: [String]) -> RunProbeResponse {
-	        ej_probe_jit_map_jit_marker()
+	        pw_probe_jit_map_jit_marker()
 	        let args = Argv(argv)
 	        let size = args.intValue("--size") ?? 16384
 	        guard size > 0 else {
@@ -2161,7 +2161,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 
 	        let flags = MAP_PRIVATE | MAP_ANON | MAP_JIT
 	        let prot = PROT_READ | PROT_WRITE
-	        guard let ptr = ej_mmap(nil, size, prot, flags, -1, 0), ptr != MAP_FAILED else {
+	        guard let ptr = pw_mmap(nil, size, prot, flags, -1, 0), ptr != MAP_FAILED else {
 	            let e = errno
 	            let outcome = (e == EPERM || e == EACCES) ? "permission_error" : "mmap_failed"
 	            return RunProbeResponse(
@@ -2185,7 +2185,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	        details["jit_write_protect_on_rc"] = "called"
 
 	        var outcome = "ok"
-	        let unmapRc = ej_munmap(ptr, size)
+	        let unmapRc = pw_munmap(ptr, size)
 	        if unmapRc != 0 {
 	            outcome = "ok_unmap_failed"
 	            details["munmap_error"] = String(cString: strerror(errno))
@@ -2206,7 +2206,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	    // MARK: - jit_rwx_legacy (RWX mmap probe)
 
 	    private static func probeJitRwxLegacy(argv: [String]) -> RunProbeResponse {
-	        ej_probe_jit_rwx_legacy_marker()
+	        pw_probe_jit_rwx_legacy_marker()
 	        let args = Argv(argv)
 	        let size = args.intValue("--size") ?? 16384
 	        guard size > 0 else {
@@ -2221,7 +2221,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 
 	        let flags = MAP_PRIVATE | MAP_ANON
 	        let prot = PROT_READ | PROT_WRITE | PROT_EXEC
-	        guard let ptr = ej_mmap(nil, size, prot, flags, -1, 0), ptr != MAP_FAILED else {
+	        guard let ptr = pw_mmap(nil, size, prot, flags, -1, 0), ptr != MAP_FAILED else {
 	            let e = errno
 	            let outcome = (e == EPERM || e == EACCES) ? "permission_error" : "mmap_failed"
 	            return RunProbeResponse(
@@ -2240,7 +2240,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	        details["mmap_addr"] = String(format: "0x%llx", addr)
 
 	        var outcome = "ok"
-	        let unmapRc = ej_munmap(ptr, size)
+	        let unmapRc = pw_munmap(ptr, size)
 	        if unmapRc != 0 {
 	            outcome = "ok_unmap_failed"
 	            details["munmap_error"] = String(cString: strerror(errno))
@@ -2678,7 +2678,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 
         let targetPath = resolvedTarget.path
         if op == .write, directPath != nil, !allowUnsafe, !isSafeWritePath(targetPath) {
-            return badRequest("refusing potentially destructive coordinated write on non-harness path (use --path-class <...> or a path under */entitlement-jail-harness/*; use --allow-unsafe-path to override)")
+            return badRequest("refusing potentially destructive coordinated write on non-harness path (use --path-class <...> or a path under */policy-witness-harness/*; use --allow-unsafe-path to override)")
         }
 
 	        var details = baseDetails([
@@ -2843,7 +2843,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	    }
 
 	    private static func probeSandboxCheck(argv: [String]) -> RunProbeResponse {
-	        ej_probe_sandbox_check_marker()
+	        pw_probe_sandbox_check_marker()
 	        let args = Argv(argv)
 
 	        guard let operation = args.value("--operation"), !operation.isEmpty else {
@@ -3015,7 +3015,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	    }
 
 	    private static func probeSandboxExtension(argv: [String]) -> RunProbeResponse {
-	        ej_probe_sandbox_extension_marker()
+	        pw_probe_sandbox_extension_marker()
 	        let args = Argv(argv)
 	        let expectedOps = SandboxExtensionOp.allCases.map(\.rawValue).joined(separator: "|")
 	        guard let opStr = args.value("--op"), let op = SandboxExtensionOp(rawValue: opStr) else {
@@ -3108,7 +3108,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	                    stderr: "",
 	                    normalized_outcome: "bad_request",
 	                    errno: nil,
-	                    error: "refusing to issue extension for non-harness path (use --path-class <...> or a path under */entitlement-jail-harness/*; use --allow-unsafe-path to override)",
+	                    error: "refusing to issue extension for non-harness path (use --path-class <...> or a path under */policy-witness-harness/*; use --allow-unsafe-path to override)",
 	                    details: details,
                     layer_attribution: nil
                 )
@@ -3156,7 +3156,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
                             let url = URL(fileURLWithPath: targetPath)
                             let parent = url.deletingLastPathComponent()
                             try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true, attributes: nil)
-                            let payload = Data("entitlement-jail sandbox_extension\n".utf8)
+                            let payload = Data("policy-witness sandbox_extension\n".utf8)
                             try payload.write(to: url, options: [.atomic])
                             details["target_created"] = "true"
                             details["target_kind"] = "file"
@@ -3316,7 +3316,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
                     stderr: "",
                     normalized_outcome: "bad_request",
                     errno: nil,
-                    error: "refusing to issue extension for non-harness path (use --path-class <...> or a path under */entitlement-jail-harness/*; use --allow-unsafe-path to override)",
+                    error: "refusing to issue extension for non-harness path (use --path-class <...> or a path under */policy-witness-harness/*; use --allow-unsafe-path to override)",
                     details: details,
                     layer_attribution: nil
                 )
@@ -3364,7 +3364,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
                             let url = URL(fileURLWithPath: targetPath)
                             let parent = url.deletingLastPathComponent()
                             try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true, attributes: nil)
-                            let payload = Data("entitlement-jail sandbox_extension\n".utf8)
+                            let payload = Data("policy-witness sandbox_extension\n".utf8)
                             try payload.write(to: url, options: [.atomic])
                             details["target_created"] = "true"
                             details["target_kind"] = "file"
@@ -3620,7 +3620,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
                     stderr: "",
                     normalized_outcome: "bad_request",
                     errno: nil,
-                    error: "refusing update_file for non-harness path (use --path-class <...> or a path under */entitlement-jail-harness/*; use --allow-unsafe-path to override)",
+                    error: "refusing update_file for non-harness path (use --path-class <...> or a path under */policy-witness-harness/*; use --allow-unsafe-path to override)",
                     details: details,
                     layer_attribution: nil
                 )
@@ -3752,7 +3752,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	                    stderr: "",
 	                    normalized_outcome: "bad_request",
 	                    errno: nil,
-	                    error: "refusing update_file_rename_delta for non-harness paths (use paths under */entitlement-jail-harness/* or pass --allow-unsafe-path)",
+	                    error: "refusing update_file_rename_delta for non-harness paths (use paths under */policy-witness-harness/* or pass --allow-unsafe-path)",
 	                    details: details,
 	                    layer_attribution: nil
 		                )
@@ -4643,7 +4643,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	                    stderr: "",
 	                    normalized_outcome: "bad_request",
 	                    errno: nil,
-	                    error: "refusing to run update_file_by_fileid_sweep for non-harness path (use --path-class <...> or a path under */entitlement-jail-harness/*; use --allow-unsafe-path to override)",
+	                    error: "refusing to run update_file_by_fileid_sweep for non-harness path (use --path-class <...> or a path under */policy-witness-harness/*; use --allow-unsafe-path to override)",
 	                    details: details,
 	                    layer_attribution: nil
 	                )
@@ -4670,7 +4670,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	                    let url = URL(fileURLWithPath: targetPath)
 	                    let parent = url.deletingLastPathComponent()
 	                    try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true, attributes: nil)
-	                    let payload = Data("entitlement-jail sandbox_extension sweep\n".utf8)
+	                    let payload = Data("policy-witness sandbox_extension sweep\n".utf8)
 	                    try payload.write(to: url, options: [.atomic])
 	                    details["target_created"] = "true"
 	                } catch {
@@ -5029,7 +5029,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	                    stderr: "",
 	                    normalized_outcome: "bad_request",
 	                    errno: nil,
-	                    error: "refusing to run update_file_by_fileid_delta for non-harness path (use --path-class <...> or a path under */entitlement-jail-harness/*; use --allow-unsafe-path to override)",
+	                    error: "refusing to run update_file_by_fileid_delta for non-harness path (use --path-class <...> or a path under */policy-witness-harness/*; use --allow-unsafe-path to override)",
 	                    details: details,
 	                    layer_attribution: nil
 	                )
@@ -5056,7 +5056,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	                    let url = URL(fileURLWithPath: targetPath)
 	                    let parent = url.deletingLastPathComponent()
 	                    try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true, attributes: nil)
-	                    let payload = Data("entitlement-jail sandbox_extension delta\n".utf8)
+	                    let payload = Data("policy-witness sandbox_extension delta\n".utf8)
 	                    try payload.write(to: url, options: [.atomic])
 	                    details["target_created"] = "true"
 	                } catch {
@@ -5309,7 +5309,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	                let tmpPath = targetPath + ".tmp." + UUID().uuidString
 	                do {
 	                    let tmpURL = URL(fileURLWithPath: tmpPath)
-	                    let payload = Data("entitlement-jail sandbox_extension delta replace\n".utf8)
+	                    let payload = Data("policy-witness sandbox_extension delta replace\n".utf8)
 	                    try payload.write(to: tmpURL, options: [.atomic])
 	                } catch {
 	                    let e = extractErrno(error)
@@ -6081,7 +6081,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	        // - Parent lifecycle discipline (writer stays open until reader finishes) prevents deadlocks and spurious truncation.
 	        // - start-suspended spawn + stop markers make stop-on-entry/deny race-free and testable without a debugger.
 	        // - Stable callsite identifiers (and backtraces where available) localize denies to specific code paths.
-	        ej_probe_inherit_child_marker()
+	        pw_probe_inherit_child_marker()
 	        let args = Argv(argv)
         let scenario = args.value("--scenario") ?? "dynamic_extension"
         let allowUnsafe = args.has("--allow-unsafe-path")
@@ -6605,8 +6605,8 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
         func startEchoServer(maxConnections: Int) -> (String?, Int32?, String?) {
             let socketRoot = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             let maxLen = MemoryLayout.size(ofValue: sockaddr_un().sun_path)
-            let shortName = "ej-echo-\(getpid()).sock"
-            let fallbackName = "ej.sock"
+            let shortName = "pw-echo-\(getpid()).sock"
+            let fallbackName = "pw.sock"
             var socketPath = socketRoot.appendingPathComponent(shortName, isDirectory: false).path
             if socketPath.utf8.count > maxLen {
                 socketPath = socketRoot.appendingPathComponent(fallbackName, isDirectory: false).path
@@ -6702,7 +6702,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
             "scenario": scenario
         ])
 
-        let requestedName = args.value("--name") ?? "ej_child.txt"
+        let requestedName = args.value("--name") ?? "pw_child.txt"
         let targetArg = args.value("--target") ?? "specimen_file"
         guard let fsTarget = FsTarget(rawValue: targetArg) else {
             return inheritChildBadRequest("invalid --target (expected: path|base|harness_dir|run_dir|specimen_file)")
@@ -6870,7 +6870,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
         }
 
         // Prefer the service bundle copy; sandboxed XPC services cannot read the host app bundle.
-        let childHelperName = scenario == "inherit_bad_entitlements" ? "ej-inherit-child-bad" : "ej-inherit-child"
+        let childHelperName = scenario == "inherit_bad_entitlements" ? "pw-inherit-child-bad" : "pw-inherit-child"
         let serviceBundle = Bundle.main.bundleURL
         let serviceChildPath = serviceBundle.appendingPathComponent("Contents/MacOS/\(childHelperName)").path
         var candidatePaths = [serviceChildPath]
@@ -6948,7 +6948,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
                     do {
                         let data: Data
                         if bookmarkInvalid {
-                            data = Data("EJ_INVALID_BOOKMARK".utf8)
+                            data = Data("PW_INVALID_BOOKMARK".utf8)
                         } else {
                             data = try url.bookmarkData(options: options, includingResourceValuesForKeys: nil, relativeTo: nil)
                         }
@@ -7286,39 +7286,39 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
         let rightsFd = rightsChildFd
 
         var env = ProcessInfo.processInfo.environment
-        env["EJ_RUN_ID"] = runId
-        env["EJ_SCENARIO"] = scenario
-        env["EJ_PATH"] = targetPath
-        env["EJ_TARGET_NAME"] = targetName
-        env["EJ_SOCKET_PATH"] = socketPath
-        env["EJ_ACTOR"] = "child"
-        env["EJ_LINEAGE_DEPTH"] = "1"
+        env["PW_RUN_ID"] = runId
+        env["PW_SCENARIO"] = scenario
+        env["PW_PATH"] = targetPath
+        env["PW_TARGET_NAME"] = targetName
+        env["PW_SOCKET_PATH"] = socketPath
+        env["PW_ACTOR"] = "child"
+        env["PW_LINEAGE_DEPTH"] = "1"
 
         // Two-bus protocol (parent/child contract):
-        // - eventFd/rightFd are explicit numbers passed via EJ_EVENT_FD/EJ_RIGHTS_FD, dup2'd in the child.
+        // - eventFd/rightFd are explicit numbers passed via PW_EVENT_FD/PW_RIGHTS_FD, dup2'd in the child.
         // - Event bus: socketpair. Child->parent sends JSONL events; the first bytes are
-        //   "EJ_CHILD_SENTINEL ... protocol_version=<v> cap_namespace=<ns>\n".
-        //   Parent->child may send "EJ_CAP_PAYLOAD proto=<v> cap_ns=<ns> cap_id=<id> cap_type=<type> len=<n>\n"
+        //   "PW_CHILD_SENTINEL ... protocol_version=<v> cap_namespace=<ns>\n".
+        //   Parent->child may send "PW_CAP_PAYLOAD proto=<v> cap_ns=<ns> cap_id=<id> cap_type=<type> len=<n>\n"
         //   followed by raw payload bytes.
         // - Rights bus: socketpair for SCM_RIGHTS. Parent->child sends CapabilityPayload bytes with
         //   an SCM_RIGHTS control message; meta0 holds the protocol version.
-        env["EJ_EVENT_FD"] = "\(eventFd)"
-        env["EJ_RIGHTS_FD"] = "\(rightsFd)"
-        env["EJ_PROTOCOL_VERSION"] = "\(InheritChildProtocol.version)"
-        env["EJ_CAP_NAMESPACE"] = InheritChildProtocol.capabilityNamespace
-        env["EJ_RIGHTS_CAP_COUNT"] = "\(rightsCapabilityPlan.count)"
-        env["EJ_EVENT_CAP_COUNT"] = "\(eventPayloadPlan.count)"
-        env["EJ_CAP_COUNT"] = "\(rightsCapabilityPlan.count)"
-        env["EJ_RIGHTS_CAP_IDS"] = rightsCapabilityPlan.map { String($0.id) }.joined(separator: ",")
-        env["EJ_EVENT_CAP_IDS"] = eventPayloadPlan.map { $0.type.rawValue }.joined(separator: ",")
+        env["PW_EVENT_FD"] = "\(eventFd)"
+        env["PW_RIGHTS_FD"] = "\(rightsFd)"
+        env["PW_PROTOCOL_VERSION"] = "\(InheritChildProtocol.version)"
+        env["PW_CAP_NAMESPACE"] = InheritChildProtocol.capabilityNamespace
+        env["PW_RIGHTS_CAP_COUNT"] = "\(rightsCapabilityPlan.count)"
+        env["PW_EVENT_CAP_COUNT"] = "\(eventPayloadPlan.count)"
+        env["PW_CAP_COUNT"] = "\(rightsCapabilityPlan.count)"
+        env["PW_RIGHTS_CAP_IDS"] = rightsCapabilityPlan.map { String($0.id) }.joined(separator: ",")
+        env["PW_EVENT_CAP_IDS"] = eventPayloadPlan.map { $0.type.rawValue }.joined(separator: ",")
         if usesSandboxExtension {
-            env["EJ_PRE_ACQUIRE"] = "1"
+            env["PW_PRE_ACQUIRE"] = "1"
         }
         if stopOnEntry {
-            env["EJ_STOP_ON_ENTRY"] = "1"
+            env["PW_STOP_ON_ENTRY"] = "1"
         }
         if stopOnDeny {
-            env["EJ_STOP_ON_DENY"] = "1"
+            env["PW_STOP_ON_DENY"] = "1"
         }
 
         let envStrings = env.map { "\($0)=\($1)" }
@@ -8048,7 +8048,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
                 stderr: "",
                 normalized_outcome: "bad_request",
                 errno: nil,
-                error: "refusing xattr write on non-harness path (use a path under */entitlement-jail-harness/*; use --allow-write or --allow-unsafe-path to override)",
+                error: "refusing xattr write on non-harness path (use a path under */policy-witness-harness/*; use --allow-write or --allow-unsafe-path to override)",
                 details: baseDetails([
                     "probe_family": "fs_xattr",
                     "op": op.rawValue,
@@ -8247,21 +8247,21 @@ private struct Argv {
 @_silgen_name("open")
 private func c_open(_ path: UnsafePointer<CChar>?, _ flags: Int32, _ mode: Int32) -> Int32
 
-@_cdecl("ej_open")
+@_cdecl("pw_open")
 @inline(never)
-public func ej_open(_ path: UnsafePointer<CChar>?, _ flags: Int32, _ mode: Int32) -> Int32 {
+public func pw_open(_ path: UnsafePointer<CChar>?, _ flags: Int32, _ mode: Int32) -> Int32 {
     c_open(path, flags, mode)
 }
 
-@_cdecl("ej_connect")
+@_cdecl("pw_connect")
 @inline(never)
-public func ej_connect(_ socket: Int32, _ addr: UnsafePointer<sockaddr>?, _ len: socklen_t) -> Int32 {
+public func pw_connect(_ socket: Int32, _ addr: UnsafePointer<sockaddr>?, _ len: socklen_t) -> Int32 {
     Darwin.connect(socket, addr, len)
 }
 
-@_cdecl("ej_getaddrinfo")
+@_cdecl("pw_getaddrinfo")
 @inline(never)
-public func ej_getaddrinfo(
+public func pw_getaddrinfo(
     _ node: UnsafePointer<CChar>?,
     _ service: UnsafePointer<CChar>?,
     _ hints: UnsafePointer<addrinfo>?,
@@ -8270,9 +8270,9 @@ public func ej_getaddrinfo(
     getaddrinfo(node, service, hints, res)
 }
 
-@_cdecl("ej_sendto")
+@_cdecl("pw_sendto")
 @inline(never)
-public func ej_sendto(
+public func pw_sendto(
     _ socket: Int32,
     _ buffer: UnsafeRawPointer?,
     _ len: Int,
@@ -8283,15 +8283,15 @@ public func ej_sendto(
     sendto(socket, buffer, len, flags, addr, addrlen)
 }
 
-@_cdecl("ej_dlopen")
+@_cdecl("pw_dlopen")
 @inline(never)
-public func ej_dlopen(_ path: UnsafePointer<CChar>?, _ mode: Int32) -> UnsafeMutableRawPointer? {
+public func pw_dlopen(_ path: UnsafePointer<CChar>?, _ mode: Int32) -> UnsafeMutableRawPointer? {
     dlopen(path, mode)
 }
 
-@_cdecl("ej_mmap")
+@_cdecl("pw_mmap")
 @inline(never)
-public func ej_mmap(
+public func pw_mmap(
     _ addr: UnsafeMutableRawPointer?,
     _ len: Int,
     _ prot: Int32,
@@ -8302,8 +8302,8 @@ public func ej_mmap(
     mmap(addr, len, prot, flags, fd, offset)
 }
 
-@_cdecl("ej_munmap")
+@_cdecl("pw_munmap")
 @inline(never)
-public func ej_munmap(_ addr: UnsafeMutableRawPointer?, _ len: Int) -> Int32 {
+public func pw_munmap(_ addr: UnsafeMutableRawPointer?, _ len: Int) -> Int32 {
     munmap(addr, len)
 }

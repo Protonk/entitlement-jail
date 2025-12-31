@@ -3,13 +3,13 @@
     {
       "node_id": "E0_minimal",
       "policy_profile": "experiments/policy/P0_minimal.sb",
-      "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_minimal",
-      "xpc_quarantine_service_bundle_id": "com.yourteam.entitlement-jail.QuarantineLab_default"
+      "xpc_probe_service_bundle_id": "com.yourteam.policy-witness.ProbeService_minimal",
+      "xpc_quarantine_service_bundle_id": "com.yourteam.policy-witness.QuarantineLab_default"
     },
     {
       "node_id": "E5_minimal_injectable",
       "policy_profile": "experiments/policy/P0_minimal.sb",
-      "xpc_probe_service_bundle_id": "com.yourteam.entitlement-jail.ProbeService_minimal.injectable"
+      "xpc_probe_service_bundle_id": "com.yourteam.policy-witness.ProbeService_minimal.injectable"
     }
   ]
 }
