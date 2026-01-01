@@ -270,6 +270,7 @@ final class ProbeServiceSessionHost: NSObject, ProbeServiceProtocol {
         var correlationId: String?
         var waitConfig: WaitConfig?
         var triggered: Bool
+        var enableSignposts: Bool
     }
 
     private let lock = NSLock()
@@ -369,54 +370,74 @@ final class ProbeServiceSessionHost: NSObject, ProbeServiceProtocol {
         }
     }
 
-    private func startWait(sessionToken: String, planId: String?, correlationId: String?, config: WaitConfig) {
+    private func startWait(
+        sessionToken: String,
+        planId: String?,
+        correlationId: String?,
+        config: WaitConfig,
+        enableSignposts: Bool
+    ) {
         DispatchQueue.global(qos: .userInitiated).async {
-            let result: WaitTriggerResult
-            if config.mode == "fifo" {
-                result = waitForFifoTrigger(path: config.path, timeoutMs: config.timeoutMs)
-            } else {
-                result = waitForPathExistsTrigger(path: config.path, timeoutMs: config.timeoutMs, intervalMs: config.intervalMs)
-            }
-
-            self.lock.lock()
-            if var s = self.session, s.token == sessionToken, result.ok {
-                s.triggered = true
-                self.session = s
-            }
-            let stillOpen = self.session?.token == sessionToken
-            self.lock.unlock()
-
-            guard stillOpen else {
-                self.emitSessionEvent(
-                    event: "trigger_ignored",
-                    planId: planId,
-                    correlationId: correlationId,
-                    sessionToken: sessionToken,
-                    waitConfig: config,
-                    triggerBytes: result.triggerBytes,
-                    message: "trigger arrived after session closed"
+            PWSignposts.withEnabled(enableSignposts) {
+                let waitSpan = PWSignpostSpan(
+                    category: PWSignposts.categoryXpcService,
+                    name: "wait",
+                    label: "session_wait mode=\(config.mode)",
+                    correlationId: correlationId
                 )
-                return
-            }
+                defer { waitSpan.end() }
 
-            if result.ok {
-                self.emitSessionEvent(
-                    event: "trigger_received",
-                    planId: planId,
-                    correlationId: correlationId,
-                    sessionToken: sessionToken,
-                    waitConfig: config,
-                    triggerBytes: result.triggerBytes
-                )
-            } else {
-                self.emitSessionError(
-                    event: "wait_failed",
-                    planId: planId,
-                    correlationId: correlationId,
-                    sessionToken: sessionToken,
-                    waitConfig: config,
-                    error: result.error ?? "wait failed"
-                )
+                let result: WaitTriggerResult
+                if config.mode == "fifo" {
+                    result = waitForFifoTrigger(path: config.path, timeoutMs: config.timeoutMs)
+                } else {
+                    result = waitForPathExistsTrigger(
+                        path: config.path,
+                        timeoutMs: config.timeoutMs,
+                        intervalMs: config.intervalMs
+                    )
+                }
+
+                self.lock.lock()
+                if var s = self.session, s.token == sessionToken, result.ok {
+                    s.triggered = true
+                    self.session = s
+                }
+                let stillOpen = self.session?.token == sessionToken
+                self.lock.unlock()
+
+                guard stillOpen else {
+                    self.emitSessionEvent(
+                        event: "trigger_ignored",
+                        planId: planId,
+                        correlationId: correlationId,
+                        sessionToken: sessionToken,
+                        waitConfig: config,
+                        triggerBytes: result.triggerBytes,
+                        message: "trigger arrived after session closed"
+                    )
+                    return
+                }
+
+                if result.ok {
+                    self.emitSessionEvent(
+                        event: "trigger_received",
+                        planId: planId,
+                        correlationId: correlationId,
+                        sessionToken: sessionToken,
+                        waitConfig: config,
+                        triggerBytes: result.triggerBytes
+                    )
+                } else {
+                    self.emitSessionError(
+                        event: "wait_failed",
+                        planId: planId,
+                        correlationId: correlationId,
+                        sessionToken: sessionToken,
+                        waitConfig: config,
+                        error: result.error ?? "wait failed"
+                    )
+                }
             }
         }
     }
@@ -431,23 +452,42 @@ final class ProbeServiceSessionHost: NSObject, ProbeServiceProtocol {
             return
         }
 
-        lock.lock()
-        let alreadyOpen = (session != nil)
-        lock.unlock()
-        if alreadyOpen {
-            let response = SessionOpenResponse(rc: 1, error: "session already open")
-            reply((try? encodeJSON(response)) ?? Data())
-            return
-        }
+        let correlationId = decoded.correlation_id ?? UUID().uuidString
+        let enableSignposts = decoded.enable_signposts == true
 
-        let token = UUID().uuidString
-        let pid = Int(getpid())
-        let bundleId = Bundle.main.bundleIdentifier ?? ""
-        let serviceName = ProcessInfo.processInfo.processName
-        let serviceVersion = bundleString("CFBundleShortVersionString")
-        let serviceBuild = bundleString("CFBundleVersion")
+        PWSignposts.withEnabled(enableSignposts) {
+            PWTraceContext.set(
+                correlationId: correlationId,
+                planId: decoded.plan_id,
+                rowId: nil,
+                probeId: "open_session"
+            )
+            defer { PWTraceContext.clear() }
+            let span = PWSignpostSpan(
+                category: PWSignposts.categoryXpcService,
+                name: "xpc_request",
+                label: "open_session",
+                correlationId: correlationId
+            )
+            defer { span.end() }
 
-        var resolvedWait: WaitConfig?
+            lock.lock()
+            let alreadyOpen = (session != nil)
+            lock.unlock()
+            if alreadyOpen {
+                let response = SessionOpenResponse(rc: 1, error: "session already open")
+                reply((try? encodeJSON(response)) ?? Data())
+                return
+            }
+
+            let token = UUID().uuidString
+            let pid = Int(getpid())
+            let bundleId = Bundle.main.bundleIdentifier ?? ""
+            let serviceName = ProcessInfo.processInfo.processName
+            let serviceVersion = bundleString("CFBundleShortVersionString")
+            let serviceBuild = bundleString("CFBundleVersion")
+
+            var resolvedWait: WaitConfig?
 	        if let spec = decoded.wait_spec {
 	            switch resolveWaitConfig(spec) {
 	            case .failure(let err):
@@ -466,49 +506,57 @@ final class ProbeServiceSessionHost: NSObject, ProbeServiceProtocol {
             }
         }
 
-        lock.lock()
-        session = SessionState(
-            token: token,
-            planId: decoded.plan_id,
-            correlationId: decoded.correlation_id,
-            waitConfig: resolvedWait,
-            triggered: resolvedWait == nil
-        )
-        lock.unlock()
-
-        emitSessionEvent(
-            event: "session_ready",
-            planId: decoded.plan_id,
-            correlationId: decoded.correlation_id,
-            sessionToken: token,
-            waitConfig: resolvedWait,
-            message: "session opened"
-        )
-
-        if let resolvedWait {
-            emitSessionEvent(
-                event: "wait_ready",
+            lock.lock()
+            session = SessionState(
+                token: token,
                 planId: decoded.plan_id,
-                correlationId: decoded.correlation_id,
+                correlationId: correlationId,
+                waitConfig: resolvedWait,
+                triggered: resolvedWait == nil,
+                enableSignposts: enableSignposts
+            )
+            lock.unlock()
+
+            emitSessionEvent(
+                event: "session_ready",
+                planId: decoded.plan_id,
+                correlationId: correlationId,
                 sessionToken: token,
                 waitConfig: resolvedWait,
-                message: "wait configured"
+                message: "session opened"
             )
-            startWait(sessionToken: token, planId: decoded.plan_id, correlationId: decoded.correlation_id, config: resolvedWait)
-        }
 
-        let response = SessionOpenResponse(
-            rc: 0,
-            session_token: token,
-            pid: pid,
-            service_bundle_id: bundleId,
-            service_name: serviceName,
-            service_version: serviceVersion,
-            service_build: serviceBuild,
-            wait_mode: resolvedWait?.mode,
-            wait_path: resolvedWait?.path
-        )
-        reply((try? encodeJSON(response)) ?? Data())
+            if let resolvedWait {
+                emitSessionEvent(
+                    event: "wait_ready",
+                    planId: decoded.plan_id,
+                    correlationId: correlationId,
+                    sessionToken: token,
+                    waitConfig: resolvedWait,
+                    message: "wait configured"
+                )
+                startWait(
+                    sessionToken: token,
+                    planId: decoded.plan_id,
+                    correlationId: correlationId,
+                    config: resolvedWait,
+                    enableSignposts: enableSignposts
+                )
+            }
+
+            let response = SessionOpenResponse(
+                rc: 0,
+                session_token: token,
+                pid: pid,
+                service_bundle_id: bundleId,
+                service_name: serviceName,
+                service_version: serviceVersion,
+                service_build: serviceBuild,
+                wait_mode: resolvedWait?.mode,
+                wait_path: resolvedWait?.path
+            )
+            reply((try? encodeJSON(response)) ?? Data())
+        }
     }
 
     func keepaliveSession(_ request: Data, withReply reply: @escaping (Data) -> Void) {
@@ -530,16 +578,26 @@ final class ProbeServiceSessionHost: NSObject, ProbeServiceProtocol {
             return
         }
 
-        emitSessionEvent(
-            event: "keepalive_ok",
-            planId: current.planId,
-            correlationId: current.correlationId,
-            sessionToken: current.token,
-            waitConfig: current.waitConfig
-        )
+        PWSignposts.withEnabled(current.enableSignposts) {
+            let keepaliveSpan = PWSignpostSpan(
+                category: PWSignposts.categoryXpcService,
+                name: "xpc_request",
+                label: "keepalive",
+                correlationId: current.correlationId
+            )
+            defer { keepaliveSpan.end() }
 
-        let response = SessionControlResponse(rc: 0)
-        reply((try? encodeJSON(response)) ?? Data())
+            emitSessionEvent(
+                event: "keepalive_ok",
+                planId: current.planId,
+                correlationId: current.correlationId,
+                sessionToken: current.token,
+                waitConfig: current.waitConfig
+            )
+
+            let response = SessionControlResponse(rc: 0)
+            reply((try? encodeJSON(response)) ?? Data())
+        }
     }
 
     func runProbeInSession(_ request: Data, withReply reply: @escaping (Data) -> Void) {
@@ -579,68 +637,81 @@ final class ProbeServiceSessionHost: NSObject, ProbeServiceProtocol {
             return
         }
 
-        if current.waitConfig != nil && !current.triggered {
-            let response = RunProbeResponse(
-                rc: 1,
-                stdout: "",
-                stderr: "",
-                normalized_outcome: "session_not_triggered",
-                errno: nil,
-                error: "session wait not triggered",
-                details: nil,
-                layer_attribution: LayerAttribution(service_refusal: "session wait not triggered")
-            )
-            reply((try? encodeJSON(response)) ?? Data())
-            return
-        }
+        PWSignposts.withEnabled(current.enableSignposts) {
+            if current.waitConfig != nil && !current.triggered {
+                let response = RunProbeResponse(
+                    rc: 1,
+                    stdout: "",
+                    stderr: "",
+                    normalized_outcome: "session_not_triggered",
+                    errno: nil,
+                    error: "session wait not triggered",
+                    details: nil,
+                    layer_attribution: LayerAttribution(service_refusal: "session wait not triggered")
+                )
+                reply((try? encodeJSON(response)) ?? Data())
+                return
+            }
 
-        emitSessionEvent(
-            event: "probe_starting",
-            planId: current.planId,
-            correlationId: current.correlationId,
-            sessionToken: current.token,
-            waitConfig: current.waitConfig,
-            probeId: decoded.probe_request.probe_id,
-            probeArgv: decoded.probe_request.argv
-        )
-
-        var probeReq = decoded.probe_request
-        if probeReq.plan_id == nil {
-            probeReq.plan_id = current.planId
-        }
-        if probeReq.correlation_id == nil {
-            probeReq.correlation_id = current.correlationId
-        }
-
-        let probeEventSink: InProcessProbeCore.ProbeEventSink = { event, childPid, runId, message in
-            self.emitSessionEvent(
-                event: event,
+            emitSessionEvent(
+                event: "probe_starting",
                 planId: current.planId,
                 correlationId: current.correlationId,
                 sessionToken: current.token,
                 waitConfig: current.waitConfig,
-                childPid: childPid,
-                runId: runId,
-                message: message
+                probeId: decoded.probe_request.probe_id,
+                probeArgv: decoded.probe_request.argv
             )
+
+            var probeReq = decoded.probe_request
+            if probeReq.plan_id == nil {
+                probeReq.plan_id = current.planId
+            }
+            if probeReq.correlation_id == nil {
+                probeReq.correlation_id = current.correlationId
+            }
+            if probeReq.enable_signposts == nil, current.enableSignposts {
+                probeReq.enable_signposts = true
+            }
+
+            let runProbeSpan = PWSignpostSpan(
+                category: PWSignposts.categoryXpcService,
+                name: "xpc_request",
+                label: "run_probe_in_session probe_id=\(probeReq.probe_id)",
+                correlationId: probeReq.correlation_id
+            )
+            defer { runProbeSpan.end() }
+
+            let probeEventSink: InProcessProbeCore.ProbeEventSink = { event, childPid, runId, message in
+                self.emitSessionEvent(
+                    event: event,
+                    planId: current.planId,
+                    correlationId: current.correlationId,
+                    sessionToken: current.token,
+                    waitConfig: current.waitConfig,
+                    childPid: childPid,
+                    runId: runId,
+                    message: message
+                )
+            }
+            var response = InProcessProbeCore.run(probeReq, eventSink: probeEventSink)
+            var details = response.details ?? [:]
+            details["session_token"] = current.token
+            response.details = details
+
+            emitSessionEvent(
+                event: "probe_done",
+                planId: current.planId,
+                correlationId: current.correlationId,
+                sessionToken: current.token,
+                waitConfig: current.waitConfig,
+                probeId: decoded.probe_request.probe_id,
+                probeArgv: decoded.probe_request.argv,
+                message: "normalized_outcome=\(response.normalized_outcome) rc=\(response.rc)"
+            )
+
+            reply((try? encodeJSON(response)) ?? Data())
         }
-        var response = InProcessProbeCore.run(probeReq, eventSink: probeEventSink)
-        var details = response.details ?? [:]
-        details["session_token"] = current.token
-        response.details = details
-
-        emitSessionEvent(
-            event: "probe_done",
-            planId: current.planId,
-            correlationId: current.correlationId,
-            sessionToken: current.token,
-            waitConfig: current.waitConfig,
-            probeId: decoded.probe_request.probe_id,
-            probeArgv: decoded.probe_request.argv,
-            message: "normalized_outcome=\(response.normalized_outcome) rc=\(response.rc)"
-        )
-
-        reply((try? encodeJSON(response)) ?? Data())
     }
 
     func closeSession(_ request: Data, withReply reply: @escaping (Data) -> Void) {
@@ -661,17 +732,27 @@ final class ProbeServiceSessionHost: NSObject, ProbeServiceProtocol {
         lock.unlock()
 
         if let current, current.token == decoded.session_token {
-            emitSessionEvent(
-                event: "session_closed",
-                planId: current.planId,
-                correlationId: current.correlationId,
-                sessionToken: current.token,
-                waitConfig: current.waitConfig,
-                message: "session closed"
-            )
-            let response = SessionControlResponse(rc: 0)
-            reply((try? encodeJSON(response)) ?? Data())
-            return
+            PWSignposts.withEnabled(current.enableSignposts) {
+                let closeSpan = PWSignpostSpan(
+                    category: PWSignposts.categoryXpcService,
+                    name: "xpc_request",
+                    label: "close_session",
+                    correlationId: current.correlationId
+                )
+                defer { closeSpan.end() }
+
+                emitSessionEvent(
+                    event: "session_closed",
+                    planId: current.planId,
+                    correlationId: current.correlationId,
+                    sessionToken: current.token,
+                    waitConfig: current.waitConfig,
+                    message: "session closed"
+                )
+                let response = SessionControlResponse(rc: 0)
+                reply((try? encodeJSON(response)) ?? Data())
+                return
+            }
         }
 
         let response = SessionControlResponse(rc: 1, error: "session not found")

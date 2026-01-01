@@ -30,6 +30,7 @@ BUILD_XPC="${BUILD_XPC:-1}"                            # set to 0 to skip buildi
 # XPC source layout (in this repo)
 XPC_ROOT="xpc"
 XPC_API_FILE="${XPC_ROOT}/ProbeAPI.swift"
+XPC_SIGNPOSTS_FILE="${XPC_ROOT}/Signposts.swift"
 XPC_PROBE_CORE_FILE="${XPC_ROOT}/InProcessProbeCore.swift"
 XPC_SESSION_HOST_FILE="${XPC_ROOT}/ProbeServiceSessionHost.swift"
 XPC_QUARANTINE_SERVICE_HOST_FILE="${XPC_ROOT}/QuarantineLabServiceHost.swift"
@@ -167,6 +168,7 @@ cargo build --manifest-path "${RUNNER_MANIFEST}" --release \
   --bin policy-witness \
   --bin quarantine-observer \
   --bin sandbox-log-observer \
+  --bin signpost-log-observer \
   --bin pw-inspector
 
 # Find the built binary. (Assumes standard Cargo layout.)
@@ -183,6 +185,11 @@ fi
 SANDBOX_LOG_OBSERVER_BIN="runner/target/release/sandbox-log-observer"
 if [[ ! -x "${SANDBOX_LOG_OBSERVER_BIN}" ]]; then
   echo "ERROR: expected sandbox-log-observer binary at ${SANDBOX_LOG_OBSERVER_BIN}" 1>&2
+  exit 2
+fi
+SIGNPOST_LOG_OBSERVER_BIN="runner/target/release/signpost-log-observer"
+if [[ ! -x "${SIGNPOST_LOG_OBSERVER_BIN}" ]]; then
+  echo "ERROR: expected signpost-log-observer binary at ${SIGNPOST_LOG_OBSERVER_BIN}" 1>&2
   exit 2
 fi
 PW_INSPECTOR_BIN="runner/target/release/pw-inspector"
@@ -211,6 +218,8 @@ chmod +x "${APP_BUNDLE}/Contents/MacOS/policy-witness"
 # Embed observer tooling (runs outside the App Sandbox boundary when launched from Terminal)
 cp "${SANDBOX_LOG_OBSERVER_BIN}" "${APP_BUNDLE}/Contents/MacOS/sandbox-log-observer"
 chmod +x "${APP_BUNDLE}/Contents/MacOS/sandbox-log-observer"
+cp "${SIGNPOST_LOG_OBSERVER_BIN}" "${APP_BUNDLE}/Contents/MacOS/signpost-log-observer"
+chmod +x "${APP_BUNDLE}/Contents/MacOS/signpost-log-observer"
 
 # Optional: embed fencerunner
 if [[ -n "${EMBED_FENCERUNNER_PATH}" ]]; then
@@ -243,7 +252,7 @@ if [[ "${BUILD_XPC}" == "1" ]]; then
     exit 2
   fi
   SWIFTC=(/usr/bin/xcrun --sdk macosx swiftc)
-  if [[ ! -f "${XPC_API_FILE}" ]] || [[ ! -f "${XPC_PROBE_CORE_FILE}" ]] || [[ ! -f "${XPC_SESSION_HOST_FILE}" ]] || [[ ! -f "${XPC_QUARANTINE_SERVICE_HOST_FILE}" ]] || [[ ! -f "${XPC_CLIENT_MAIN}" ]] || [[ ! -f "${XPC_INHERIT_CHILD_MAIN}" ]]; then
+  if [[ ! -f "${XPC_API_FILE}" ]] || [[ ! -f "${XPC_SIGNPOSTS_FILE}" ]] || [[ ! -f "${XPC_PROBE_CORE_FILE}" ]] || [[ ! -f "${XPC_SESSION_HOST_FILE}" ]] || [[ ! -f "${XPC_QUARANTINE_SERVICE_HOST_FILE}" ]] || [[ ! -f "${XPC_CLIENT_MAIN}" ]] || [[ ! -f "${XPC_INHERIT_CHILD_MAIN}" ]]; then
     echo "ERROR: BUILD_XPC=1 but XPC sources are missing under ${XPC_ROOT}/" 1>&2
     exit 2
   fi
@@ -254,20 +263,20 @@ if [[ "${BUILD_XPC}" == "1" ]]; then
   if [[ -n "${SWIFT_DEBUG_FLAGS}" ]]; then
     SWIFT_FLAGS+=("${SWIFT_DEBUG_FLAGS}")
   fi
-  "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${APP_BUNDLE}/Contents/MacOS/xpc-probe-client" "${XPC_API_FILE}" "${XPC_CLIENT_MAIN}"
+  "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${APP_BUNDLE}/Contents/MacOS/xpc-probe-client" "${XPC_API_FILE}" "${XPC_SIGNPOSTS_FILE}" "${XPC_CLIENT_MAIN}"
   chmod +x "${APP_BUNDLE}/Contents/MacOS/xpc-probe-client"
 
   if [[ -f "${XPC_QUARANTINE_CLIENT_MAIN}" ]]; then
     echo "==> Building embedded XPC quarantine client"
-    "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${APP_BUNDLE}/Contents/MacOS/xpc-quarantine-client" "${XPC_API_FILE}" "${XPC_QUARANTINE_CLIENT_MAIN}"
+    "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${APP_BUNDLE}/Contents/MacOS/xpc-quarantine-client" "${XPC_API_FILE}" "${XPC_SIGNPOSTS_FILE}" "${XPC_QUARANTINE_CLIENT_MAIN}"
     chmod +x "${APP_BUNDLE}/Contents/MacOS/xpc-quarantine-client"
   fi
 
   echo "==> Building inherit-child helper"
-  "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${APP_BUNDLE}/Contents/MacOS/pw-inherit-child" "${XPC_API_FILE}" "${XPC_INHERIT_CHILD_MAIN}"
+  "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${APP_BUNDLE}/Contents/MacOS/pw-inherit-child" "${XPC_API_FILE}" "${XPC_SIGNPOSTS_FILE}" "${XPC_INHERIT_CHILD_MAIN}"
   chmod +x "${APP_BUNDLE}/Contents/MacOS/pw-inherit-child"
   echo "==> Building inherit-child helper (bad entitlements)"
-  "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${APP_BUNDLE}/Contents/MacOS/pw-inherit-child-bad" "${XPC_API_FILE}" "${XPC_INHERIT_CHILD_MAIN}"
+  "${SWIFTC[@]}" -module-cache-path "${SWIFT_MODULE_CACHE}" "${SWIFT_FLAGS[@]}" -o "${APP_BUNDLE}/Contents/MacOS/pw-inherit-child-bad" "${XPC_API_FILE}" "${XPC_SIGNPOSTS_FILE}" "${XPC_INHERIT_CHILD_MAIN}"
   chmod +x "${APP_BUNDLE}/Contents/MacOS/pw-inherit-child-bad"
 
   if [[ -d "${XPC_SERVICES_DIR}" ]]; then
@@ -290,9 +299,9 @@ if [[ "${BUILD_XPC}" == "1" ]]; then
 
       svc_sources=()
       if [[ "${svc_name}" == ProbeService_* ]]; then
-        svc_sources=("${XPC_API_FILE}" "${XPC_PROBE_CORE_FILE}" "${XPC_SESSION_HOST_FILE}" "${svc_main}")
+        svc_sources=("${XPC_API_FILE}" "${XPC_SIGNPOSTS_FILE}" "${XPC_PROBE_CORE_FILE}" "${XPC_SESSION_HOST_FILE}" "${svc_main}")
       elif [[ "${svc_name}" == QuarantineLab_* ]]; then
-        svc_sources=("${XPC_API_FILE}" "${XPC_QUARANTINE_SERVICE_HOST_FILE}" "${svc_main}")
+        svc_sources=("${XPC_API_FILE}" "${XPC_SIGNPOSTS_FILE}" "${XPC_QUARANTINE_SERVICE_HOST_FILE}" "${svc_main}")
       else
         echo "ERROR: unknown XPC service family: ${svc_name} (expected ProbeService_* or QuarantineLab_*)" 1>&2
         exit 2
@@ -419,6 +428,7 @@ echo "==> Codesigning embedded MacOS tools (plain; unsandboxed host-side)"
 sign_macho_plain "${APP_BUNDLE}/Contents/MacOS/xpc-probe-client"
 sign_macho_plain "${APP_BUNDLE}/Contents/MacOS/xpc-quarantine-client"
 sign_macho_plain "${APP_BUNDLE}/Contents/MacOS/sandbox-log-observer"
+sign_macho_plain "${APP_BUNDLE}/Contents/MacOS/signpost-log-observer"
 sign_macho_inherit "${APP_BUNDLE}/Contents/MacOS/pw-inherit-child"
 sign_macho_inherit_bad "${APP_BUNDLE}/Contents/MacOS/pw-inherit-child-bad"
 
@@ -516,6 +526,7 @@ codesign --display --entitlements - "${APP_BUNDLE}" >/dev/null
 echo "==> Codesigning observer tools (not embedded)"
 sign_macho_plain "${QUARANTINE_OBSERVER_BIN}"
 sign_macho_plain "${SANDBOX_LOG_OBSERVER_BIN}"
+sign_macho_plain "${SIGNPOST_LOG_OBSERVER_BIN}"
 sign_macho_entitlements "${PW_INSPECTOR_BIN}" "${INSPECTOR_ENTITLEMENTS_PLIST}"
 
 echo "==> Creating zip (for notarization): ${ZIP_NAME}"
@@ -528,6 +539,7 @@ echo "  - ${APP_BUNDLE}"
 echo "  - ${ZIP_NAME}"
 echo "  - ${QUARANTINE_OBSERVER_BIN}"
 echo "  - ${SANDBOX_LOG_OBSERVER_BIN}"
+echo "  - ${SIGNPOST_LOG_OBSERVER_BIN}"
 echo "  - ${PW_INSPECTOR_BIN}"
 echo
 echo "Next (notarize with your saved profile):"

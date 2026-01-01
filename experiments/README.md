@@ -50,6 +50,7 @@ This runs `./experiments/build-experiments.sh`, which:
 
 - builds `experiments/bin/witness-substrate` from:
   - `xpc/ProbeAPI.swift`
+  - `xpc/Signposts.swift`
   - `xpc/InProcessProbeCore.swift`
   - `experiments/substrate/main.swift`
 - builds `experiments/bin/pw-harness` from:

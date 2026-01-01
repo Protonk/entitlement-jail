@@ -33,6 +33,7 @@ This crate also builds standalone helper CLIs:
 
 - `runner/src/bin/quarantine-observer.rs` → `quarantine-observer` (outside the sandbox boundary)
 - `runner/src/bin/sandbox-log-observer.rs` → `sandbox-log-observer` (outside the sandbox boundary; embedded into the `.app`)
+- `runner/src/bin/signpost-log-observer.rs` → `signpost-log-observer` (outside the sandbox boundary; embedded into the `.app`)
 - `runner/src/bin/pw-inspector.rs` → `pw-inspector` (debugger-side helper; not part of the in-sandbox surface)
 
 ## How it builds into `PolicyWitness.app`
@@ -44,6 +45,7 @@ Key wiring:
 - `cargo build --manifest-path runner/Cargo.toml --release --bin policy-witness` produces `runner/target/release/policy-witness`.
 - The build script copies that binary to `PolicyWitness.app/Contents/MacOS/policy-witness`.
 - The build script also embeds `runner/target/release/sandbox-log-observer` as `PolicyWitness.app/Contents/MacOS/sandbox-log-observer`.
+- The build script also embeds `runner/target/release/signpost-log-observer` as `PolicyWitness.app/Contents/MacOS/signpost-log-observer`.
 - The build script builds `pw-inherit-child` and embeds it at `PolicyWitness.app/Contents/MacOS/pw-inherit-child`, then copies it into each `ProbeService_*` bundle (see `xpc/README.md`).
 - Evidence manifests are generated during the build by `tests/build-evidence.py` and embedded under `PolicyWitness.app/Contents/Resources/Evidence/`.
 
@@ -104,9 +106,9 @@ For CLI development, it’s useful to keep the raw subcommand surface area in vi
 ```sh
 ./PolicyWitness.app/Contents/MacOS/policy-witness run-system <absolute-platform-binary> [args...]
 ./PolicyWitness.app/Contents/MacOS/policy-witness run-embedded <tool-name> [args...]
-./PolicyWitness.app/Contents/MacOS/policy-witness xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--capture-sandbox-logs] <probe-id> [probe-args...]
-./PolicyWitness.app/Contents/MacOS/policy-witness xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--correlation-id <id>] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
-./PolicyWitness.app/Contents/MacOS/policy-witness quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
+./PolicyWitness.app/Contents/MacOS/policy-witness xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--signposts] [--capture-sandbox-logs] [--capture-signposts] <probe-id> [probe-args...]
+./PolicyWitness.app/Contents/MacOS/policy-witness xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--correlation-id <id>] [--signposts] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
+./PolicyWitness.app/Contents/MacOS/policy-witness quarantine-lab [--correlation-id <id>] [--signposts] [--capture-signposts] <xpc-service-bundle-id> <payload-class> [options...]
 ./PolicyWitness.app/Contents/MacOS/policy-witness verify-evidence
 ./PolicyWitness.app/Contents/MacOS/policy-witness inspect-macho <service-id|main|path>
 ./PolicyWitness.app/Contents/MacOS/policy-witness list-profiles
@@ -115,7 +117,7 @@ For CLI development, it’s useful to keep the raw subcommand surface area in vi
 ./PolicyWitness.app/Contents/MacOS/policy-witness describe-service <id[@variant]> [--variant <base|injectable>]
 ./PolicyWitness.app/Contents/MacOS/policy-witness health-check [--profile <id[@variant]>] [--variant <base|injectable>]
 ./PolicyWitness.app/Contents/MacOS/policy-witness bundle-evidence [--out <dir>] [--include-health-check]
-./PolicyWitness.app/Contents/MacOS/policy-witness run-matrix --group <name> [--variant <base|injectable>] [--out <dir>] <probe-id> [probe-args...]
+./PolicyWitness.app/Contents/MacOS/policy-witness run-matrix --group <name> [--variant <base|injectable>] [--out <dir>] [--signposts] [--capture-signposts] <probe-id> [probe-args...]
 ```
 
 ## JSON output contract (envelope + kinds)
@@ -167,6 +169,7 @@ Envelope `kind` values used by the launcher and helpers:
 - `inspector_report`
 - `quarantine_observer_report`
 - `sandbox_log_observer_report`
+- `signpost_log_observer_report`
 
 ### Who emits JSON (and who doesn’t)
 
@@ -242,6 +245,12 @@ Sandbox log capture:
 - The capture is always attached under `data.host_sandbox_log_capture` (predicate + time bounds + excerpt or error).
 - For `inherit_child`, the launcher also attaches tri-state status to `data.witness` as `sandbox_log_capture_status` (`not_requested|requested_unavailable|captured`) and `sandbox_log_capture` (string map).
 
+Signpost capture:
+
+- `--signposts` enables Unified Logging signpost emission for this run (client/service/child helper where applicable).
+- `--capture-signposts` implies `--signposts` and runs the embedded `signpost-log-observer` in lookback mode after the probe returns.
+- The capture is attached under `data.host_signpost_capture` and includes extracted signpost spans plus raw `log show` output (best-effort; may be unavailable depending on unified logging access).
+
 ## `xpc session`: durable service sessions (debug/attach)
 
 `xpc session` is a session-based control plane intended for deterministic debugger/tracer attachment (lldb/dtrace/Frida) without racing service startup. It keeps the service alive across multiple probes unless explicitly closed.
@@ -262,6 +271,11 @@ Critical semantic: if a wait is configured (via `--wait ...`), `run_probe` is re
 Session events can include `data.child_pid` + `data.run_id` for probes that spawn a child (for example `inherit_child`), along with `data.event: child_spawned|child_stopped|child_exited`.
 
 For the authoritative on-the-wire shapes, see `xpc/ProbeAPI.swift` and `xpc/ProbeServiceSessionHost.swift`.
+
+Signposts:
+
+- `--signposts` enables Unified Logging signpost emission for session lifecycle + probe execution.
+- There is no automatic capture attachment in session mode; use `signpost-log-observer --correlation-id <id> --last <dur>` after the fact.
 
 ## Profiles, services, and health checks
 
@@ -297,6 +311,8 @@ Notes:
 
 - High-concern variants are included without extra flags.
 - If you run a sandboxed-launcher build, default output paths resolve under the container home; choose `--out` accordingly.
+- `--signposts` enables Unified Logging signpost emission for each underlying `xpc run` invocation.
+- `--capture-signposts` implies `--signposts` and attaches a lookback signpost capture under each run’s `response.data.host_signpost_capture` (best-effort; can be large).
 
 ## `quarantine-lab`: write/open artifacts and report quarantine metadata (no execution)
 
@@ -305,6 +321,8 @@ Notes:
 Key contract:
 
 - This mode **does not execute** specimens. It writes/opens/reads and reports quarantine metadata deltas.
+- `--signposts` enables Unified Logging signpost emission for the quarantine client/service.
+- `--capture-signposts` implies `--signposts` and attaches a lookback signpost capture under `data.host_signpost_capture` (best-effort).
 
 ## Unsandboxed observer: `sandbox-log-observer`
 
@@ -318,4 +336,16 @@ Build:
 
 ```sh
 cargo build --manifest-path runner/Cargo.toml --release --bin sandbox-log-observer
+```
+
+## Unsandboxed observer: `signpost-log-observer`
+
+`signpost-log-observer` is a best-effort timeline extractor for Unified Logging signposts emitted by PolicyWitness components.
+
+It is primarily used via `policy-witness xpc run --capture-signposts ...` (and `quarantine-lab --capture-signposts`, `run-matrix --capture-signposts`), which run it after the operation returns and attach the report under `data.host_signpost_capture` (or per-run under `response.data.host_signpost_capture` for matrix runs).
+
+Build:
+
+```sh
+cargo build --manifest-path runner/Cargo.toml --release --bin signpost-log-observer
 ```

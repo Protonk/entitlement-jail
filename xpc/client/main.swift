@@ -71,8 +71,18 @@ private struct XpcCallError: Error, CustomStringConvertible {
 private func xpcCall(
     connection: NSXPCConnection,
     timeoutMs: Int,
+    label: String,
+    correlationId: String?,
     invoke: (ProbeServiceProtocol, @escaping (Data) -> Void) -> Void
 ) -> Result<Data, XpcCallError> {
+    let span = PWSignpostSpan(
+        category: PWSignposts.categoryXpcClient,
+        name: "xpc_call",
+        label: label,
+        correlationId: correlationId
+    )
+    defer { span.end() }
+
     let lock = NSLock()
     var done = false
     var replyData: Data?
@@ -229,12 +239,18 @@ private func runOneShot(args: [String]) -> Never {
         }
     }
 
+    if correlationId == nil {
+        correlationId = UUID().uuidString
+    }
+    let enableSignposts = PWSignposts.isEnabled()
+
     guard idx + 1 < args.count else {
         die("missing required arguments for run\n\n\(usage())", code: 2)
     }
     let serviceBundleId = args[idx]
     let probeId = args[idx + 1]
     let probeArgv = Array(args.dropFirst(idx + 2))
+    PWTraceContext.set(correlationId: correlationId, planId: planId, rowId: rowId, probeId: probeId)
 
     let sink = DiscardingSessionEventSink()
     let connection = NSXPCConnection(serviceName: serviceBundleId)
@@ -245,7 +261,12 @@ private func runOneShot(args: [String]) -> Never {
 
     let timeoutMs = 30_000
 
-    let openReq = SessionOpenRequest(plan_id: planId, correlation_id: correlationId, wait_spec: nil)
+    let openReq = SessionOpenRequest(
+        plan_id: planId,
+        correlation_id: correlationId,
+        wait_spec: nil,
+        enable_signposts: enableSignposts ? true : nil
+    )
     let openReqData: Data
     do {
         openReqData = try encodeJSON(openReq)
@@ -264,7 +285,7 @@ private func runOneShot(args: [String]) -> Never {
         exit(code)
     }
 
-    let openReply = xpcCall(connection: connection, timeoutMs: timeoutMs) { proxy, reply in
+    let openReply = xpcCall(connection: connection, timeoutMs: timeoutMs, label: "open_session", correlationId: correlationId) { proxy, reply in
         proxy.openSession(openReqData, withReply: reply)
     }
 
@@ -324,7 +345,8 @@ private func runOneShot(args: [String]) -> Never {
         row_id: rowId,
         correlation_id: correlationId,
         probe_id: probeId,
-        argv: probeArgv
+        argv: probeArgv,
+        enable_signposts: enableSignposts ? true : nil
     )
     let runReq = SessionRunProbeRequest(session_token: sessionToken, probe_request: probeReq)
 
@@ -346,7 +368,7 @@ private func runOneShot(args: [String]) -> Never {
         exit(code)
     }
 
-    let runReply = xpcCall(connection: connection, timeoutMs: timeoutMs) { proxy, reply in
+    let runReply = xpcCall(connection: connection, timeoutMs: timeoutMs, label: "run_probe", correlationId: correlationId) { proxy, reply in
         proxy.runProbeInSession(runReqData, withReply: reply)
     }
 
@@ -384,7 +406,7 @@ private func runOneShot(args: [String]) -> Never {
     // Best-effort close.
     let closeReq = SessionCloseRequest(session_token: sessionToken)
     if let closeReqData = try? encodeJSON(closeReq) {
-        _ = xpcCall(connection: connection, timeoutMs: timeoutMs) { proxy, reply in
+        _ = xpcCall(connection: connection, timeoutMs: timeoutMs, label: "close_session", correlationId: correlationId) { proxy, reply in
             proxy.closeSession(closeReqData, withReply: reply)
         }
     }
@@ -465,6 +487,12 @@ private func runSession(args: [String]) -> Never {
         die("session takes exactly one positional argument: <xpc-service-bundle-id>\n\n\(usage())", code: 2)
     }
 
+    if correlationId == nil {
+        correlationId = UUID().uuidString
+    }
+    let enableSignposts = PWSignposts.isEnabled()
+    PWTraceContext.set(correlationId: correlationId, planId: planId, rowId: nil, probeId: "session")
+
     let connection = NSXPCConnection(serviceName: serviceBundleId)
     connection.remoteObjectInterface = NSXPCInterface(with: ProbeServiceProtocol.self)
 
@@ -510,7 +538,12 @@ private func runSession(args: [String]) -> Never {
         return WaitSpec(spec: waitSpec, timeout_ms: waitTimeoutMs, interval_ms: waitIntervalMs)
     }()
 
-    let openReq = SessionOpenRequest(plan_id: planId, correlation_id: correlationId, wait_spec: wait)
+    let openReq = SessionOpenRequest(
+        plan_id: planId,
+        correlation_id: correlationId,
+        wait_spec: wait,
+        enable_signposts: enableSignposts ? true : nil
+    )
     let openReqData: Data
     do {
         openReqData = try encodeJSON(openReq)
@@ -531,7 +564,7 @@ private func runSession(args: [String]) -> Never {
         exit(2)
     }
 
-    let openReply = xpcCall(connection: connection, timeoutMs: xpcTimeoutMs) { proxy, reply in
+    let openReply = xpcCall(connection: connection, timeoutMs: xpcTimeoutMs, label: "open_session", correlationId: correlationId) { proxy, reply in
         proxy.openSession(openReqData, withReply: reply)
     }
 
@@ -595,7 +628,7 @@ private func runSession(args: [String]) -> Never {
     func closeAndExit(code: Int32) -> Never {
         let closeReq = SessionCloseRequest(session_token: sessionToken)
         if let closeReqData = try? encodeJSON(closeReq) {
-            _ = xpcCall(connection: connection, timeoutMs: xpcTimeoutMs) { proxy, reply in
+            _ = xpcCall(connection: connection, timeoutMs: xpcTimeoutMs, label: "close_session", correlationId: correlationId) { proxy, reply in
                 proxy.closeSession(closeReqData, withReply: reply)
             }
         }
@@ -648,7 +681,7 @@ private func runSession(args: [String]) -> Never {
                 )
                 continue
             }
-            let reply = xpcCall(connection: connection, timeoutMs: xpcTimeoutMs) { proxy, reply in
+            let reply = xpcCall(connection: connection, timeoutMs: xpcTimeoutMs, label: "keepalive", correlationId: correlationId) { proxy, reply in
                 proxy.keepaliveSession(keepReqData, withReply: reply)
             }
             switch reply {
@@ -707,8 +740,10 @@ private func runSession(args: [String]) -> Never {
                 row_id: cmd.row_id,
                 correlation_id: cmd.correlation_id ?? correlationId,
                 probe_id: probeId,
-                argv: cmd.argv ?? []
+                argv: cmd.argv ?? [],
+                enable_signposts: enableSignposts ? true : nil
             )
+            PWTraceContext.set(correlationId: req.correlation_id, planId: req.plan_id, rowId: req.row_id, probeId: req.probe_id)
             let runReq = SessionRunProbeRequest(session_token: sessionToken, probe_request: req)
             guard let runReqData = try? encodeJSON(runReq) else {
                 emitSessionErrorEnvelope(
@@ -726,7 +761,7 @@ private func runSession(args: [String]) -> Never {
                 )
                 continue
             }
-            let reply = xpcCall(connection: connection, timeoutMs: xpcTimeoutMs) { proxy, reply in
+            let reply = xpcCall(connection: connection, timeoutMs: xpcTimeoutMs, label: "run_probe", correlationId: req.correlation_id) { proxy, reply in
                 proxy.runProbeInSession(runReqData, withReply: reply)
             }
             switch reply {

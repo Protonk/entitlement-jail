@@ -429,6 +429,7 @@ private func spawnGrandchild(
     eventFd: Int32,
     rightsFd: Int32,
     runId: String,
+    correlationId: String?,
     scenario: String,
     path: String,
     targetName: String,
@@ -437,6 +438,7 @@ private func spawnGrandchild(
 ) -> pid_t? {
     var env = ProcessInfo.processInfo.environment
     env["PW_RUN_ID"] = runId
+    env["PW_CORRELATION_ID"] = correlationId ?? ""
     env["PW_SCENARIO"] = scenario
     env["PW_PATH"] = path
     env["PW_TARGET_NAME"] = targetName
@@ -486,6 +488,8 @@ private func spawnGrandchild(
 }
 
 let env = ProcessInfo.processInfo.environment
+let correlationId = env["PW_CORRELATION_ID"]
+PWTraceContext.set(correlationId: correlationId, planId: nil, rowId: nil, probeId: "inherit_child_child")
 let runId = env["PW_RUN_ID"] ?? UUID().uuidString
 let scenario = env["PW_SCENARIO"] ?? ""
 let path = env["PW_PATH"] ?? ""
@@ -512,6 +516,12 @@ let lineageDepth = Int(env["PW_LINEAGE_DEPTH"] ?? "") ?? 1
 let actorLabel = env["PW_ACTOR"] ?? (lineageDepth >= 2 ? "grandchild" : "child")
 eventActorLabel = actorLabel
 eventLineage = InheritChildLineage(depth: lineageDepth, pid: Int(getpid()), ppid: Int(getppid()))
+let mainSpan = PWSignpostSpan(
+    category: PWSignposts.categoryInheritChild,
+    name: "inherit_child_child",
+    label: "actor=\(actorLabel) scenario=\(scenario) run_id=\(runId)",
+    correlationId: correlationId
+)
 
 func parseCapIdList(_ raw: String?) -> [Int32] {
     guard let raw, !raw.isEmpty else { return [] }
@@ -530,10 +540,12 @@ let sentinel = "\(InheritChildProtocol.sentinelPrefix) pid=\(getpid()) run_id=\(
 _ = writeSentinel(STDERR_FILENO, sentinel)
 if eventFd < 0 {
     fputs("inherit_child: missing PW_EVENT_FD (no event bus)\n", stderr)
+    mainSpan.end()
     exit(childEventBusExit)
 }
 if rightsCapCount > 0, rightsFd < 0 {
     fputs("inherit_child: missing PW_RIGHTS_FD (no rights bus)\n", stderr)
+    mainSpan.end()
     exit(childRightsBusExit)
 }
 if eventFd >= 0 {
@@ -555,6 +567,7 @@ if envProtocol != InheritChildProtocol.version || envCapNamespace != InheritChil
         "event_fd": "\(eventFd)",
         "rights_fd": "\(rightsFd)"
     ])
+    mainSpan.end()
     exit(childProtocolViolationExit)
 }
 
@@ -611,11 +624,13 @@ if preAcquire, scenario == "dynamic_extension", !path.isEmpty {
 
 func failEventBus(_ err: Int32?, context: String) -> Never {
     if eventBusFailed {
+        mainSpan.end()
         exit(childEventBusExit)
     }
     eventBusFailed = true
     let msg = "PW_CHILD_EVENT_BUS_ERROR context=\(context) errno=\(err.map { "\($0)" } ?? "")\n"
     _ = writeSentinel(STDERR_FILENO, msg)
+    mainSpan.end()
     exit(childEventBusExit)
 }
 
@@ -646,14 +661,17 @@ func failCapabilityRecv(
     emitEvent(eventFd, runId: runId, phase: "child_capability_recv_failed", details: details)
     switch reason {
     case "recvmsg_failed", "rights_fd_invalid":
+        mainSpan.end()
         exit(childRightsBusExit)
     case "missing_fd", "unexpected_cap_id", "event_payload_invalid", "event_payload_missing",
          "event_payload_prefix_mismatch", "event_payload_protocol_mismatch",
          "rights_cap_ids_missing", "event_cap_ids_missing",
          "rights_cap_count_mismatch", "event_cap_count_mismatch",
          "rights_payload_protocol_mismatch":
+        mainSpan.end()
         exit(childProtocolViolationExit)
     default:
+        mainSpan.end()
         exit(childProtocolViolationExit)
     }
 }
@@ -669,6 +687,7 @@ if scenario == "lineage_basic", actorLabel == "child" {
         eventFd: eventFd,
         rightsFd: rightsFd,
         runId: runId,
+        correlationId: correlationId,
         scenario: scenario,
         path: path,
         targetName: targetName,
@@ -1073,4 +1092,5 @@ if scenario == "bookmark_ferry" {
 }
 
 emitEvent(eventFd, runId: runId, phase: "child_done")
+mainSpan.end()
 exit(0)

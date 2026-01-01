@@ -146,80 +146,112 @@ public enum InProcessProbeCore {
     public typealias ProbeEventSink = (_ event: String, _ childPid: Int?, _ runId: String?, _ message: String?) -> Void
 
     public static func run(_ req: RunProbeRequest, eventSink: ProbeEventSink? = nil) -> RunProbeResponse {
-        let started = Date()
-        var response: RunProbeResponse
-        guard validateProbeId(req.probe_id) else {
-            response = RunProbeResponse(
-                rc: 2,
-                stdout: "",
-                stderr: "invalid probe_id: \(req.probe_id)",
-                normalized_outcome: "bad_request",
-                errno: nil,
-                error: nil,
-                details: baseDetails([
-                    "probe_family": "bad_request",
-                    "probe_id": req.probe_id,
-                ]),
-                layer_attribution: nil
+        var req = req
+        if req.correlation_id == nil {
+            req.correlation_id = UUID().uuidString
+        }
+        let enableSignpostsOverride = req.enable_signposts
+
+        let runBody: () -> RunProbeResponse = {
+            PWTraceContext.set(
+                correlationId: req.correlation_id,
+                planId: req.plan_id,
+                rowId: req.row_id,
+                probeId: req.probe_id
             )
+            defer { PWTraceContext.clear() }
+
+            let started = Date()
+            let span = PWSignpostSpan(
+                category: PWSignposts.categoryXpcService,
+                name: "run_probe",
+                label: "probe_id=\(req.probe_id)",
+                correlationId: req.correlation_id
+            )
+            defer { span.end() }
+
+            var response: RunProbeResponse
+            guard validateProbeId(req.probe_id) else {
+                response = RunProbeResponse(
+                    rc: 2,
+                    stdout: "",
+                    stderr: "invalid probe_id: \(req.probe_id)",
+                    normalized_outcome: "bad_request",
+                    errno: nil,
+                    error: nil,
+                    details: baseDetails([
+                        "probe_family": "bad_request",
+                        "probe_id": req.probe_id,
+                    ]),
+                    layer_attribution: nil
+                )
+                let ended = Date()
+                return decorate(response, req: req, started: started, ended: ended)
+            }
+
+            let args = Argv(req.argv)
+            if args.has("--help") || args.has("-h") {
+                response = probeHelpResponse(probeId: req.probe_id)
+                let ended = Date()
+                return decorate(response, req: req, started: started, ended: ended)
+            }
+
+            switch req.probe_id {
+            case "probe_catalog":
+                response = probeCatalog()
+            case "world_shape":
+                response = probeWorldShape()
+            case "network_tcp_connect":
+                response = probeNetworkTCPConnect(argv: req.argv)
+            case "downloads_rw":
+                response = probeDownloadsReadWrite(argv: req.argv)
+            case "fs_op":
+                response = probeFsOp(argv: req.argv)
+            case "fs_op_wait":
+                response = probeFsOpWait(argv: req.argv)
+            case "net_op":
+                response = probeNetOp(argv: req.argv)
+            case "dlopen_external":
+                response = probeDlopenExternal(argv: req.argv)
+            case "jit_map_jit":
+                response = probeJitMapJit(argv: req.argv)
+            case "jit_rwx_legacy":
+                response = probeJitRwxLegacy(argv: req.argv)
+            case "bookmark_op":
+                response = probeBookmarkOp(argv: req.argv)
+            case "bookmark_make":
+                response = probeBookmarkMake(argv: req.argv)
+            case "bookmark_roundtrip":
+                response = probeBookmarkRoundtrip(argv: req.argv)
+            case "capabilities_snapshot":
+                response = probeCapabilitiesSnapshot()
+            case "sandbox_check":
+                response = probeSandboxCheck(argv: req.argv)
+            case "sandbox_extension":
+                response = probeSandboxExtension(argv: req.argv)
+            case "inherit_child":
+                response = probeInheritChild(argv: req.argv, eventSink: eventSink)
+            case "userdefaults_op":
+                response = probeUserDefaultsOp(argv: req.argv)
+            case "fs_xattr":
+                response = probeFsXattr(argv: req.argv)
+            case "fs_coordinated_op":
+                response = probeFsCoordinatedOp(argv: req.argv)
+            default:
+                response = unknownProbeResponse(req.probe_id)
+            }
+
             let ended = Date()
             return decorate(response, req: req, started: started, ended: ended)
         }
 
-        let args = Argv(req.argv)
-        if args.has("--help") || args.has("-h") {
-            response = probeHelpResponse(probeId: req.probe_id)
-            let ended = Date()
-            return decorate(response, req: req, started: started, ended: ended)
+        if let enableSignpostsOverride {
+            return PWSignposts.withEnabled(enableSignpostsOverride) {
+                runBody()
+            }
         }
 
-        switch req.probe_id {
-        case "probe_catalog":
-            response = probeCatalog()
-        case "world_shape":
-            response = probeWorldShape()
-        case "network_tcp_connect":
-            response = probeNetworkTCPConnect(argv: req.argv)
-        case "downloads_rw":
-            response = probeDownloadsReadWrite(argv: req.argv)
-        case "fs_op":
-            response = probeFsOp(argv: req.argv)
-        case "fs_op_wait":
-            response = probeFsOpWait(argv: req.argv)
-        case "net_op":
-            response = probeNetOp(argv: req.argv)
-        case "dlopen_external":
-            response = probeDlopenExternal(argv: req.argv)
-        case "jit_map_jit":
-            response = probeJitMapJit(argv: req.argv)
-        case "jit_rwx_legacy":
-            response = probeJitRwxLegacy(argv: req.argv)
-        case "bookmark_op":
-            response = probeBookmarkOp(argv: req.argv)
-        case "bookmark_make":
-            response = probeBookmarkMake(argv: req.argv)
-        case "bookmark_roundtrip":
-            response = probeBookmarkRoundtrip(argv: req.argv)
-        case "capabilities_snapshot":
-            response = probeCapabilitiesSnapshot()
-        case "sandbox_check":
-            response = probeSandboxCheck(argv: req.argv)
-        case "sandbox_extension":
-            response = probeSandboxExtension(argv: req.argv)
-        case "inherit_child":
-            response = probeInheritChild(argv: req.argv, eventSink: eventSink)
-        case "userdefaults_op":
-            response = probeUserDefaultsOp(argv: req.argv)
-        case "fs_xattr":
-            response = probeFsXattr(argv: req.argv)
-        case "fs_coordinated_op":
-            response = probeFsCoordinatedOp(argv: req.argv)
-        default:
-            response = unknownProbeResponse(req.probe_id)
-        }
-
-        let ended = Date()
-        return decorate(response, req: req, started: started, ended: ended)
+        return runBody()
     }
 
     // MARK: - Common metadata
@@ -260,20 +292,20 @@ public enum InProcessProbeCore {
         return "\(tid)"
     }
 
-    private static func baseDetails(_ extra: [String: String] = [:]) -> [String: String] {
-        let pid = getpid()
-        var out: [String: String] = [
-            "bundle_id": Bundle.main.bundleIdentifier ?? "",
-            "process_name": ProcessInfo.processInfo.processName,
-            "pid": "\(pid)",
-            "service_pid": "\(pid)",
-            "probe_pid": "\(pid)",
-            "home_dir": NSHomeDirectory(),
-            "tmp_dir": NSTemporaryDirectory(),
-            "cwd": FileManager.default.currentDirectoryPath,
-        ]
-        for (k, v) in extra {
-            out[k] = v
+	    private static func baseDetails(_ extra: [String: String] = [:]) -> [String: String] {
+	        let pid = getpid()
+	        var out: [String: String] = [
+	            "bundle_id": Bundle.main.bundleIdentifier ?? "",
+	            "process_name": ProcessInfo.processInfo.processName,
+	            "pid": "\(pid)",
+	            "service_pid": "\(pid)",
+	            "probe_pid": "\(pid)",
+	            "home_dir": FileManager.default.homeDirectoryForCurrentUser.path,
+	            "tmp_dir": FileManager.default.temporaryDirectory.path,
+	            "cwd": FileManager.default.currentDirectoryPath,
+	        ]
+	        for (k, v) in extra {
+	            out[k] = v
         }
         return out
     }
@@ -1004,13 +1036,13 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
         )
     }
 
-    private static func probeWorldShape() -> RunProbeResponse {
-        let home = NSHomeDirectory()
-        let tmp = NSTemporaryDirectory()
-        let cwd = FileManager.default.currentDirectoryPath
+	    private static func probeWorldShape() -> RunProbeResponse {
+	        let home = FileManager.default.homeDirectoryForCurrentUser.path
+	        let tmp = FileManager.default.temporaryDirectory.path
+	        let cwd = FileManager.default.currentDirectoryPath
 
-        let looksContainerized = home.contains("/Library/Containers/")
-        let worldShapeChange = looksContainerized ? "home_containerized" : nil
+	        let looksContainerized = home.contains("/Library/Containers/")
+	        let worldShapeChange = looksContainerized ? "home_containerized" : nil
 
         let details = baseDetails([
             "home_dir": home,
@@ -1340,6 +1372,12 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	            timeoutMs: timeoutMs,
 	            intervalMs: intervalMs
 	        )
+	        let waitSpan = PWSignpostSpan(
+	            category: PWSignposts.categoryXpcService,
+	            name: "wait",
+	            label: "fs_op_wait mode=\(waitMode)"
+	        )
+	        defer { waitSpan.end() }
 	        let (waitResult, waitDetailsBase) = performWait(config)
 	        var waitDetails = waitDetailsBase
 	        waitDetails["probe_family"] = "fs_op_wait"
@@ -1804,12 +1842,6 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	        guard let pathClass else {
 	            return (nil, badRequest("internal: missing --path-class"))
 	        }
-	        guard let baseURL = resolveStandardDirectory(pathClass) else {
-	            return (nil, badRequest("invalid --path-class: \(pathClass) (expected: home|tmp|downloads|desktop|documents|app_support|caches)"))
-	        }
-
-	        let harnessRoot = baseURL.appendingPathComponent("policy-witness-harness", isDirectory: true)
-	        let runDir = harnessRoot.appendingPathComponent("fs-op", isDirectory: true).appendingPathComponent(UUID().uuidString, isDirectory: true)
 
 	        let name = (requestedName?.isEmpty == false) ? requestedName! : "specimen-\(UUID().uuidString).txt"
 	        if target == .specimen_file || target == .path {
@@ -1817,6 +1849,71 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	                return (nil, badRequest("invalid --name (must be a single path component)"))
 	            }
 	        }
+
+	        func normalizeDirPath(_ path: String) -> String {
+	            var out = path
+	            while out.hasSuffix("/") && out.count > 1 {
+	                out.removeLast()
+	            }
+	            return out
+	        }
+
+	        func getenvString(_ key: String) -> String? {
+	            key.withCString { keyPtr in
+	                guard let raw = getenv(keyPtr) else { return nil }
+	                return String(cString: raw)
+	            }
+	        }
+
+	        if pathClass == "tmp" || pathClass == "home" {
+	            let baseDirRaw: String
+	            if pathClass == "tmp" {
+	                baseDirRaw = getenvString("TMPDIR") ?? "/tmp"
+	            } else {
+	                baseDirRaw = getenvString("HOME") ?? ""
+	            }
+	            let baseDir = normalizeDirPath(baseDirRaw)
+	            if baseDir.isEmpty || !baseDir.hasPrefix("/") {
+	                return (nil, badRequest("invalid --path-class: \(pathClass) (failed to resolve base directory)"))
+	            }
+
+	            let harnessRoot = baseDir + "/policy-witness-harness"
+	            let runDir = harnessRoot + "/fs-op/" + UUID().uuidString
+
+	            let targetPath: String
+	            switch target {
+	            case .path:
+	                targetPath = runDir + "/" + name
+	            case .base:
+	                targetPath = baseDir
+	            case .harness_dir:
+	                targetPath = harnessRoot
+	            case .run_dir:
+	                targetPath = runDir
+	            case .specimen_file:
+	                targetPath = runDir + "/" + name
+	            }
+
+	            return (
+	                FsResolvedTarget(
+	                    path: targetPath,
+	                    baseDir: baseDir,
+	                    harnessDir: harnessRoot,
+	                    runDir: runDir,
+	                    cleanupRoots: [runDir]
+	                ),
+	                nil
+	            )
+	        }
+
+	        guard let baseURL = resolveStandardDirectory(pathClass) else {
+	            return (nil, badRequest("invalid --path-class: \(pathClass) (expected: home|tmp|downloads|desktop|documents|app_support|caches)"))
+	        }
+
+	        let harnessRoot = baseURL.appendingPathComponent("policy-witness-harness", isDirectory: true)
+	        let runDir = harnessRoot
+	            .appendingPathComponent("fs-op", isDirectory: true)
+	            .appendingPathComponent(UUID().uuidString, isDirectory: true)
 
 	        let targetPath: String
 	        switch target {
@@ -1847,9 +1944,9 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	    private static func resolveStandardDirectory(_ cls: String) -> URL? {
 	        switch cls {
 	        case "home":
-	            return URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+	            return FileManager.default.homeDirectoryForCurrentUser
 	        case "tmp":
-	            return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+	            return FileManager.default.temporaryDirectory
 	        case "downloads":
 	            return FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
 	        case "desktop":
@@ -1865,16 +1962,16 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	        }
 	    }
 
-		    private static func isSafeWritePath(_ path: String) -> Bool {
-		        let candidates: [String?] = [
-		            URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).appendingPathComponent("policy-witness-harness", isDirectory: true).path,
-		            "/tmp/policy-witness-harness",
-		            "/private/tmp/policy-witness-harness",
-		            URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent("policy-witness-harness", isDirectory: true).path,
-		            FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.appendingPathComponent("policy-witness-harness", isDirectory: true).path,
-		            FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first?.appendingPathComponent("policy-witness-harness", isDirectory: true).path,
-		            FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("policy-witness-harness", isDirectory: true).path,
-	            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("policy-witness-harness", isDirectory: true).path,
+			    private static func isSafeWritePath(_ path: String) -> Bool {
+			        let candidates: [String?] = [
+			            FileManager.default.temporaryDirectory.appendingPathComponent("policy-witness-harness", isDirectory: true).path,
+			            "/tmp/policy-witness-harness",
+			            "/private/tmp/policy-witness-harness",
+			            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("policy-witness-harness", isDirectory: true).path,
+			            FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.appendingPathComponent("policy-witness-harness", isDirectory: true).path,
+			            FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first?.appendingPathComponent("policy-witness-harness", isDirectory: true).path,
+			            FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("policy-witness-harness", isDirectory: true).path,
+		            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("policy-witness-harness", isDirectory: true).path,
 	            FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.appendingPathComponent("policy-witness-harness", isDirectory: true).path,
 	        ]
 
@@ -2786,7 +2883,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 
 	    private static func probeCapabilitiesSnapshot() -> RunProbeResponse {
 	        let bundleId = Bundle.main.bundleIdentifier ?? ""
-	        let prefsPath = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+	        let prefsPath = FileManager.default.homeDirectoryForCurrentUser
 	            .appendingPathComponent("Library/Preferences", isDirectory: true)
 	            .appendingPathComponent("\(bundleId).plist", isDirectory: false)
 	            .path
@@ -3017,15 +3114,45 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	    private static func probeSandboxExtension(argv: [String]) -> RunProbeResponse {
 	        pw_probe_sandbox_extension_marker()
 	        let args = Argv(argv)
-	        let expectedOps = SandboxExtensionOp.allCases.map(\.rawValue).joined(separator: "|")
+	        let entrySpan = PWSignpostSpan(
+	            category: PWSignposts.categoryXpcService,
+	            name: "sandbox_ext_entry",
+	            label: "enter"
+	        )
+	        defer { entrySpan.end() }
+	        let expectedOps = "issue_file|issue_file_to_pid|issue_extension|issue_fs_extension|issue_fs_rw_extension|consume|release|release_file|update_file|update_file_rename_delta|update_file_by_fileid|update_file_by_fileid_sweep|update_file_by_fileid_delta"
+	        let expectedOpsSpan = PWSignpostSpan(
+	            category: PWSignposts.categoryXpcService,
+	            name: "sandbox_ext_expected_ops",
+	            label: "ok"
+	        )
+	        expectedOpsSpan.end()
 	        guard let opStr = args.value("--op"), let op = SandboxExtensionOp(rawValue: opStr) else {
 	            return badRequest("missing/invalid --op (expected: \(expectedOps))")
 	        }
+	        let parsedOpSpan = PWSignpostSpan(
+	            category: PWSignposts.categoryXpcService,
+	            name: "sandbox_ext_parsed_op",
+	            label: "op=\(op.rawValue)"
+	        )
+	        parsedOpSpan.end()
 
+	        let preDetailsSpan = PWSignpostSpan(
+	            category: PWSignposts.categoryXpcService,
+	            name: "sandbox_ext_pre_details",
+	            label: "start"
+	        )
+	        preDetailsSpan.end()
 	        var details = baseDetails([
 	            "probe_family": "sandbox_extension",
 	            "op": op.rawValue,
 	        ])
+	        let postDetailsSpan = PWSignpostSpan(
+	            category: PWSignposts.categoryXpcService,
+	            name: "sandbox_ext_post_details",
+	            label: "ok"
+	        )
+	        postDetailsSpan.end()
 	        if args.has("--introspect") {
 	            appendSandboxExtensionSymbolIntrospection(&details)
 	        }
@@ -3068,17 +3195,23 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 
             let targetStr = args.value("--target")
             let target: FsTarget = targetStr.flatMap { FsTarget(rawValue: $0) } ?? .specimen_file
-            let create = args.has("--create")
-            if create && target == .base {
-                return badRequest("--create is not supported with --target base")
-            }
+	            let create = args.has("--create")
+	            if create && target == .base {
+	                return badRequest("--create is not supported with --target base")
+	            }
 
+	            let resolveSpan = PWSignpostSpan(
+	                category: PWSignposts.categoryXpcService,
+	                name: "sandbox_ext_resolve_target",
+	                label: "op=\(op.rawValue)"
+	            )
 	            let (resolvedTarget, resolveErr) = resolveFsTarget(
 	                directPath: directPath,
 	                pathClass: pathClass,
 	                target: target,
 	                requestedName: args.value("--name")
 	            )
+	            resolveSpan.end()
 	            if let resolveErr { return resolveErr }
 	            guard let resolvedTarget else {
 	                return badRequest("internal: failed to resolve target path")
@@ -3114,10 +3247,16 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
                 )
             }
 
-            if create {
-                let targetIsDir = (target == .harness_dir || target == .run_dir)
-                var isDir: ObjCBool = false
-                let exists = FileManager.default.fileExists(atPath: targetPath, isDirectory: &isDir)
+	            if create {
+	                let createSpan = PWSignpostSpan(
+	                    category: PWSignposts.categoryXpcService,
+	                    name: "sandbox_ext_create",
+	                    label: "target=\(target.rawValue)"
+	                )
+	                defer { createSpan.end() }
+	                let targetIsDir = (target == .harness_dir || target == .run_dir)
+	                var isDir: ObjCBool = false
+	                let exists = FileManager.default.fileExists(atPath: targetPath, isDirectory: &isDir)
 
                 if exists {
                     if targetIsDir && !isDir.boolValue {
@@ -3178,11 +3317,17 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
                 }
             }
 
-            let issueSymbol = (op == .issue_file_to_pid) ? "sandbox_extension_issue_file_to_process_by_pid" : "sandbox_extension_issue_file"
-            details["issue_symbol"] = issueSymbol
-            guard let issueSym = resolveSandboxExtensionSymbol(issueSymbol) else {
-                return RunProbeResponse(
-                    rc: 1,
+	            let issueSymbol = (op == .issue_file_to_pid) ? "sandbox_extension_issue_file_to_process_by_pid" : "sandbox_extension_issue_file"
+	            details["issue_symbol"] = issueSymbol
+	            let dlsymSpan = PWSignpostSpan(
+	                category: PWSignposts.categoryXpcService,
+	                name: "sandbox_ext_dlsym_issue",
+	                label: "symbol=\(issueSymbol)"
+	            )
+	            defer { dlsymSpan.end() }
+	            guard let issueSym = resolveSandboxExtensionSymbol(issueSymbol) else {
+	                return RunProbeResponse(
+	                    rc: 1,
                     stdout: "",
 	                    stderr: "",
 	                    normalized_outcome: "symbol_missing",
@@ -3191,23 +3336,29 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	                    details: details,
                     layer_attribution: nil
                 )
-            }
+	            }
 
-            errno = 0
-            let tokenPtr = extClass.withCString { classPtr in
-                targetPath.withCString { pathPtr in
-                    if let targetPid {
-                        let issueFn = unsafeBitCast(issueSym, to: SandboxExtensionIssueFileToPidFn.self)
+	            errno = 0
+	            let callSpan = PWSignpostSpan(
+	                category: PWSignposts.categoryXpcService,
+	                name: "sandbox_ext_call_issue",
+	                label: "op=\(op.rawValue)"
+	            )
+	            let tokenPtr = extClass.withCString { classPtr in
+	                targetPath.withCString { pathPtr in
+	                    if let targetPid {
+	                        let issueFn = unsafeBitCast(issueSym, to: SandboxExtensionIssueFileToPidFn.self)
                         return issueFn(classPtr, pathPtr, flags, targetPid)
                     }
-                    let issueFn = unsafeBitCast(issueSym, to: SandboxExtensionIssueFileFn.self)
-                    return issueFn(classPtr, pathPtr, flags)
-                }
-            }
+	                    let issueFn = unsafeBitCast(issueSym, to: SandboxExtensionIssueFileFn.self)
+	                    return issueFn(classPtr, pathPtr, flags)
+	                }
+	            }
+	            callSpan.end()
 
-            guard let tokenPtr else {
-                let e = errno
-	                let outcome = (e == EPERM || e == EACCES) ? "permission_error" : "issue_failed"
+	            guard let tokenPtr else {
+	                let e = errno
+		                let outcome = (e == EPERM || e == EACCES) ? "permission_error" : "issue_failed"
 	                return RunProbeResponse(
 	                    rc: 1,
 	                    stdout: "",
@@ -3220,9 +3371,15 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	                )
             }
 
-            let token = String(cString: tokenPtr)
-            details["token_len"] = "\(token.utf8.count)"
-            details["token"] = token
+	            let tokenSpan = PWSignpostSpan(
+	                category: PWSignposts.categoryXpcService,
+	                name: "sandbox_ext_token_decode",
+	                label: "token=cstr"
+	            )
+	            let token = String(cString: tokenPtr)
+	            tokenSpan.end()
+	            details["token_len"] = "\(token.utf8.count)"
+	            details["token"] = token
             details["token_format"] = "full"
             if let idx = token.firstIndex(of: ";") {
                 details["token_prefix"] = String(token[..<idx])
@@ -3233,16 +3390,22 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
             if tokenFields.count > 9 { details["token_field_9"] = String(tokenFields[9]) }
             if tokenFields.count > 10 { details["token_field_10"] = String(tokenFields[10]) }
 
-            if let freeSym = resolveSandboxExtensionSymbol("sandbox_extension_free") {
-                let freeFn = unsafeBitCast(freeSym, to: SandboxExtensionFreeFn.self)
-                freeFn(tokenPtr)
-	            } else {
-	                free(UnsafeMutableRawPointer(tokenPtr))
-	            }
+	            let freeSpan = PWSignpostSpan(
+	                category: PWSignposts.categoryXpcService,
+	                name: "sandbox_ext_free_token",
+	                label: "token_ptr"
+	            )
+	            if let freeSym = resolveSandboxExtensionSymbol("sandbox_extension_free") {
+	                let freeFn = unsafeBitCast(freeSym, to: SandboxExtensionFreeFn.self)
+	                freeFn(tokenPtr)
+		            } else {
+		                free(UnsafeMutableRawPointer(tokenPtr))
+		            }
+	            freeSpan.end()
 
-	            return RunProbeResponse(
-	                rc: 0,
-	                stdout: token,
+		            return RunProbeResponse(
+		                rc: 0,
+		                stdout: token,
 	                stderr: "",
 	                normalized_outcome: "ok",
 	                errno: nil,
@@ -6088,10 +6251,17 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
         let stopOnEntry = args.has("--stop-on-entry")
         let stopOnDeny = args.has("--stop-on-deny")
         let stopAutoResume = args.has("--stop-auto-resume")
-        let bookmarkMove = args.has("--bookmark-move")
+	        let bookmarkMove = args.has("--bookmark-move")
         let bookmarkInvalid = args.has("--bookmark-invalid")
         let protocolBadCapId = args.has("--protocol-bad-cap-id")
         let runId = UUID().uuidString
+        let inheritSpan = PWSignpostSpan(
+            category: PWSignposts.categoryXpcService,
+            name: "inherit_child",
+            label: "scenario=\(scenario) run_id=\(runId)"
+        )
+        defer { inheritSpan.end() }
+
         let parentPid = Int(getpid())
         let profileName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
         let serviceBundleId = Bundle.main.bundleIdentifier ?? ""
@@ -6464,10 +6634,6 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
             return true
         }
 
-        func issueToken(issueArgs: [String]) -> RunProbeResponse {
-            probeSandboxExtension(argv: issueArgs)
-        }
-
         struct CapabilityPayload {
             var cap_id: Int32
             var meta0: Int32
@@ -6602,12 +6768,12 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
             return (fd, nil)
         }
 
-        func startEchoServer(maxConnections: Int) -> (String?, Int32?, String?) {
-            let socketRoot = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            let maxLen = MemoryLayout.size(ofValue: sockaddr_un().sun_path)
-            let shortName = "pw-echo-\(getpid()).sock"
-            let fallbackName = "pw.sock"
-            var socketPath = socketRoot.appendingPathComponent(shortName, isDirectory: false).path
+	        func startEchoServer(maxConnections: Int) -> (String?, Int32?, String?) {
+	            let socketRoot = FileManager.default.temporaryDirectory
+	            let maxLen = MemoryLayout.size(ofValue: sockaddr_un().sun_path)
+	            let shortName = "pw-echo-\(getpid()).sock"
+	            let fallbackName = "pw.sock"
+	            var socketPath = socketRoot.appendingPathComponent(shortName, isDirectory: false).path
             if socketPath.utf8.count > maxLen {
                 socketPath = socketRoot.appendingPathComponent(fallbackName, isDirectory: false).path
             }
@@ -6711,76 +6877,141 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
             return inheritChildBadRequest("dynamic_extension requires --target specimen_file (or omit --target)")
         }
 
-        var targetPath = ""
-        var targetDir = ""
-        var targetName = ""
-        if needsPath {
-            if usesSandboxExtension {
-                let extClass = "com.apple.app-sandbox.read"
-                var issueArgs = ["--op", "issue_file", "--class", extClass]
-                if let directPath {
-                    issueArgs += ["--path", directPath]
-                }
-                if let pathClass {
-                    issueArgs += ["--path-class", pathClass]
-                }
-                if !targetArg.isEmpty {
-                    issueArgs += ["--target", targetArg]
-                }
-                if let name = args.value("--name") {
-                    issueArgs += ["--name", name]
-                }
-                if args.has("--create") {
-                    issueArgs.append("--create")
-                }
-                if allowUnsafe {
-                    issueArgs.append("--allow-unsafe-path")
-                }
+		        var targetPath = ""
+		        var targetDir = ""
+		        var targetName = ""
+			        if needsPath {
+			            if usesSandboxExtension {
+			                let extClass = "com.apple.app-sandbox.read"
+			                let (resolved, error) = resolveFsTarget(
+			                    directPath: directPath,
+			                    pathClass: pathClass,
+			                    target: fsTarget,
+			                    requestedName: args.value("--name")
+			                )
+			                if let error {
+			                    return error
+			                }
+			                guard let resolved else {
+			                    return inheritChildBadRequest("internal: failed to resolve target path")
+			                }
+			                targetPath = resolved.path
+			                if let harnessDir = resolved.harnessDir {
+			                    details["harness_dir"] = harnessDir
+			                }
+			                if let runDir = resolved.runDir {
+			                    details["run_dir"] = runDir
+			                }
+			                details["target_path"] = targetPath
 
-                let issueParentResp = issueToken(issueArgs: issueArgs)
-                if issueParentResp.rc != 0 || issueParentResp.stdout.isEmpty {
-                    var merged = details
-                    if let issueDetails = issueParentResp.details {
-                        for (k, v) in issueDetails {
-                            merged[k] = v
-                        }
-                    }
-                    return attachWitness(
-                        RunProbeResponse(
-                            rc: 1,
-                            stdout: "",
-                            stderr: "",
-                            normalized_outcome: issueParentResp.normalized_outcome,
-                            errno: issueParentResp.errno,
-                            error: issueParentResp.error ?? "failed to issue sandbox extension token",
-                            details: merged,
-                            layer_attribution: issueParentResp.layer_attribution
-                        ),
-                        childPath: directPath ?? "",
-                        outcomeSummary: "issue_token_failed"
-                    )
-                }
+			                if args.has("--create") {
+			                    if directPath != nil, !allowUnsafe, !isSafeWritePath(targetPath) {
+			                        return inheritChildBadRequest("refusing to create file outside harness path (use --path-class/--target or --allow-unsafe-path)")
+			                    }
+			                    do {
+			                        let parent = URL(fileURLWithPath: targetPath).deletingLastPathComponent()
+			                        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true, attributes: nil)
+			                        let data = Data("hello".utf8)
+			                        try data.write(to: URL(fileURLWithPath: targetPath), options: [.atomic])
+			                    } catch {
+			                        return attachWitness(
+			                            RunProbeResponse(
+			                                rc: 1,
+			                                stdout: "",
+			                                stderr: "",
+			                                normalized_outcome: "create_failed",
+			                                errno: extractErrno(error).map { Int($0) },
+			                                error: "\(error)",
+			                                details: details,
+			                                layer_attribution: nil
+			                            ),
+			                            childPath: targetPath,
+			                            outcomeSummary: "create_failed"
+			                        )
+			                    }
+			                }
 
-                let tokenParent = issueParentResp.stdout
-                targetPath = issueParentResp.details?["file_path"] ?? directPath ?? ""
-                details["target_path"] = targetPath
-                details["extension_class"] = extClass
-                if let tokenPrefix = issueParentResp.details?["token_prefix"] {
-                    details["parent_token_prefix"] = tokenPrefix
-                }
-                if let tokenLen = issueParentResp.details?["token_len"] {
-                    details["parent_token_len"] = tokenLen
-                }
-                parentToken = tokenParent
+			                let issueSpan = PWSignpostSpan(
+			                    category: PWSignposts.categoryXpcService,
+			                    name: "issue_token",
+			                    label: "sandbox_extension_issue_file"
+			                )
+			                defer { issueSpan.end() }
 
-                recordEvent(actor: "parent", phase: "parent_token_issued", pid: parentPid, details: [
-                    "token_prefix": issueParentResp.details?["token_prefix"] ?? "",
-                    "token_len": issueParentResp.details?["token_len"] ?? ""
-                ])
-            } else {
-                let (resolved, error) = resolveFsTarget(
-                    directPath: directPath,
-                    pathClass: pathClass,
+			                let issueSymbol = "sandbox_extension_issue_file"
+			                details["issue_symbol"] = issueSymbol
+			                guard let issueSym = resolveSandboxExtensionSymbol(issueSymbol) else {
+			                    return attachWitness(
+			                        RunProbeResponse(
+			                            rc: 1,
+			                            stdout: "",
+			                            stderr: "",
+			                            normalized_outcome: "symbol_missing",
+			                            errno: nil,
+			                            error: "\(issueSymbol) symbol not found via dlsym(RTLD_DEFAULT, \"\(issueSymbol)\")",
+			                            details: details,
+			                            layer_attribution: nil
+			                        ),
+			                        childPath: targetPath,
+			                        outcomeSummary: "issue_token_failed"
+			                    )
+			                }
+
+			                errno = 0
+			                let tokenPtr = extClass.withCString { classPtr in
+			                    targetPath.withCString { pathPtr in
+			                        let issueFn = unsafeBitCast(issueSym, to: SandboxExtensionIssueFileFn.self)
+			                        return issueFn(classPtr, pathPtr, 0)
+			                    }
+			                }
+			                guard let tokenPtr else {
+			                    let e = errno
+			                    let outcome = (e == EPERM || e == EACCES) ? "permission_error" : "issue_failed"
+			                    return attachWitness(
+			                        RunProbeResponse(
+			                            rc: 1,
+			                            stdout: "",
+			                            stderr: "",
+			                            normalized_outcome: outcome,
+			                            errno: Int(e),
+			                            error: String(cString: strerror(e)),
+			                            details: details,
+			                            layer_attribution: nil
+			                        ),
+			                        childPath: targetPath,
+			                        outcomeSummary: "issue_token_failed"
+			                    )
+			                }
+
+			                let tokenParent = String(cString: tokenPtr)
+			                let tokenLen = tokenParent.utf8.count
+			                let tokenPrefix: String = {
+			                    if let idx = tokenParent.firstIndex(of: ";") {
+			                        return String(tokenParent[..<idx])
+			                    }
+			                    return ""
+			                }()
+
+			                if let freeSym = resolveSandboxExtensionSymbol("sandbox_extension_free") {
+			                    let freeFn = unsafeBitCast(freeSym, to: SandboxExtensionFreeFn.self)
+			                    freeFn(tokenPtr)
+			                } else {
+			                    free(UnsafeMutableRawPointer(tokenPtr))
+			                }
+
+			                details["extension_class"] = extClass
+			                details["parent_token_prefix"] = tokenPrefix
+			                details["parent_token_len"] = "\(tokenLen)"
+			                parentToken = tokenParent
+
+			                recordEvent(actor: "parent", phase: "parent_token_issued", pid: parentPid, details: [
+			                    "token_prefix": tokenPrefix,
+			                    "token_len": "\(tokenLen)"
+			                ])
+			            } else {
+			                let (resolved, error) = resolveFsTarget(
+			                    directPath: directPath,
+			                    pathClass: pathClass,
                     target: fsTarget,
                     requestedName: args.value("--name")
                 )
@@ -7286,6 +7517,10 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
         let rightsFd = rightsChildFd
 
         var env = ProcessInfo.processInfo.environment
+        env["PW_CORRELATION_ID"] = PWTraceContext.correlationId() ?? ""
+        if PWSignposts.isEnabled() {
+            env["PW_ENABLE_SIGNPOSTS"] = "1"
+        }
         env["PW_RUN_ID"] = runId
         env["PW_SCENARIO"] = scenario
         env["PW_PATH"] = targetPath
@@ -7356,7 +7591,13 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
         }
 
         var childPid: pid_t = 0
+        let spawnSpan = PWSignpostSpan(
+            category: PWSignposts.categoryXpcService,
+            name: "child_spawn",
+            label: "helper=\(childHelperName)"
+        )
         let spawnRc = posix_spawn(&childPid, resolvedChildPath, &actions, &attrs, &argvC, &envp)
+        spawnSpan.end()
         posix_spawn_file_actions_destroy(&actions)
         if attrs != nil {
             posix_spawnattr_destroy(&attrs)
@@ -7641,56 +7882,72 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
                     details: ["cap_id": "file_fd"]
                 )
             }
-        }
+	        }
 
-        if usesSandboxExtension, let parentToken {
-            let consumeParentResp = probeSandboxExtension(argv: [
-                "--op", "consume",
-                "--token", parentToken,
-                "--token-format", "full"
-            ])
-            recordEvent(
-                actor: "parent",
-                phase: "parent_token_consumed",
-                pid: parentPid,
-                details: [
-                    "call_symbol": consumeParentResp.details?["call_symbol_selected"] ?? "",
-                    "call_variant": consumeParentResp.details?["call_variant_selected"] ?? ""
-                ],
-                errno: consumeParentResp.errno,
-                rc: consumeParentResp.rc == 0 ? 0 : 1
-            )
-            if consumeParentResp.rc != 0 {
-                kill(childPid, SIGKILL)
-                close(rightsParentFd)
-                close(eventParentFd)
-                return attachWitness(
-                    RunProbeResponse(
-                        rc: 1,
-                        stdout: "",
-                        stderr: "",
-                        normalized_outcome: "consume_failed",
-                        errno: consumeParentResp.errno,
-                        error: consumeParentResp.error ?? "failed to consume sandbox extension",
-                        details: details,
-                        layer_attribution: consumeParentResp.layer_attribution
-                    ),
-                    childPid: childPidInt,
-                    childPath: resolvedChildPath,
-                    childEventFd: Int(eventFd),
-                    childRightsFd: Int(rightsFd),
-                    childBundleId: childBundleId ?? "",
-                    childTeamId: childTeamId ?? "",
-                    childEntitlements: childEntitlements,
-                    inheritContractOk: inheritContractOk,
-                    outcomeSummary: "consume_failed"
-                )
-            }
-        }
+	        if usesSandboxExtension, let parentToken {
+	            let consumeSymbol = "sandbox_extension_consume"
+	            let consumeVariant = "handle_one_arg"
+	            let tokenUsed = parentToken.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if usesSandboxExtension {
-            let (acquired, response) = acquireParentCapabilities()
-            if let response {
+	            let handle: Int64
+	            let consumeErrno: Int32
+	            if let consumeSym = resolveSandboxExtensionSymbol(consumeSymbol) {
+	                errno = 0
+	                let fn = unsafeBitCast(consumeSym, to: SandboxExtensionConsumeHandleFn.self)
+	                handle = tokenUsed.withCString { tokenPtr in
+	                    fn(tokenPtr)
+	                }
+	                consumeErrno = errno
+	            } else {
+	                handle = -1
+	                consumeErrno = 0
+	            }
+
+	            let ok = handle > 0 && consumeErrno == 0
+	            recordEvent(
+	                actor: "parent",
+	                phase: "parent_token_consumed",
+	                pid: parentPid,
+	                details: [
+	                    "call_symbol": consumeSymbol,
+	                    "call_variant": consumeVariant,
+	                    "handle": "\(handle)"
+	                ],
+	                errno: consumeErrno == 0 ? nil : Int(consumeErrno),
+	                rc: ok ? 0 : 1
+	            )
+	            if !ok {
+	                kill(childPid, SIGKILL)
+	                close(rightsParentFd)
+	                close(eventParentFd)
+	                let errMsg = (consumeErrno != 0) ? String(cString: strerror(consumeErrno)) : "sandbox_extension_consume failed"
+	                return attachWitness(
+	                    RunProbeResponse(
+	                        rc: 1,
+	                        stdout: "",
+	                        stderr: "",
+	                        normalized_outcome: "consume_failed",
+	                        errno: consumeErrno != 0 ? Int(consumeErrno) : nil,
+	                        error: errMsg,
+	                        details: details,
+	                        layer_attribution: nil
+	                    ),
+	                    childPid: childPidInt,
+	                    childPath: resolvedChildPath,
+	                    childEventFd: Int(eventFd),
+	                    childRightsFd: Int(rightsFd),
+	                    childBundleId: childBundleId ?? "",
+	                    childTeamId: childTeamId ?? "",
+	                    childEntitlements: childEntitlements,
+	                    inheritContractOk: inheritContractOk,
+	                    outcomeSummary: "consume_failed"
+	                )
+	            }
+	        }
+
+	        if usesSandboxExtension {
+	            let (acquired, response) = acquireParentCapabilities()
+	            if let response {
                 kill(childPid, SIGKILL)
                 close(rightsParentFd)
                 close(eventParentFd)
@@ -7972,7 +8229,7 @@ inherit_child [--scenario <\(inheritChildScenarioListString)>]
 	        }
 
 	        let domain = (suite?.isEmpty == false ? suite! : (Bundle.main.bundleIdentifier ?? ""))
-	        let prefsPath = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+	        let prefsPath = FileManager.default.homeDirectoryForCurrentUser
 	            .appendingPathComponent("Library/Preferences", isDirectory: true)
 	            .appendingPathComponent("\(domain).plist", isDirectory: false)
 	            .path

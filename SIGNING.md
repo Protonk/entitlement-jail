@@ -50,10 +50,11 @@ Use this section to orient yourself and treat [build.sh](build.sh) as the author
 1. **Validates `IDENTITY`**
    - Checks that the requested Developer ID Application identity exists in your keychain (`security find-identity -p codesigning`).
 2. **Builds Rust binaries** from `runner/`
-   - Launcher + helper tools (`policy-witness`, `quarantine-observer`, `sandbox-log-observer`, `pw-inspector`).
+   - Launcher + helper tools (`policy-witness`, `quarantine-observer`, `sandbox-log-observer`, `signpost-log-observer`, `pw-inspector`).
 3. **Assembles `PolicyWitness.app` layout**
    - Installs the launcher at `Contents/MacOS/policy-witness`.
    - Embeds `sandbox-log-observer` at `Contents/MacOS/sandbox-log-observer`.
+   - Embeds `signpost-log-observer` at `Contents/MacOS/signpost-log-observer`.
    - Optionally embeds additional helper payloads under `Contents/Helpers/` (see `EMBED_FENCERUNNER_PATH`, `EMBED_PROBES_DIR` in the script).
 4. **Builds Swift client helpers and XPC services** (when `BUILD_XPC=1`)
    - Builds `xpc-probe-client`, `xpc-quarantine-client`, `pw-inherit-child`, and `pw-inherit-child-bad` into `Contents/MacOS/`.
@@ -61,7 +62,7 @@ Use this section to orient yourself and treat [build.sh](build.sh) as the author
    - Copies `pw-inherit-child` and `pw-inherit-child-bad` into each `ProbeService_*` bundle so sandboxed services can `posix_spawn` them.
 5. **Signs nested code (inside-out)**
    - Plain-signs embedded tools under `Contents/Helpers/` (Mach‑O only).
-   - Plain-signs host-side tools under `Contents/MacOS/` (`xpc-probe-client`, `xpc-quarantine-client`, `sandbox-log-observer`).
+   - Plain-signs host-side tools under `Contents/MacOS/` (`xpc-probe-client`, `xpc-quarantine-client`, `sandbox-log-observer`, `signpost-log-observer`).
    - Signs `pw-inherit-child` (good) with inherit entitlements (`PolicyWitness.inherit.entitlements`).
    - Signs `pw-inherit-child-bad` (canary) with intentionally contaminated inherit entitlements (`PolicyWitness.inherit.bad.entitlements`).
    - Re-signs the per-service embedded copies with `--identifier <service bundle id>` so security-scoped bookmark behavior is stable and attributable to the service identity.
@@ -76,7 +77,7 @@ Use this section to orient yourself and treat [build.sh](build.sh) as the author
 9. **Creates `PolicyWitness.zip`**
    - Packages the app with `ditto -c -k --sequesterRsrc --keepParent`.
 10. **Signs non-embedded helper tools**
-   - Signs `runner/target/release/quarantine-observer` and `runner/target/release/sandbox-log-observer` (standalone).
+   - Signs `runner/target/release/quarantine-observer`, `runner/target/release/sandbox-log-observer`, and `runner/target/release/signpost-log-observer` (standalone).
    - Signs `runner/target/release/pw-inspector` with `Inspector.entitlements` (`com.apple.security.cs.debugger`). This tool is debugger-side and must not be embedded in the `.app`.
 
 If any of these steps need to change, change `build.sh` first and then update the surrounding docs/tests.

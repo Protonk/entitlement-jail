@@ -17,9 +17,9 @@ fn print_usage() {
 usage:
   policy-witness run-system <absolute-platform-binary> [args...]
   policy-witness run-embedded <tool-name> [args...]
-  policy-witness xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--capture-sandbox-logs] <probe-id> [probe-args...]
-  policy-witness xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--correlation-id <id>] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
-  policy-witness quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
+  policy-witness xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--signposts] [--capture-sandbox-logs] [--capture-signposts] <probe-id> [probe-args...]
+  policy-witness xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--correlation-id <id>] [--signposts] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
+  policy-witness quarantine-lab [--correlation-id <id>] [--signposts] [--capture-signposts] <xpc-service-bundle-id> <payload-class> [options...]
   policy-witness verify-evidence
   policy-witness inspect-macho <service-id|main|path>
   policy-witness list-profiles
@@ -28,7 +28,7 @@ usage:
   policy-witness describe-service <id[@variant]> [--variant <base|injectable>]
   policy-witness health-check [--profile <id[@variant]>] [--variant <base|injectable>]
   policy-witness bundle-evidence [--out <dir>] [--include-health-check]
-  policy-witness run-matrix --group <name> [--variant <base|injectable>] [--out <dir>] <probe-id> [probe-args...]
+  policy-witness run-matrix --group <name> [--variant <base|injectable>] [--out <dir>] [--signposts] [--capture-signposts] <probe-id> [probe-args...]
 
 notes:
   - run-system only allows platform-style paths (/bin, /usr/bin, /sbin, /usr/sbin, /usr/libexec, /System/Library)
@@ -562,10 +562,18 @@ fn load_profiles_manifest(app_root: &Path) -> (profiles::ProfilesManifest, PathB
     (manifest, profiles_path)
 }
 
-fn run_xpc_probe(service_id: &str, probe_id: &str, probe_args: &[&str]) -> Result<(String, i32, String), String> {
+fn run_xpc_probe(
+    service_id: &str,
+    probe_id: &str,
+    probe_args: &[&str],
+    enable_signposts: bool,
+) -> Result<(String, i32, String), String> {
     let cmd_path = resolve_contents_macos_tool("xpc-probe-client")?;
     let mut cmd = Command::new(&cmd_path);
     cmd.arg("run").arg(service_id).arg(probe_id).args(probe_args);
+    if enable_signposts {
+        cmd.env("PW_ENABLE_SIGNPOSTS", "1");
+    }
     let output = cmd
         .output()
         .map_err(|e| format!("spawn failed for {}: {e}", cmd_path.display()))?;
@@ -660,6 +668,62 @@ fn capture_sandbox_logs(child_pid: i64, process_name: &str) -> Result<serde_json
     Ok(capture)
 }
 
+fn capture_signposts(
+    correlation_id: &str,
+    plan_id: Option<&str>,
+    row_id: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let observer = resolve_contents_macos_tool("signpost-log-observer")?;
+    let mut args = vec![
+        "--correlation-id".to_string(),
+        correlation_id.to_string(),
+        "--last".to_string(),
+        "2m".to_string(),
+        "--format".to_string(),
+        "jsonl".to_string(),
+    ];
+    if let Some(plan_id) = plan_id {
+        args.push("--plan-id".to_string());
+        args.push(plan_id.to_string());
+    }
+    if let Some(row_id) = row_id {
+        args.push("--row-id".to_string());
+        args.push(row_id.to_string());
+    }
+
+    let output = Command::new(&observer)
+        .args(&args)
+        .output()
+        .map_err(|e| format!("spawn failed for {}: {e}", observer.display()))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let exit_code = output.status.code().unwrap_or(1);
+
+    let report_line = stdout
+        .lines()
+        .rev()
+        .find(|line| line.contains("\"signpost_log_observer_report\""));
+    let report_json = report_line.and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok());
+
+    let mut capture = serde_json::json!({
+        "capture_status": if report_json.is_some() { "captured" } else { "requested_unavailable" },
+        "observer_path": observer.display().to_string(),
+        "observer_args": args,
+        "observer_exit_code": exit_code,
+    });
+    if let Some(report_json) = report_json {
+        capture["observer_report"] = report_json;
+    } else {
+        capture["observer_stdout"] = serde_json::Value::String(stdout);
+    }
+    if !stderr.is_empty() {
+        capture["observer_stderr"] = serde_json::Value::String(stderr);
+    }
+
+    Ok(capture)
+}
+
 fn build_health_check_report<'a>(
     profiles_path: &Path,
     selected: Vec<profiles::ResolvedProfileVariant<'a>>,
@@ -679,7 +743,7 @@ fn build_health_check_report<'a>(
         let mut profile_ok = true;
         for (probe_id, probe_args) in probe_plan {
             let (stdout, exit_code, stderr) =
-                match run_xpc_probe(&variant.bundle_id, probe_id, probe_args) {
+                match run_xpc_probe(&variant.bundle_id, probe_id, probe_args, false) {
                     Ok(result) => result,
                     Err(err) => {
                         profile_ok = false;
@@ -886,8 +950,19 @@ fn exit_like_child(status: std::process::ExitStatus) -> ! {
 }
 
 fn run_and_wait(cmd_path: PathBuf, cmd_args: Vec<OsString>) -> ! {
+    run_and_wait_with_env(cmd_path, cmd_args, &[])
+}
+
+fn run_and_wait_with_env(
+    cmd_path: PathBuf,
+    cmd_args: Vec<OsString>,
+    extra_env: &[(OsString, OsString)],
+) -> ! {
     let mut cmd = Command::new(&cmd_path);
     cmd.args(cmd_args);
+    for (key, value) in extra_env {
+        cmd.env(key, value);
+    }
 
     let status = match cmd.status() {
         Ok(status) => status,
@@ -1571,6 +1646,8 @@ fn main() {
             let mut group_arg: Option<String> = None;
             let mut out_arg: Option<String> = None;
             let mut variant_arg: Option<&'static str> = None;
+            let mut signposts_flag = false;
+            let mut capture_signposts_flag = false;
             let mut idx = 1;
             while idx < args.len() {
                 let arg = match args.get(idx).and_then(|s| s.to_str()) {
@@ -1643,6 +1720,15 @@ fn main() {
                             }
                         }
                         idx += 2;
+                    }
+                    "--signposts" => {
+                        signposts_flag = true;
+                        idx += 1;
+                    }
+                    "--capture-signposts" => {
+                        capture_signposts_flag = true;
+                        signposts_flag = true;
+                        idx += 1;
                     }
                     other => {
                         eprintln!("unknown argument for run-matrix: {other}");
@@ -1746,7 +1832,7 @@ fn main() {
 
                 let start = std::time::Instant::now();
                 let result =
-                    run_xpc_probe(&resolved.variant.bundle_id, &probe_id, &probe_arg_refs);
+                    run_xpc_probe(&resolved.variant.bundle_id, &probe_id, &probe_arg_refs, signposts_flag);
                 let elapsed = start.elapsed();
 
                 let (stdout, exit_code, stderr) = match result {
@@ -1778,6 +1864,40 @@ fn main() {
                 let mut response_json = None;
                 match serde_json::from_str::<serde_json::Value>(&stdout) {
                     Ok(value) => {
+                        let mut value = value;
+                        if capture_signposts_flag {
+                            let correlation_id = value
+                                .pointer("/data/correlation_id")
+                                .and_then(|v| v.as_str())
+                                .filter(|s| !s.is_empty());
+                            let plan_id = value
+                                .pointer("/data/plan_id")
+                                .and_then(|v| v.as_str())
+                                .filter(|s| !s.is_empty());
+                            let row_id = value
+                                .pointer("/data/row_id")
+                                .and_then(|v| v.as_str())
+                                .filter(|s| !s.is_empty());
+
+                            let capture = match correlation_id {
+                                Some(corr) => match capture_signposts(corr, plan_id, row_id) {
+                                    Ok(capture) => capture,
+                                    Err(err) => serde_json::json!({
+                                        "capture_status": "requested_unavailable",
+                                        "error": err,
+                                    }),
+                                },
+                                None => serde_json::json!({
+                                    "capture_status": "requested_unavailable",
+                                    "error": "missing correlation_id for signpost capture",
+                                }),
+                            };
+
+                            if let serde_json::Value::Object(ref mut data) = value["data"] {
+                                data.insert("host_signpost_capture".to_string(), capture);
+                            }
+                        }
+
                         if let Some(result) = value.get("result") {
                             rc = result.get("rc").and_then(|v| v.as_i64());
                             outcome = result
@@ -1975,6 +2095,8 @@ fn main() {
                     let mut row_id: Option<String> = None;
                     let mut correlation_id: Option<String> = None;
                     let mut capture_sandbox_logs_flag = false;
+                    let mut capture_signposts_flag = false;
+                    let mut signposts_flag = false;
 
                     let mut idx = 2usize;
                     while idx < args.len() {
@@ -2101,6 +2223,15 @@ fn main() {
                                 capture_sandbox_logs_flag = true;
                                 idx += 1;
                             }
+                            "--signposts" => {
+                                signposts_flag = true;
+                                idx += 1;
+                            }
+                            "--capture-signposts" => {
+                                capture_signposts_flag = true;
+                                signposts_flag = true;
+                                idx += 1;
+                            }
                             other => {
                                 eprintln!("unknown argument for xpc run: {other}");
                                 print_usage();
@@ -2216,9 +2347,14 @@ fn main() {
                     forward_args.push(OsString::from(probe_id));
                     forward_args.extend(probe_args);
 
-                    if capture_sandbox_logs_flag {
-                        let output = Command::new(&cmd_path)
-                            .args(&forward_args)
+                    if capture_sandbox_logs_flag || capture_signposts_flag {
+                        let mut cmd = Command::new(&cmd_path);
+                        cmd.args(&forward_args);
+                        if signposts_flag {
+                            cmd.env("PW_ENABLE_SIGNPOSTS", "1");
+                        }
+
+                        let output = cmd
                             .output()
                             .unwrap_or_else(|err| {
                                 eprintln!("spawn failed for {}: {err}", cmd_path.display());
@@ -2250,55 +2386,93 @@ fn main() {
                             .or_else(|| value.pointer("/data/service_name").and_then(|v| v.as_str()))
                             .unwrap_or("unknown");
 
-                        let (capture_status, capture) = match child_pid {
-                            Some(pid) => match capture_sandbox_logs(pid, process_name) {
-                                Ok(capture) => ("captured", capture),
-                                Err(err) => ("requested_unavailable", serde_json::json!({ "error": err })),
-                            },
-                            None => (
-                                "requested_unavailable",
-                                serde_json::json!({ "error": "missing child_pid for sandbox log capture" }),
-                            ),
-                        };
+                        if capture_sandbox_logs_flag {
+                            let (capture_status, capture) = match child_pid {
+                                Some(pid) => match capture_sandbox_logs(pid, process_name) {
+                                    Ok(capture) => ("captured", capture),
+                                    Err(err) => ("requested_unavailable", serde_json::json!({ "error": err })),
+                                },
+                                None => (
+                                    "requested_unavailable",
+                                    serde_json::json!({ "error": "missing child_pid for sandbox log capture" }),
+                                ),
+                            };
 
-                        let capture_value = capture.clone();
-                        let capture_string_map = match capture {
-                            serde_json::Value::Object(map) => {
-                                let mut out = serde_json::Map::new();
-                                for (key, value) in map {
-                                    let rendered = match value {
-                                        serde_json::Value::String(text) => text,
-                                        other => other.to_string(),
-                                    };
-                                    out.insert(key, serde_json::Value::String(rendered));
+                            let capture_value = capture.clone();
+                            let capture_string_map = match capture {
+                                serde_json::Value::Object(map) => {
+                                    let mut out = serde_json::Map::new();
+                                    for (key, value) in map {
+                                        let rendered = match value {
+                                            serde_json::Value::String(text) => text,
+                                            other => other.to_string(),
+                                        };
+                                        out.insert(key, serde_json::Value::String(rendered));
+                                    }
+                                    serde_json::Value::Object(out)
                                 }
-                                serde_json::Value::Object(out)
+                                other => {
+                                    let mut out = serde_json::Map::new();
+                                    out.insert("raw".to_string(), serde_json::Value::String(other.to_string()));
+                                    serde_json::Value::Object(out)
+                                }
+                            };
+
+                            if let serde_json::Value::Object(ref mut data) = value["data"] {
+                                data.insert("host_sandbox_log_capture".to_string(), capture_value);
+
+                                let probe_family = data
+                                    .get("details")
+                                    .and_then(|v| v.get("probe_family"))
+                                    .and_then(|v| v.as_str());
+                                if probe_family == Some("inherit_child") {
+                                    if !matches!(data.get("witness"), Some(serde_json::Value::Object(_))) {
+                                        data.insert(
+                                            "witness".to_string(),
+                                            serde_json::Value::Object(serde_json::Map::new()),
+                                        );
+                                    }
+                                    if let Some(serde_json::Value::Object(witness)) = data.get_mut("witness") {
+                                        witness.insert(
+                                            "sandbox_log_capture_status".to_string(),
+                                            serde_json::Value::String(capture_status.to_string()),
+                                        );
+                                        witness.insert("sandbox_log_capture".to_string(), capture_string_map);
+                                    }
+                                }
                             }
-                            other => {
-                                let mut out = serde_json::Map::new();
-                                out.insert("raw".to_string(), serde_json::Value::String(other.to_string()));
-                                serde_json::Value::Object(out)
-                            }
-                        };
+                        }
 
-                        if let serde_json::Value::Object(ref mut data) = value["data"] {
-                            data.insert("host_sandbox_log_capture".to_string(), capture_value);
+                        if capture_signposts_flag {
+                            let correlation_id = value
+                                .pointer("/data/correlation_id")
+                                .and_then(|v| v.as_str())
+                                .filter(|s| !s.is_empty());
+                            let plan_id = value
+                                .pointer("/data/plan_id")
+                                .and_then(|v| v.as_str())
+                                .filter(|s| !s.is_empty());
+                            let row_id = value
+                                .pointer("/data/row_id")
+                                .and_then(|v| v.as_str())
+                                .filter(|s| !s.is_empty());
 
-                            let probe_family = data
-                                .get("details")
-                                .and_then(|v| v.get("probe_family"))
-                                .and_then(|v| v.as_str());
-                            if probe_family == Some("inherit_child") {
-                                if !matches!(data.get("witness"), Some(serde_json::Value::Object(_))) {
-                                    data.insert("witness".to_string(), serde_json::Value::Object(serde_json::Map::new()));
-                                }
-                                if let Some(serde_json::Value::Object(witness)) = data.get_mut("witness") {
-                                    witness.insert(
-                                        "sandbox_log_capture_status".to_string(),
-                                        serde_json::Value::String(capture_status.to_string()),
-                                    );
-                                    witness.insert("sandbox_log_capture".to_string(), capture_string_map);
-                                }
+                            let capture = match correlation_id {
+                                Some(corr) => match capture_signposts(corr, plan_id, row_id) {
+                                    Ok(capture) => capture,
+                                    Err(err) => serde_json::json!({
+                                        "capture_status": "requested_unavailable",
+                                        "error": err,
+                                    }),
+                                },
+                                None => serde_json::json!({
+                                    "capture_status": "requested_unavailable",
+                                    "error": "missing correlation_id for signpost capture",
+                                }),
+                            };
+
+                            if let serde_json::Value::Object(ref mut data) = value["data"] {
+                                data.insert("host_signpost_capture".to_string(), capture);
                             }
                         }
 
@@ -2314,7 +2488,15 @@ fn main() {
 
                         exit_like_child(status)
                     } else {
-                        run_and_wait(cmd_path, forward_args);
+                        if signposts_flag {
+                            run_and_wait_with_env(
+                                cmd_path,
+                                forward_args,
+                                &[(OsString::from("PW_ENABLE_SIGNPOSTS"), OsString::from("1"))],
+                            );
+                        } else {
+                            run_and_wait(cmd_path, forward_args);
+                        }
                     }
                 }
                 "session" => {
@@ -2323,6 +2505,7 @@ fn main() {
                     let mut variant_arg: Option<&'static str> = None;
                     let mut plan_id: Option<String> = None;
                     let mut correlation_id: Option<String> = None;
+                    let mut signposts_flag = false;
                     let mut wait_spec: Option<String> = None;
                     let mut wait_timeout_ms: Option<String> = None;
                     let mut wait_interval_ms: Option<String> = None;
@@ -2421,6 +2604,10 @@ fn main() {
                                     }
                                 }
                                 idx += 2;
+                            }
+                            "--signposts" => {
+                                signposts_flag = true;
+                                idx += 1;
                             }
                             "--wait" => {
                                 let value = args.get(idx + 1).and_then(|s| s.to_str());
@@ -2597,16 +2784,20 @@ fn main() {
                     }
                     forward_args.push(OsString::from(service_id));
 
-                    run_and_wait(cmd_path, forward_args);
+                    if signposts_flag {
+                        run_and_wait_with_env(
+                            cmd_path,
+                            forward_args,
+                            &[(OsString::from("PW_ENABLE_SIGNPOSTS"), OsString::from("1"))],
+                        );
+                    } else {
+                        run_and_wait(cmd_path, forward_args);
+                    }
                 }
                 _ => unreachable!(),
             }
         }
         Some("quarantine-lab") => {
-            if args.len() < 3 {
-                print_usage();
-                std::process::exit(2);
-            }
             let cmd_path = match resolve_contents_macos_tool("xpc-quarantine-client") {
                 Ok(p) => p,
                 Err(err) => {
@@ -2619,7 +2810,143 @@ fn main() {
                 eprintln!("{err}");
                 std::process::exit(2);
             }
-            run_and_wait(cmd_path, args[1..].to_vec());
+
+            let mut correlation_id: Option<String> = None;
+            let mut signposts_flag = false;
+            let mut capture_signposts_flag = false;
+
+            let mut idx = 1usize;
+            while idx < args.len() {
+                let arg = match args.get(idx).and_then(|s| s.to_str()) {
+                    Some(value) => value,
+                    None => break,
+                };
+                if arg == "--" {
+                    idx += 1;
+                    break;
+                }
+                if !arg.starts_with('-') {
+                    break;
+                }
+                match arg {
+                    "-h" | "--help" => {
+                        print_usage();
+                        std::process::exit(0);
+                    }
+                    "--correlation-id" => {
+                        let value = args
+                            .get(idx + 1)
+                            .and_then(|s| s.to_str())
+                            .ok_or_else(|| "missing value for --correlation-id".to_string());
+                        match value {
+                            Ok(v) => correlation_id = Some(v.to_string()),
+                            Err(err) => {
+                                eprintln!("{err}");
+                                print_usage();
+                                std::process::exit(2);
+                            }
+                        }
+                        idx += 2;
+                    }
+                    "--signposts" => {
+                        signposts_flag = true;
+                        idx += 1;
+                    }
+                    "--capture-signposts" => {
+                        capture_signposts_flag = true;
+                        signposts_flag = true;
+                        idx += 1;
+                    }
+                    other => {
+                        eprintln!("unknown argument for quarantine-lab: {other}");
+                        print_usage();
+                        std::process::exit(2);
+                    }
+                }
+            }
+
+            if idx + 1 >= args.len() {
+                eprintln!("missing required arguments for quarantine-lab");
+                print_usage();
+                std::process::exit(2);
+            }
+
+            let forward_args: Vec<OsString> = args.iter().skip(idx).cloned().collect();
+            let mut extra_env: Vec<(OsString, OsString)> = Vec::new();
+            if signposts_flag {
+                extra_env.push((OsString::from("PW_ENABLE_SIGNPOSTS"), OsString::from("1")));
+            }
+            if let Some(corr) = correlation_id.as_ref() {
+                extra_env.push((OsString::from("PW_CORRELATION_ID"), OsString::from(corr)));
+            }
+
+            if capture_signposts_flag {
+                let mut cmd = Command::new(&cmd_path);
+                cmd.args(&forward_args);
+                for (key, value) in &extra_env {
+                    cmd.env(key, value);
+                }
+                let output = cmd.output().unwrap_or_else(|err| {
+                    eprintln!("spawn failed for {}: {err}", cmd_path.display());
+                    std::process::exit(127);
+                });
+
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                let status = output.status;
+
+                let mut value: serde_json::Value = match serde_json::from_str(&stdout) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        eprintln!("failed to parse quarantine JSON: {err}");
+                        print!("{stdout}");
+                        if !stderr.is_empty() {
+                            eprint!("{stderr}");
+                        }
+                        exit_like_child(status);
+                    }
+                };
+
+                let correlation_id = value
+                    .pointer("/data/correlation_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| correlation_id.as_deref());
+
+                let capture = match correlation_id {
+                    Some(corr) => match capture_signposts(corr, None, None) {
+                        Ok(capture) => capture,
+                        Err(err) => serde_json::json!({
+                            "capture_status": "requested_unavailable",
+                            "error": err,
+                        }),
+                    },
+                    None => serde_json::json!({
+                        "capture_status": "requested_unavailable",
+                        "error": "missing correlation_id for signpost capture",
+                    }),
+                };
+
+                if let serde_json::Value::Object(ref mut data) = value["data"] {
+                    data.insert("host_signpost_capture".to_string(), capture);
+                }
+
+                sort_json_value(&mut value);
+                if let Ok(text) = serde_json::to_string(&value) {
+                    println!("{text}");
+                } else {
+                    print!("{stdout}");
+                }
+                if !stderr.is_empty() {
+                    eprint!("{stderr}");
+                }
+
+                exit_like_child(status)
+            } else if extra_env.is_empty() {
+                run_and_wait(cmd_path, forward_args);
+            } else {
+                run_and_wait_with_env(cmd_path, forward_args, &extra_env);
+            }
         }
         _ => {
             print_usage();

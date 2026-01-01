@@ -23,6 +23,7 @@ echo "==> Building witness substrate"
   "${SWIFT_OPT_LEVEL}" \
   -o "${ROOT_DIR}/experiments/bin/witness-substrate" \
   "${ROOT_DIR}/xpc/ProbeAPI.swift" \
+  "${ROOT_DIR}/xpc/Signposts.swift" \
   "${ROOT_DIR}/xpc/InProcessProbeCore.swift" \
   "${ROOT_DIR}/experiments/substrate/main.swift"
 

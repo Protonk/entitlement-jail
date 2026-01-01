@@ -36,6 +36,7 @@ if ProcessInfo.processInfo.environment["PW_XPC_CLIENT_DEBUG"] == "1" {
 private struct QuarantineData: Encodable {
     var test_case_id: String?
     var selection_mechanism: String?
+    var correlation_id: String?
     var path_class: String?
     var operation: String?
     var payload_class: String?
@@ -147,15 +148,24 @@ while i < args.count {
     }
 }
 
+var correlationId = ProcessInfo.processInfo.environment["PW_CORRELATION_ID"]
+if correlationId?.isEmpty ?? true {
+    correlationId = UUID().uuidString
+}
+let enableSignposts = PWSignposts.isEnabled()
+PWTraceContext.set(correlationId: correlationId, planId: nil, rowId: nil, probeId: "quarantine_lab")
+
 let request = QuarantineWriteRequest(
     test_case_id: testCaseId,
     selection_mechanism: selectionMechanism,
+    correlation_id: correlationId,
     path_class: pathClass,
     operation: operation,
     payload_class: payloadClass,
     existing_path: existingPath,
     file_name: fileName,
-    make_executable: makeExecutable
+    make_executable: makeExecutable,
+    enable_signposts: enableSignposts ? true : nil
 )
 
 let requestData: Data
@@ -172,18 +182,39 @@ connection.resume()
 
 let semaphore = DispatchSemaphore(value: 0)
 var exitCode: Int32 = 1
+let span = PWSignpostSpan(
+    category: PWSignposts.categoryQuarantineClient,
+    name: "xpc_call",
+    label: "write_artifact",
+    correlationId: correlationId
+)
+let spanLock = NSLock()
+var spanEnded = false
+func endSpanOnce() {
+    spanLock.lock()
+    if spanEnded {
+        spanLock.unlock()
+        return
+    }
+    spanEnded = true
+    spanLock.unlock()
+    span.end()
+}
 
 guard
     let proxy = connection.remoteObjectProxyWithErrorHandler({ err in
         fputs("xpc connection error: \(err)\n", stderr)
+        endSpanOnce()
         semaphore.signal()
     }) as? QuarantineLabProtocol
 else {
+    endSpanOnce()
     fputs("failed to create xpc proxy\n", stderr)
     exit(1)
 }
 
 proxy.writeArtifact(requestData) { responseData in
+    endSpanOnce()
     do {
         let response = try decodeJSON(QuarantineWriteResponse.self, from: responseData)
         exitCode = Int32(clamping: response.rc)
@@ -191,6 +222,7 @@ proxy.writeArtifact(requestData) { responseData in
         let data = QuarantineData(
             test_case_id: response.test_case_id,
             selection_mechanism: response.selection_mechanism,
+            correlation_id: response.correlation_id ?? correlationId,
             path_class: response.path_class,
             operation: response.operation,
             payload_class: response.payload_class,

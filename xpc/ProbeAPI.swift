@@ -36,15 +36,18 @@ public struct SessionOpenRequest: Codable {
     public var plan_id: String?
     public var correlation_id: String?
     public var wait_spec: WaitSpec?
+    public var enable_signposts: Bool?
 
     public init(
         plan_id: String? = nil,
         correlation_id: String? = nil,
-        wait_spec: WaitSpec? = nil
+        wait_spec: WaitSpec? = nil,
+        enable_signposts: Bool? = nil
     ) {
         self.plan_id = plan_id
         self.correlation_id = correlation_id
         self.wait_spec = wait_spec
+        self.enable_signposts = enable_signposts
     }
 }
 
@@ -221,19 +224,22 @@ public struct RunProbeRequest: Codable {
     public var correlation_id: String?
     public var probe_id: String
     public var argv: [String]
+    public var enable_signposts: Bool?
 
     public init(
         plan_id: String? = nil,
         row_id: String? = nil,
         correlation_id: String? = nil,
         probe_id: String,
-        argv: [String]
+        argv: [String],
+        enable_signposts: Bool? = nil
     ) {
         self.plan_id = plan_id
         self.row_id = row_id
         self.correlation_id = correlation_id
         self.probe_id = probe_id
         self.argv = argv
+        self.enable_signposts = enable_signposts
     }
 }
 
@@ -716,31 +722,37 @@ public struct QuarantineXattrParsed: Codable {
 public struct QuarantineWriteRequest: Codable {
     public var test_case_id: String?
     public var selection_mechanism: String?
+    public var correlation_id: String?
     public var path_class: String?
     public var operation: String?
     public var payload_class: String
     public var existing_path: String?
     public var file_name: String?
     public var make_executable: Bool?
+    public var enable_signposts: Bool?
 
     public init(
         test_case_id: String? = nil,
         selection_mechanism: String? = nil,
+        correlation_id: String? = nil,
         path_class: String? = nil,
         operation: String? = nil,
         payload_class: String,
         existing_path: String? = nil,
         file_name: String? = nil,
-        make_executable: Bool? = nil
+        make_executable: Bool? = nil,
+        enable_signposts: Bool? = nil
     ) {
         self.test_case_id = test_case_id
         self.selection_mechanism = selection_mechanism
+        self.correlation_id = correlation_id
         self.path_class = path_class
         self.operation = operation
         self.payload_class = payload_class
         self.existing_path = existing_path
         self.file_name = file_name
         self.make_executable = make_executable
+        self.enable_signposts = enable_signposts
     }
 }
 
@@ -751,6 +763,7 @@ public struct QuarantineWriteResponse: Codable {
     public var error: String?
     public var test_case_id: String?
     public var selection_mechanism: String?
+    public var correlation_id: String?
     public var path_class: String?
     public var operation: String?
     public var payload_class: String?
@@ -785,6 +798,7 @@ public struct QuarantineWriteResponse: Codable {
         error: String? = nil,
         test_case_id: String? = nil,
         selection_mechanism: String? = nil,
+        correlation_id: String? = nil,
         path_class: String? = nil,
         operation: String? = nil,
         payload_class: String? = nil,
@@ -818,6 +832,7 @@ public struct QuarantineWriteResponse: Codable {
         self.error = error
         self.test_case_id = test_case_id
         self.selection_mechanism = selection_mechanism
+        self.correlation_id = correlation_id
         self.path_class = path_class
         self.operation = operation
         self.payload_class = payload_class

@@ -29,6 +29,7 @@ This guide assumes you have only `PolicyWitness.app` and this file (`PolicyWitne
 - Evidence bundle: `bundle-evidence` (plus `verify-evidence`, `inspect-macho`)
 - Quarantine/Gatekeeper deltas (no execution): `quarantine-lab`
 - Deny evidence (outside the sandbox boundary): `PolicyWitness.app/Contents/MacOS/sandbox-log-observer`
+- Timeline evidence (Unified Logging signposts): `xpc run --signposts ...` (capture: `--capture-signposts`; helper: `PolicyWitness.app/Contents/MacOS/signpost-log-observer`)
 
 ## Quick start
 
@@ -325,6 +326,11 @@ Host-side sandbox log capture (single artifact):
 - Add `--capture-sandbox-logs` to `xpc run` to attach a lookback sandbox log excerpt under `data.host_sandbox_log_capture`.
 - For `inherit_child`, the excerpt is also summarized into the witness fields `sandbox_log_capture_status` and `sandbox_log_capture` so a run is self-contained.
 
+Signposts (timeline, best-effort):
+
+- Add `--signposts` to enable Unified Logging signpost emission for the run (client/service/child helper where applicable).
+- Add `--capture-signposts` to `xpc run` to attach a lookback signpost timeline under `data.host_signpost_capture` (`--capture-signposts` implies `--signposts`).
+
 How to interpret failures:
 
 - `result.normalized_outcome=child_protocol_violation` / `child_*_bus_io_error` → harness/protocol bug (not sandbox behavior).
@@ -340,10 +346,16 @@ Usage:
 ```sh
 $PW xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>)
                 [--plan-id <id>] [--correlation-id <id>]
+                [--signposts]
                 [--wait <fifo:auto|fifo:/abs|exists:/abs>]
                 [--wait-timeout-ms <n>] [--wait-interval-ms <n>]
                 [--xpc-timeout-ms <n>]
 ```
+
+Signposts:
+
+- Add `--signposts` to emit Unified Logging signposts for session lifecycle + probe execution.
+- To extract a timeline after the fact, run `PolicyWitness.app/Contents/MacOS/signpost-log-observer --correlation-id <id> --last 2m`.
 
 I/O contract:
 
@@ -411,7 +423,7 @@ Observer usage (summary):
 Usage:
 
 ```sh
-$PW run-matrix --group <baseline|probe> [--variant <base|injectable>] [--out <dir>] <probe-id> [probe-args...]
+$PW run-matrix --group <baseline|probe> [--variant <base|injectable>] [--out <dir>] [--signposts] [--capture-signposts] <probe-id> [probe-args...]
 ```
 
 Examples:
@@ -422,6 +434,11 @@ $PW run-matrix --group probe --variant injectable capabilities_snapshot
 ```
 
 High-concern variants are included without extra flags.
+
+Signposts:
+
+- Add `--signposts` to emit Unified Logging signposts for each underlying probe run.
+- Add `--capture-signposts` to attach a lookback signpost timeline under each run’s `response.data.host_signpost_capture` (`--capture-signposts` implies `--signposts`).
 
 Groups (use `list-profiles` as the source of truth):
 
@@ -467,7 +484,7 @@ Hard rule: it does **not** *run* payloads (no `execve`, no `posix_spawn`). Note 
 Usage:
 
 ```sh
-$PW quarantine-lab <xpc-service-bundle-id> <payload-class> [options...]
+$PW quarantine-lab [--correlation-id <id>] [--signposts] [--capture-signposts] <xpc-service-bundle-id> <payload-class> [options...]
 ```
 
 Choosing a service id:
@@ -481,6 +498,11 @@ Example:
 $PW show-profile quarantine_default
 $PW quarantine-lab <bundle_id_from_show_profile> shell_script --dir tmp
 ```
+
+Signposts:
+
+- Add `--signposts` to emit Unified Logging signposts for the quarantine client/service.
+- Add `--capture-signposts` to attach a lookback signpost timeline under `data.host_signpost_capture` (`--capture-signposts` implies `--signposts`).
 
 Payload classes:
 

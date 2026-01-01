@@ -35,8 +35,33 @@ final class QuarantineLabService: NSObject, QuarantineLabProtocol {
     func writeArtifact(_ request: Data, withReply reply: @escaping (Data) -> Void) {
         let response: QuarantineWriteResponse
         do {
-            let decoded = try decodeJSON(QuarantineWriteRequest.self, from: request)
-            response = write(decoded)
+            var decoded = try decodeJSON(QuarantineWriteRequest.self, from: request)
+            if decoded.correlation_id?.isEmpty ?? true {
+                decoded.correlation_id = UUID().uuidString
+            }
+            let enableSignposts = decoded.enable_signposts == true
+            let correlationId = decoded.correlation_id
+
+            response = PWSignposts.withEnabled(enableSignposts) {
+                PWTraceContext.set(
+                    correlationId: correlationId,
+                    planId: nil,
+                    rowId: nil,
+                    probeId: "quarantine_lab"
+                )
+                defer { PWTraceContext.clear() }
+
+                let op = decoded.operation ?? "create_new"
+                let span = PWSignpostSpan(
+                    category: PWSignposts.categoryQuarantineService,
+                    name: "write_artifact",
+                    label: "op=\(op) payload=\(decoded.payload_class)",
+                    correlationId: correlationId
+                )
+                defer { span.end() }
+
+                return write(decoded)
+            }
         } catch {
             response = QuarantineWriteResponse(
                 rc: 2,
@@ -163,6 +188,7 @@ final class QuarantineLabService: NSObject, QuarantineLabProtocol {
     }
 
     private func write(_ req: QuarantineWriteRequest) -> QuarantineWriteResponse {
+        let correlationId = req.correlation_id ?? UUID().uuidString
         let serviceBundleId = Bundle.main.bundleIdentifier
         let hasAppSandbox = entitlementBool("com.apple.security.app-sandbox")
         let hasUserSelectedExecutable = entitlementBool("com.apple.security.files.user-selected.executable")
@@ -177,6 +203,7 @@ final class QuarantineLabService: NSObject, QuarantineLabProtocol {
                 error: err,
                 test_case_id: req.test_case_id,
                 selection_mechanism: req.selection_mechanism,
+                correlation_id: correlationId,
                 path_class: req.path_class,
                 operation: operation,
                 payload_class: payloadClass,
@@ -202,6 +229,7 @@ final class QuarantineLabService: NSObject, QuarantineLabProtocol {
                 error: err,
                 test_case_id: req.test_case_id,
                 selection_mechanism: req.selection_mechanism,
+                correlation_id: correlationId,
                 path_class: req.path_class,
                 operation: operation,
                 payload_class: payloadClass,
@@ -304,6 +332,7 @@ final class QuarantineLabService: NSObject, QuarantineLabProtocol {
                 normalized_outcome: "opened_only",
                 test_case_id: req.test_case_id,
                 selection_mechanism: req.selection_mechanism,
+                correlation_id: correlationId,
                 path_class: req.path_class,
                 operation: operation,
                 payload_class: payloadClass,
@@ -393,6 +422,7 @@ final class QuarantineLabService: NSObject, QuarantineLabProtocol {
                 normalized_outcome: "saved_copy",
                 test_case_id: req.test_case_id,
                 selection_mechanism: req.selection_mechanism,
+                correlation_id: correlationId,
                 path_class: req.path_class,
                 operation: operation,
                 payload_class: payloadClass,
@@ -467,6 +497,7 @@ final class QuarantineLabService: NSObject, QuarantineLabProtocol {
             normalized_outcome: "wrote_new",
             test_case_id: req.test_case_id,
             selection_mechanism: req.selection_mechanism,
+            correlation_id: correlationId,
             path_class: req.path_class,
             operation: operation,
             payload_class: payloadClass,

@@ -352,6 +352,7 @@ def main() -> int:
         "xpc-probe-client",
         "xpc-quarantine-client",
         "sandbox-log-observer",
+        "signpost-log-observer",
         "pw-inherit-child",
         "pw-inherit-child-bad",
     ]

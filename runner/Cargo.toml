@@ -17,6 +17,10 @@ name = "sandbox-log-observer"
 path = "src/bin/sandbox-log-observer.rs"
 
 [[bin]]
+name = "signpost-log-observer"
+path = "src/bin/signpost-log-observer.rs"
+
+[[bin]]
 name = "pw-inspector"
 path = "src/bin/pw-inspector.rs"
 

@@ -455,6 +455,30 @@ fn cli_integration_smoke() {
         Some(PROBE_SCHEMA_VERSION)
     );
 
+    let signpost_out =
+        run_pw(&bin, &["xpc", "run", "--profile", "minimal", "--signposts", "probe_catalog"]);
+    assert!(
+        signpost_out.status.success(),
+        "xpc run minimal --signposts probe_catalog failed: {}",
+        String::from_utf8_lossy(&signpost_out.stderr)
+    );
+
+    let capture_out =
+        run_pw(&bin, &["xpc", "run", "--profile", "minimal", "--capture-signposts", "probe_catalog"]);
+    assert!(
+        capture_out.status.success(),
+        "xpc run minimal --capture-signposts probe_catalog failed: {}",
+        String::from_utf8_lossy(&capture_out.stderr)
+    );
+    let capture_json = parse_json(&capture_out);
+    assert!(
+        capture_json
+            .get("data")
+            .and_then(|v| v.get("host_signpost_capture"))
+            .is_some(),
+        "probe_response missing data.host_signpost_capture"
+    );
+
     let trace = catalog
         .get("trace_symbols")
         .and_then(|v| v.as_array())

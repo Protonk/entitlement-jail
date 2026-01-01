@@ -40,6 +40,7 @@ The app bundle is a *layout contract*:
 - `PolicyWitness.app/Contents/MacOS/pw-inherit-child` (Swift; paired-process child helper)
 - `PolicyWitness.app/Contents/MacOS/pw-inherit-child-bad` (Swift; intentionally mis-entitled abort canary)
 - `PolicyWitness.app/Contents/MacOS/sandbox-log-observer` (Rust observer helper)
+- `PolicyWitness.app/Contents/MacOS/signpost-log-observer` (Rust signpost timeline helper)
 - `PolicyWitness.app/Contents/XPCServices/*.xpc` (Swift services; entitlement variable)
 - `PolicyWitness.app/Contents/XPCServices/ProbeService_*/Contents/MacOS/pw-inherit-child` (helper copy used by `inherit_child`)
 - `PolicyWitness.app/Contents/XPCServices/ProbeService_*/Contents/MacOS/pw-inherit-child-bad` (helper copy used by `inherit_bad_entitlements`)
@@ -58,7 +59,7 @@ Key build facts worth knowing before you touch anything:
 
 - `build.sh` requires `IDENTITY` to be set to a **Developer ID Application** identity present in your keychain (it validates via `security find-identity -p codesigning`).
 - `build.sh` compiles:
-  - Rust binaries from `runner/Cargo.toml` (`policy-witness`, `quarantine-observer`, `sandbox-log-observer`, `pw-inspector`)
+  - Rust binaries from `runner/Cargo.toml` (`policy-witness`, `quarantine-observer`, `sandbox-log-observer`, `signpost-log-observer`, `pw-inspector`)
   - Swift client(s) + every service under `xpc/services/*` (enumerated dynamically)
 - Build knobs (mostly for debugging):
   - `PW_INSPECTION=1` (default) builds with symbols/frame pointers; set `PW_INSPECTION=0` for a more optimized build.
