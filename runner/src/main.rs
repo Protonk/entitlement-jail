@@ -17,7 +17,7 @@ fn print_usage() {
 usage:
   policy-witness run-system <absolute-platform-binary> [args...]
   policy-witness run-embedded <tool-name> [args...]
-  policy-witness xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--signposts] [--capture-sandbox-logs] [--capture-signposts] <probe-id> [probe-args...]
+  policy-witness xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--signposts] [--capture-sandbox-logs] [--capture-sandbox-logs-target <auto|child|service|client|pid>] [--capture-sandbox-logs-pid <pid>] [--capture-signposts] <probe-id> [probe-args...]
   policy-witness xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--correlation-id <id>] [--signposts] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
   policy-witness quarantine-lab [--correlation-id <id>] [--signposts] [--capture-signposts] <xpc-service-bundle-id> <payload-class> [options...]
   policy-witness verify-evidence
@@ -233,6 +233,46 @@ fn parse_variant(value: &str) -> Result<&'static str, String> {
         VARIANT_INJECTABLE => Ok(VARIANT_INJECTABLE),
         _ => Err(format!(
             "invalid variant {value:?} (expected: {VARIANT_BASE}|{VARIANT_INJECTABLE})"
+        )),
+    }
+}
+
+const CAPTURE_SANDBOX_LOGS_TARGET_AUTO: &str = "auto";
+const CAPTURE_SANDBOX_LOGS_TARGET_CHILD: &str = "child";
+const CAPTURE_SANDBOX_LOGS_TARGET_SERVICE: &str = "service";
+const CAPTURE_SANDBOX_LOGS_TARGET_CLIENT: &str = "client";
+const CAPTURE_SANDBOX_LOGS_TARGET_PID: &str = "pid";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CaptureSandboxLogsTarget {
+    Auto,
+    Child,
+    Service,
+    Client,
+    Pid,
+}
+
+impl CaptureSandboxLogsTarget {
+    fn as_str(&self) -> &'static str {
+        match self {
+            CaptureSandboxLogsTarget::Auto => CAPTURE_SANDBOX_LOGS_TARGET_AUTO,
+            CaptureSandboxLogsTarget::Child => CAPTURE_SANDBOX_LOGS_TARGET_CHILD,
+            CaptureSandboxLogsTarget::Service => CAPTURE_SANDBOX_LOGS_TARGET_SERVICE,
+            CaptureSandboxLogsTarget::Client => CAPTURE_SANDBOX_LOGS_TARGET_CLIENT,
+            CaptureSandboxLogsTarget::Pid => CAPTURE_SANDBOX_LOGS_TARGET_PID,
+        }
+    }
+}
+
+fn parse_capture_sandbox_logs_target(value: &str) -> Result<CaptureSandboxLogsTarget, String> {
+    match value {
+        CAPTURE_SANDBOX_LOGS_TARGET_AUTO => Ok(CaptureSandboxLogsTarget::Auto),
+        CAPTURE_SANDBOX_LOGS_TARGET_CHILD => Ok(CaptureSandboxLogsTarget::Child),
+        CAPTURE_SANDBOX_LOGS_TARGET_SERVICE => Ok(CaptureSandboxLogsTarget::Service),
+        CAPTURE_SANDBOX_LOGS_TARGET_CLIENT => Ok(CaptureSandboxLogsTarget::Client),
+        CAPTURE_SANDBOX_LOGS_TARGET_PID => Ok(CaptureSandboxLogsTarget::Pid),
+        _ => Err(format!(
+            "invalid capture target {value:?} (expected: {CAPTURE_SANDBOX_LOGS_TARGET_AUTO}|{CAPTURE_SANDBOX_LOGS_TARGET_CHILD}|{CAPTURE_SANDBOX_LOGS_TARGET_SERVICE}|{CAPTURE_SANDBOX_LOGS_TARGET_CLIENT}|{CAPTURE_SANDBOX_LOGS_TARGET_PID})"
         )),
     }
 }
@@ -623,18 +663,121 @@ fn sort_json_value(value: &mut serde_json::Value) {
     }
 }
 
-fn capture_sandbox_logs(child_pid: i64, process_name: &str) -> Result<serde_json::Value, String> {
+const CAPTURE_SANDBOX_LOGS_WINDOW_ENV: &str = "PW_CAPTURE_SANDBOX_LOGS_WINDOW";
+const CAPTURE_SANDBOX_LOGS_WINDOW_LAST_DYNAMIC: &str = "last_dynamic";
+const CAPTURE_SANDBOX_LOGS_WINDOW_RANGE_ISO: &str = "range_iso";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SandboxLogWindowStrategy {
+    LastDynamic,
+    RangeIso,
+}
+
+impl SandboxLogWindowStrategy {
+    fn from_env() -> Self {
+        match std::env::var(CAPTURE_SANDBOX_LOGS_WINDOW_ENV).ok().as_deref() {
+            Some(CAPTURE_SANDBOX_LOGS_WINDOW_RANGE_ISO) => SandboxLogWindowStrategy::RangeIso,
+            Some(CAPTURE_SANDBOX_LOGS_WINDOW_LAST_DYNAMIC) | None => SandboxLogWindowStrategy::LastDynamic,
+            Some(other) => {
+                eprintln!(
+                    "warning: ignoring {}={other:?} (expected: {CAPTURE_SANDBOX_LOGS_WINDOW_LAST_DYNAMIC}|{CAPTURE_SANDBOX_LOGS_WINDOW_RANGE_ISO})",
+                    CAPTURE_SANDBOX_LOGS_WINDOW_ENV
+                );
+                SandboxLogWindowStrategy::LastDynamic
+            }
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            SandboxLogWindowStrategy::LastDynamic => CAPTURE_SANDBOX_LOGS_WINDOW_LAST_DYNAMIC,
+            SandboxLogWindowStrategy::RangeIso => CAPTURE_SANDBOX_LOGS_WINDOW_RANGE_ISO,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum SandboxLogWindow {
+    Last(String),
+    Range { start: String, end: String },
+}
+
+fn now_unix_ms_u64() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn format_log_show_time(unix_ms: u64) -> Result<String, String> {
+    let seconds = (unix_ms / 1000) as i64;
+    let output = Command::new("/bin/date")
+        .arg("-r")
+        .arg(seconds.to_string())
+        .arg("+%Y-%m-%d %H:%M:%S")
+        .output()
+        .map_err(|e| format!("spawn failed for /bin/date: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(format!(
+            "date failed (exit={:?}): {}",
+            output.status.code(),
+            stderr.trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn sandbox_log_predicate(pid: i64, process_name: Option<&str>) -> String {
+    match process_name {
+        Some(name) if !name.is_empty() => {
+            let term = format!("Sandbox: {}({})", name, pid);
+            let escaped = term.replace('"', "\\\"");
+            format!(
+                r#"((eventMessage CONTAINS[c] "{}") OR ((eventMessage CONTAINS[c] "deny") AND (eventMessage CONTAINS[c] "{}")))"#,
+                escaped, pid
+            )
+        }
+        _ => {
+            let term = format!("({})", pid);
+            let escaped = term.replace('"', "\\\"");
+            format!(
+                r#"((eventMessage CONTAINS[c] "Sandbox:") AND (eventMessage CONTAINS[c] "{}"))"#,
+                escaped
+            )
+        }
+    }
+}
+
+fn capture_sandbox_logs(
+    pid: i64,
+    process_name: Option<&str>,
+    window: SandboxLogWindow,
+) -> Result<serde_json::Value, String> {
     let observer = resolve_contents_macos_tool("sandbox-log-observer")?;
-    let args = vec![
-        "--pid".to_string(),
-        child_pid.to_string(),
-        "--process-name".to_string(),
-        process_name.to_string(),
-        "--last".to_string(),
-        "2m".to_string(),
-        "--format".to_string(),
-        "jsonl".to_string(),
-    ];
+    let predicate = sandbox_log_predicate(pid, process_name);
+
+    let mut args = vec!["--pid".to_string(), pid.to_string()];
+    if let Some(name) = process_name {
+        args.push("--process-name".to_string());
+        args.push(name.to_string());
+    }
+    args.push("--predicate".to_string());
+    args.push(predicate);
+    match window {
+        SandboxLogWindow::Last(last) => {
+            args.push("--last".to_string());
+            args.push(last);
+        }
+        SandboxLogWindow::Range { start, end } => {
+            args.push("--start".to_string());
+            args.push(start);
+            args.push("--end".to_string());
+            args.push(end);
+        }
+    }
+    args.push("--format".to_string());
+    args.push("jsonl".to_string());
 
     let output = Command::new(&observer)
         .args(&args)
@@ -2095,6 +2238,8 @@ fn main() {
                     let mut row_id: Option<String> = None;
                     let mut correlation_id: Option<String> = None;
                     let mut capture_sandbox_logs_flag = false;
+                    let mut capture_sandbox_logs_target: Option<CaptureSandboxLogsTarget> = None;
+                    let mut capture_sandbox_logs_pid: Option<i64> = None;
                     let mut capture_signposts_flag = false;
                     let mut signposts_flag = false;
 
@@ -2223,6 +2368,51 @@ fn main() {
                                 capture_sandbox_logs_flag = true;
                                 idx += 1;
                             }
+                            "--capture-sandbox-logs-target" => {
+                                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                                let value = value.ok_or_else(|| {
+                                    "missing value for --capture-sandbox-logs-target".to_string()
+                                });
+                                match value {
+                                    Ok(v) => {
+                                        if capture_sandbox_logs_target.is_some() {
+                                            eprintln!("--capture-sandbox-logs-target specified multiple times");
+                                            print_usage();
+                                            std::process::exit(2);
+                                        }
+                                        capture_sandbox_logs_target =
+                                            Some(parse_capture_sandbox_logs_target(v).unwrap_or_else(|err| {
+                                                eprintln!("{err}");
+                                                std::process::exit(2);
+                                            }));
+                                    }
+                                    Err(err) => {
+                                        eprintln!("{err}");
+                                        print_usage();
+                                        std::process::exit(2);
+                                    }
+                                }
+                                idx += 2;
+                            }
+                            "--capture-sandbox-logs-pid" => {
+                                let value = args.get(idx + 1).and_then(|s| s.to_str());
+                                match value.and_then(|v| v.parse::<i64>().ok()) {
+                                    Some(v) => {
+                                        if capture_sandbox_logs_pid.is_some() {
+                                            eprintln!("--capture-sandbox-logs-pid specified multiple times");
+                                            print_usage();
+                                            std::process::exit(2);
+                                        }
+                                        capture_sandbox_logs_pid = Some(v);
+                                    }
+                                    None => {
+                                        eprintln!("invalid value for --capture-sandbox-logs-pid");
+                                        print_usage();
+                                        std::process::exit(2);
+                                    }
+                                }
+                                idx += 2;
+                            }
                             "--signposts" => {
                                 signposts_flag = true;
                                 idx += 1;
@@ -2237,6 +2427,37 @@ fn main() {
                                 print_usage();
                                 std::process::exit(2);
                             }
+                        }
+                    }
+
+                    if !capture_sandbox_logs_flag
+                        && (capture_sandbox_logs_target.is_some() || capture_sandbox_logs_pid.is_some())
+                    {
+                        eprintln!(
+                            "--capture-sandbox-logs-target/--capture-sandbox-logs-pid require --capture-sandbox-logs"
+                        );
+                        print_usage();
+                        std::process::exit(2);
+                    }
+
+                    let capture_sandbox_logs_target =
+                        capture_sandbox_logs_target.unwrap_or(CaptureSandboxLogsTarget::Auto);
+                    if capture_sandbox_logs_flag {
+                        match capture_sandbox_logs_target {
+                            CaptureSandboxLogsTarget::Pid if capture_sandbox_logs_pid.is_none() => {
+                                eprintln!("--capture-sandbox-logs-target pid requires --capture-sandbox-logs-pid");
+                                print_usage();
+                                std::process::exit(2);
+                            }
+                            CaptureSandboxLogsTarget::Pid => {}
+                            _ if capture_sandbox_logs_pid.is_some() => {
+                                eprintln!(
+                                    "--capture-sandbox-logs-pid requires --capture-sandbox-logs-target pid"
+                                );
+                                print_usage();
+                                std::process::exit(2);
+                            }
+                            _ => {}
                         }
                     }
 
@@ -2353,13 +2574,20 @@ fn main() {
                         if signposts_flag {
                             cmd.env("PW_ENABLE_SIGNPOSTS", "1");
                         }
+                        cmd.stdout(std::process::Stdio::piped());
+                        cmd.stderr(std::process::Stdio::piped());
 
-                        let output = cmd
-                            .output()
-                            .unwrap_or_else(|err| {
-                                eprintln!("spawn failed for {}: {err}", cmd_path.display());
-                                std::process::exit(127);
-                            });
+                        let run_started_at_unix_ms = now_unix_ms_u64();
+                        let child = cmd.spawn().unwrap_or_else(|err| {
+                            eprintln!("spawn failed for {}: {err}", cmd_path.display());
+                            std::process::exit(127);
+                        });
+                        let client_pid = child.id() as i64;
+                        let output = child.wait_with_output().unwrap_or_else(|err| {
+                            eprintln!("wait failed for {}: {err}", cmd_path.display());
+                            std::process::exit(127);
+                        });
+                        let run_ended_at_unix_ms = now_unix_ms_u64();
                         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
                         let status = output.status;
@@ -2380,26 +2608,126 @@ fn main() {
                             .pointer("/data/details/child_pid")
                             .and_then(|v| v.as_str())
                             .and_then(|s| s.parse::<i64>().ok());
-                        let process_name = value
+                        let service_pid = value
+                            .pointer("/data/details/service_pid")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse::<i64>().ok())
+                            .or_else(|| {
+                                value.pointer("/data/details/pid")
+                                    .and_then(|v| v.as_str())
+                                    .and_then(|s| s.parse::<i64>().ok())
+                            });
+                        let service_process_name = value
                             .pointer("/data/details/process_name")
                             .and_then(|v| v.as_str())
                             .or_else(|| value.pointer("/data/service_name").and_then(|v| v.as_str()))
-                            .unwrap_or("unknown");
+                            .filter(|s| !s.is_empty());
 
                         if capture_sandbox_logs_flag {
-                            let (capture_status, capture) = match child_pid {
-                                Some(pid) => match capture_sandbox_logs(pid, process_name) {
+                            let window_strategy = SandboxLogWindowStrategy::from_env();
+                            let headroom_ms = 10_000u64;
+                            let min_last_ms = 5_000u64;
+                            let max_last_ms = 120_000u64;
+                            let elapsed_ms = run_ended_at_unix_ms.saturating_sub(run_started_at_unix_ms);
+
+                            let mut window_error: Option<String> = None;
+                            let window = match window_strategy {
+                                SandboxLogWindowStrategy::LastDynamic => {
+                                    let last_ms =
+                                        (elapsed_ms.saturating_add(headroom_ms)).clamp(min_last_ms, max_last_ms);
+                                    let last_s = (last_ms.saturating_add(999) / 1000).max(1);
+                                    SandboxLogWindow::Last(format!("{last_s}s"))
+                                }
+                                SandboxLogWindowStrategy::RangeIso => {
+                                    let start_ms = run_started_at_unix_ms.saturating_sub(headroom_ms);
+                                    let end_ms = run_ended_at_unix_ms.saturating_add(headroom_ms);
+                                    match (format_log_show_time(start_ms), format_log_show_time(end_ms)) {
+                                        (Ok(start), Ok(end)) => SandboxLogWindow::Range { start, end },
+                                        (Err(err), _) | (_, Err(err)) => {
+                                            window_error = Some(err);
+                                            let last_ms = (elapsed_ms.saturating_add(headroom_ms))
+                                                .clamp(min_last_ms, max_last_ms);
+                                            let last_s = (last_ms.saturating_add(999) / 1000).max(1);
+                                            SandboxLogWindow::Last(format!("{last_s}s"))
+                                        }
+                                    }
+                                }
+                            };
+
+                            let (chosen_pid, chosen_process_name, pid_source): (Option<i64>, Option<&str>, &str) =
+                                match capture_sandbox_logs_target {
+                                    CaptureSandboxLogsTarget::Auto => {
+                                        if child_pid.is_some() {
+                                            (child_pid, None, "child_pid")
+                                        } else if service_pid.is_some() {
+                                            (service_pid, service_process_name, "service_pid")
+                                        } else {
+                                            (Some(client_pid), Some("xpc-probe-client"), "client_pid")
+                                        }
+                                    }
+                                    CaptureSandboxLogsTarget::Child => (child_pid, None, "child_pid"),
+                                    CaptureSandboxLogsTarget::Service => {
+                                        (service_pid, service_process_name, "service_pid")
+                                    }
+                                    CaptureSandboxLogsTarget::Client => {
+                                        (Some(client_pid), Some("xpc-probe-client"), "client_pid")
+                                    }
+                                    CaptureSandboxLogsTarget::Pid => (capture_sandbox_logs_pid, None, "explicit_pid"),
+                                };
+
+                            let (capture_status, observer_capture) = match chosen_pid {
+                                Some(pid) => match capture_sandbox_logs(pid, chosen_process_name, window.clone()) {
                                     Ok(capture) => ("captured", capture),
-                                    Err(err) => ("requested_unavailable", serde_json::json!({ "error": err })),
+                                    Err(err) => (
+                                        "requested_unavailable",
+                                        serde_json::json!({ "error": err }),
+                                    ),
                                 },
                                 None => (
                                     "requested_unavailable",
-                                    serde_json::json!({ "error": "missing child_pid for sandbox log capture" }),
+                                    serde_json::json!({
+                                        "error": format!(
+                                            "missing pid for sandbox log capture (target={})",
+                                            capture_sandbox_logs_target.as_str()
+                                        )
+                                    }),
                                 ),
                             };
 
-                            let capture_value = capture.clone();
-                            let capture_string_map = match capture {
+                            let observer_capture_for_witness = observer_capture.clone();
+
+                            let mut capture_value = serde_json::json!({
+                                "capture_status": capture_status,
+                                "target": capture_sandbox_logs_target.as_str(),
+                                "pid": chosen_pid,
+                                "pid_source": pid_source,
+                                "process_name": chosen_process_name.unwrap_or(""),
+                                "client_pid": client_pid,
+                                "run_started_at_unix_ms": run_started_at_unix_ms,
+                                "run_ended_at_unix_ms": run_ended_at_unix_ms,
+                                "window_strategy": window_strategy.as_str(),
+                                "window": match &window {
+                                    SandboxLogWindow::Last(last) => serde_json::json!({ "kind": "last", "last": last }),
+                                    SandboxLogWindow::Range { start, end } => serde_json::json!({ "kind": "range", "start": start, "end": end }),
+                                },
+                            });
+                            if let Some(err) = window_error {
+                                capture_value["window_error"] = serde_json::Value::String(err);
+                            }
+                            match observer_capture {
+                                serde_json::Value::Object(map) => {
+                                    if let serde_json::Value::Object(ref mut out) = capture_value {
+                                        for (key, value) in map {
+                                            out.insert(key, value);
+                                        }
+                                    }
+                                }
+                                other => {
+                                    capture_value["observer_raw"] = other;
+                                }
+                            }
+
+                            let capture_string_map = match observer_capture_for_witness {
                                 serde_json::Value::Object(map) => {
                                     let mut out = serde_json::Map::new();
                                     for (key, value) in map {

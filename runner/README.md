@@ -106,7 +106,7 @@ For CLI development, it’s useful to keep the raw subcommand surface area in vi
 ```sh
 ./PolicyWitness.app/Contents/MacOS/policy-witness run-system <absolute-platform-binary> [args...]
 ./PolicyWitness.app/Contents/MacOS/policy-witness run-embedded <tool-name> [args...]
-./PolicyWitness.app/Contents/MacOS/policy-witness xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--signposts] [--capture-sandbox-logs] [--capture-signposts] <probe-id> [probe-args...]
+./PolicyWitness.app/Contents/MacOS/policy-witness xpc run (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--row-id <id>] [--correlation-id <id>] [--signposts] [--capture-sandbox-logs] [--capture-sandbox-logs-target <auto|child|service|client|pid>] [--capture-sandbox-logs-pid <pid>] [--capture-signposts] <probe-id> [probe-args...]
 ./PolicyWitness.app/Contents/MacOS/policy-witness xpc session (--profile <id[@variant]> [--variant <base|injectable>] | --service <bundle-id>) [--plan-id <id>] [--correlation-id <id>] [--signposts] [--wait <fifo:auto|fifo:/abs|exists:/abs>] [--wait-timeout-ms <n>] [--wait-interval-ms <n>] [--xpc-timeout-ms <n>]
 ./PolicyWitness.app/Contents/MacOS/policy-witness quarantine-lab [--correlation-id <id>] [--signposts] [--capture-signposts] <xpc-service-bundle-id> <payload-class> [options...]
 ./PolicyWitness.app/Contents/MacOS/policy-witness verify-evidence
@@ -242,7 +242,9 @@ Stop mechanics are observable without a debugger: `inherit_child` uses start-sus
 Sandbox log capture:
 
 - `--capture-sandbox-logs` runs the embedded `sandbox-log-observer` in lookback mode after the probe returns.
-- The capture is always attached under `data.host_sandbox_log_capture` (predicate + time bounds + excerpt or error).
+- Target selection: `--capture-sandbox-logs-target <auto|child|service|client|pid>` (+ `--capture-sandbox-logs-pid <pid>` for `target=pid`).
+  - `auto` prefers `child_pid` when present, otherwise captures the probe service pid, otherwise the client pid (for bootstrap failures).
+- The capture is attached under `data.host_sandbox_log_capture` and includes `capture_status`, `pid`/`pid_source`, window metadata, and the observer report.
 - For `inherit_child`, the launcher also attaches tri-state status to `data.witness` as `sandbox_log_capture_status` (`not_requested|requested_unavailable|captured`) and `sandbox_log_capture` (string map).
 
 Signpost capture:

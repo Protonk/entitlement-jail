@@ -81,6 +81,79 @@ if errno not in (1, 13):
     raise SystemExit(f"expected errno in (EPERM=1, EACCES=13); got {errno!r}")
 PY
 
+step "xpc_run_minimal_net_op_sandbox_logs" "xpc run (minimal net_op + capture sandbox logs)"
+NET_LOG_JSON="${OUT_DIR}/xpc-run-minimal-net-op-sandbox-logs.json"
+NET_LOG_EXIT=0
+"${PW}" xpc run --capture-sandbox-logs --profile minimal net_op --op tcp_connect --host 127.0.0.1 --port 9 >"${NET_LOG_JSON}" || NET_LOG_EXIT="$?"
+test_step "net_op_sandbox_logs_exit_code" "xpc run exit_code=${NET_LOG_EXIT} (expected: 1 for denial-shaped probe)"
+
+/usr/bin/python3 - "${NET_LOG_JSON}" "${NET_LOG_EXIT}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+exit_code = int(sys.argv[2])
+
+data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+if data.get("kind") != "probe_response":
+    raise SystemExit(f"unexpected kind: {data.get('kind')!r}")
+if exit_code != 1:
+    raise SystemExit(f"expected exit code 1 for denial-shaped probe, got {exit_code}")
+
+details = ((data.get("data") or {}).get("details") or {})
+service_pid = details.get("service_pid") or details.get("pid")
+if not service_pid:
+    raise SystemExit("missing data.details.service_pid")
+
+capture = (data.get("data") or {}).get("host_sandbox_log_capture") or {}
+if not isinstance(capture, dict):
+    raise SystemExit("missing data.host_sandbox_log_capture")
+
+if capture.get("target") != "auto":
+    raise SystemExit(f"expected host_sandbox_log_capture.target='auto'; got {capture.get('target')!r}")
+if capture.get("pid_source") != "service_pid":
+    raise SystemExit(f"expected host_sandbox_log_capture.pid_source='service_pid'; got {capture.get('pid_source')!r}")
+if capture.get("pid") is None:
+    raise SystemExit("missing host_sandbox_log_capture.pid")
+if capture.get("client_pid") is None:
+    raise SystemExit("missing host_sandbox_log_capture.client_pid")
+if capture.get("run_started_at_unix_ms") is None or capture.get("run_ended_at_unix_ms") is None:
+    raise SystemExit("missing host_sandbox_log_capture run_* timestamps")
+PY
+
+step "xpc_run_minimal_capabilities_sandbox_logs_client" "xpc run (capabilities_snapshot + capture sandbox logs target=client)"
+CAP_CLIENT_LOG_JSON="${OUT_DIR}/xpc-run-minimal-capabilities-sandbox-logs-client.json"
+"${PW}" xpc run --capture-sandbox-logs --capture-sandbox-logs-target client --profile minimal capabilities_snapshot >"${CAP_CLIENT_LOG_JSON}"
+
+/usr/bin/python3 - "${CAP_CLIENT_LOG_JSON}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+if data.get("kind") != "probe_response":
+    raise SystemExit(f"unexpected kind: {data.get('kind')!r}")
+details = ((data.get("data") or {}).get("details") or {})
+service_pid = details.get("service_pid") or details.get("pid")
+if not service_pid:
+    raise SystemExit("missing data.details.service_pid")
+
+capture = (data.get("data") or {}).get("host_sandbox_log_capture") or {}
+if not isinstance(capture, dict):
+    raise SystemExit("missing data.host_sandbox_log_capture")
+if capture.get("target") != "client":
+    raise SystemExit(f"expected host_sandbox_log_capture.target='client'; got {capture.get('target')!r}")
+if capture.get("pid_source") != "client_pid":
+    raise SystemExit(f"expected host_sandbox_log_capture.pid_source='client_pid'; got {capture.get('pid_source')!r}")
+client_pid = capture.get("pid")
+if not isinstance(client_pid, int) or client_pid <= 0:
+    raise SystemExit(f"invalid host_sandbox_log_capture.pid: {client_pid!r}")
+if int(service_pid) == client_pid:
+    raise SystemExit("expected capture pid to differ from service_pid when target=client")
+PY
+
 step "xpc_run_inherit_child" "xpc run (temporary_exception inherit_child)"
 INHERIT_JSON="${OUT_DIR}/xpc-run-inherit-child.json"
 INHERIT_PATH="${HOME}/Documents/pw_smoke_inherit_child.txt"

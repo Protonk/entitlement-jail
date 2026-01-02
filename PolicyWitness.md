@@ -392,6 +392,14 @@ Some probes return permission-shaped failures. If you want deny evidence, run th
 
 For `inherit_child`, prefer `xpc run --capture-sandbox-logs` so the log excerpt is attached to the same JSON output artifact (see the `inherit_child` section).
 
+Capture target:
+
+- `--capture-sandbox-logs` defaults to `--capture-sandbox-logs-target auto`:
+  - uses `child_pid` when present (for example `inherit_child`),
+  - otherwise uses the probe service pid (so capture works for non-child probes),
+  - otherwise falls back to the client pid (useful for bootstrap failures like `openSession`).
+- Override with `--capture-sandbox-logs-target <child|service|client|pid>` (and `--capture-sandbox-logs-pid <pid>` for `target=pid`).
+
 The observer requires a PID and process name. You can get them from:
 
 - a `probe_response` (`data.details.service_pid` + `data.details.process_name`, or `data.details.pid` on older outputs), or
